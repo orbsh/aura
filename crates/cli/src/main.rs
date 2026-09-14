@@ -11,12 +11,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Echo Actor: define → invoke → return. The Phase 0 acceptance path.
     engine
-        .register(ActorType {
-            name: "echo".into(),
-            handler: Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+        .register(ActorType::simple(
+            "echo",
+            Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
                 Box::pin(async move { Ok(args) })
             }),
-        })
+        ))
         .await;
 
     let target = InstanceId { actor_type: "echo".into(), key: "a1".into() };
@@ -26,9 +26,9 @@ async fn main() -> anyhow::Result<()> {
     // Chained invoke: echo.a2 invoked BY echo.a1's ctx — exercises ctx.invoke
     // through the same realm dispatch.
     engine
-        .register(ActorType {
-            name: "caller".into(),
-            handler: Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+        .register(ActorType::simple(
+            "caller",
+            Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
                 Box::pin(async move {
                     let nested = ctx
                         .invoke(
@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(nested)
                 })
             }),
-        })
+        ))
         .await;
 
     let result = engine

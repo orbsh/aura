@@ -2,44 +2,75 @@
 //!
 //! ctx surface is bounded by ADR-0011: state / metadata / invoke only.
 //! emit/on, contracts, and hooks stay off ctx (realm-level or static
-//! contract concerns). Phase 0 wires state (in-memory) and invoke
-//! (realm-routed); metadata waits for the Openraft phase.
+//! contract concerns).
 
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// An Actor type definition: the handler is a Rust async function for now.
-/// Embedded languages (Phase 2) wrap the same definition with a script body.
+/// An Actor type definition. The handler is a Rust async function for now;
+/// embedded languages (Phase 2) wrap the same definition with a script body.
+///
+/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Actor calls (ADR-0011,
+/// off ctx): optional, declared on the type, invoked by the runtime around
+/// eviction and reactivation.
 #[derive(Clone)]
 pub struct ActorType {
-    /// Registered type name, e.g. "echo". Partition key routing resolves
-    /// (type, key) to an instance mailbox.
+    /// Registered type name, e.g. "echo".
     pub name: String,
     #[allow(clippy::type_complexity)]
     pub handler: Arc<Handler>,
+    /// Optional on_sleep: called by the Host before the instance is
+    /// evicted (scale-to-zero). Return value is ignored; state flushing is
+    /// the store's job, not the hook's.
+    #[allow(clippy::type_complexity)]
+    pub on_sleep: Option<Arc<SleepHook>>,
+    /// Optional on_wake: called after reactivation with a fresh ctx, before
+    /// the first job of the new residency is delivered.
+    #[allow(clippy::type_complexity)]
+    pub on_wake: Option<Arc<Handler>>,
 }
 
 pub type Handler = dyn Fn(Ctx, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
     + Send
     + Sync;
 
+pub type SleepHook =
+    dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
+
+impl ActorType {
+    /// Define a type with a handler and no lifecycle hooks.
+    pub fn simple(name: impl Into<String>, handler: Arc<Handler>) -> Self {
+        Self { name: name.into(), handler, on_sleep: None, on_wake: None }
+    }
+
+    pub fn with_on_sleep(mut self, hook: Arc<SleepHook>) -> Self {
+        self.on_sleep = Some(hook);
+        self
+    }
+
+    pub fn with_on_wake(mut self, hook: Arc<Handler>) -> Self {
+        self.on_wake = Some(hook);
+        self
+    }
+}
+
 /// Narrow alias so the public API stays readable without a futures dep.
 pub mod futures_boxed {
-    pub type BoxFuture<'a, T> = std::pin::Pin<
-        Box<dyn std::future::Future<Output = T> + Send + 'a>,
-    >;
+    pub type BoxFuture<'a, T> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 }
 
 /// Per-instance context. ADR-0011: exactly state / metadata / invoke.
+/// Metadata lands with Openraft (Phase 5); the surface reserves the name.
 pub struct Ctx {
     /// This instance's identity: (actor type, partition key).
     pub self_id: InstanceId,
-    /// Instance state, in-memory until Phase 1 sinks it to Fjall.
+    /// Instance state, backed by the runtime's StateStore. Reads hit the
+    /// store; writes are per-field durable units.
     pub state: State,
-    /// Call surface — the single controlled path (ADR-0011). Phase 0
-    /// resolves through the realm's dispatcher.
+    /// Call surface — the single controlled path (ADR-0011).
     invoke: Invoke,
 }
 
@@ -51,16 +82,39 @@ pub struct InstanceId {
     pub key: String,
 }
 
+/// Per-instance field storage: the actor-visible state contract. The store
+/// owns namespacing (`state:{actor_id}:{field}`); handlers never see keys.
+/// Writes are per-field durable units (wiki §状态落盘的原子化).
+pub trait StateStore: Send + Sync {
+    fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>>;
+    fn set(&self, id: &InstanceId, field: &str, value: Value) -> anyhow::Result<()>;
+    fn delete(&self, id: &InstanceId, field: &str) -> anyhow::Result<()>;
+    fn fields(&self, id: &InstanceId) -> anyhow::Result<Vec<String>>;
+}
+
+/// Shared handle to the runtime's store.
+pub type SharedStore = std::sync::Arc<dyn StateStore>;
+
+/// Instance state view over the shared StateStore. Field-scoped: handlers
+/// touch named fields, the store owns namespacing.
 pub struct State {
-    fields: HashMap<String, Value>,
+    id: InstanceId,
+    store: SharedStore,
 }
 
 impl State {
-    pub fn get(&self, field: &str) -> Option<&Value> {
-        self.fields.get(field)
+    pub fn new(id: InstanceId, store: SharedStore) -> Self {
+        Self { id, store }
     }
-    pub fn set(&mut self, field: &str, value: Value) {
-        self.fields.insert(field.to_string(), value);
+
+    pub fn get(&self, field: &str) -> anyhow::Result<Option<Value>> {
+        self.store.get(&self.id, field)
+    }
+    pub fn set(&self, field: &str, value: Value) -> anyhow::Result<()> {
+        self.store.set(&self.id, field, value)
+    }
+    pub fn delete(&self, field: &str) -> anyhow::Result<()> {
+        self.store.delete(&self.id, field)
     }
 }
 
@@ -81,16 +135,15 @@ pub mod dispatch_handle {
 }
 
 impl Ctx {
-    pub fn new(self_id: InstanceId, dispatch: dispatch_handle::DispatchHandle) -> Self {
+    pub fn new(self_id: InstanceId, store: SharedStore, dispatch: dispatch_handle::DispatchHandle) -> Self {
         Self {
+            state: State::new(self_id.clone(), store),
             self_id,
-            state: State { fields: HashMap::new() },
             invoke: Invoke { dispatch },
         }
     }
 
-    /// The single controlled call surface (ADR-0011 §invoke). Phase 0:
-    /// fire the target's mailbox and await its oneshot.
+    /// The single controlled call surface (ADR-0011).
     pub async fn invoke(&self, target: InstanceId, args: Value) -> anyhow::Result<Value> {
         (self.invoke.dispatch.clone())(target, args).await
     }
@@ -117,3 +170,23 @@ impl Mailbox {
         Self { id, tx, rx }
     }
 }
+
+/// Live instance: mailbox + last-activity instant, the unit the runtime
+/// loop schedules and the idle-TTL evicts.
+pub struct Instance {
+    pub id: InstanceId,
+    pub mailbox: Mailbox,
+    /// Last job arrival; the evictor compares against idle_ttl.
+    pub last_activity: std::time::Instant,
+}
+
+impl Instance {
+    pub fn new(id: InstanceId, capacity: usize) -> Self {
+        let mailbox = Mailbox::new(id.clone(), capacity);
+        Self { id, mailbox, last_activity: std::time::Instant::now() }
+    }
+}
+
+/// Field map kept for handlers that want a scratch space independent of the
+/// durable store (never persisted).
+pub type Scratch = HashMap<String, Value>;

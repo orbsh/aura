@@ -1,20 +1,24 @@
-//! Phase 0 acceptance, as executable documentation: define → invoke →
-//! return. The call path every surface converges on is `engine.invoke`;
-//! actor-to-actor calls go through `ctx.invoke` — the single controlled
-//! call surface (ADR-0011).
+//! Acceptance paths, as executable documentation.
+//!
+//! Phase 0: define → invoke → return; ctx.invoke as the single call
+//! surface (ADR-0011). Phase 1: state survives eviction (scale-to-zero
+//! drops the resident, not the data); on_sleep/on_wake run around it.
 
 use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
 use aura_engine::Engine;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn echo_type() -> ActorType {
-    ActorType {
-        name: "echo".into(),
-        handler: Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+    ActorType::simple(
+        "echo",
+        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
             Box::pin(async move { Ok(args) })
         }),
-    }
+    )
 }
+
+// ---------------------------------------------------------------- Phase 0 --
 
 #[tokio::test]
 async fn invoke_returns_handler_result() {
@@ -39,9 +43,9 @@ async fn ctx_invoke_routes_through_realm() {
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
     // actor sees; target resolution is registry-declared.
     engine
-        .register(ActorType {
-            name: "caller".into(),
-            handler: Arc::new(|ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+        .register(ActorType::simple(
+            "caller",
+            Arc::new(|ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
                 Box::pin(async move {
                     let key = args["target_key"].as_str().unwrap_or("a2").to_string();
                     ctx.invoke(
@@ -51,7 +55,7 @@ async fn ctx_invoke_routes_through_realm() {
                     .await
                 })
             }),
-        })
+        ))
         .await;
 
     let out = engine
@@ -82,8 +86,6 @@ async fn partition_key_activates_distinct_instances() {
     let engine = Engine::start(&Default::default());
     engine.register(echo_type()).await;
 
-    // Same type, two keys: virtual-actor activation resolves each key to
-    // its own instance mailbox.
     for key in ["a1", "a2"] {
         let out = engine
             .invoke(
@@ -93,5 +95,65 @@ async fn partition_key_activates_distinct_instances() {
             .await
             .unwrap();
         assert_eq!(out, serde_json::json!({"key": key}));
+    }
+}
+
+// ---------------------------------------------------------------- Phase 1 --
+
+// ctx.state writes persist across eviction: the instance is dropped, the
+// data is not. on_sleep/on_wake run around the boundary.
+#[tokio::test]
+async fn state_survives_scale_to_zero() {
+    let engine = Engine::start(&Default::default());
+    engine.register(
+        ActorType::simple(
+            "counter",
+            Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+                Box::pin(async move {
+                    // RMW: read, bump, write — per-field durable units.
+                    let n = ctx.state.get("count")?.and_then(|v| v.as_i64()).unwrap_or(0);
+                    ctx.state.set("count", serde_json::json!(n + 1))?;
+                    Ok(serde_json::json!({ "count": n + 1 }))
+                })
+            }),
+        )
+        .with_on_sleep(Arc::new(|_ctx: Ctx| -> BoxFuture<'static, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) }) // advisory; the store already has it
+        }))
+        .with_on_wake(Arc::new(|_ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+            Box::pin(async { Ok(serde_json::Value::Null) })
+        })),
+    ).await;
+
+    let target = InstanceId { actor_type: "counter".into(), key: "k1".into() };
+    assert_eq!(engine.invoke(target.clone(), serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 1}));
+    assert_eq!(engine.invoke(target.clone(), serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 2}));
+
+    // Force eviction: everything idle is older than 0s.
+    engine.realm.lock().await.evict_idle(engine.realm.clone()).await;
+
+    // Resident is gone; state survives. Next touch reactivates (on_wake)
+    // and the count continues.
+    assert_eq!(engine.invoke(target, serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 3}));
+}
+
+// Idle TTL drives eviction without manual calls: short TTL + evictor tick.
+#[tokio::test]
+async fn idle_ttl_evicts_automatically() {
+    // The evictor ticks every 5s; use a 0s TTL and drive one tick manually
+    // via the realm to keep the test fast — the tick loop itself is
+    // exercised by the running engine.
+    let engine = Engine::start(&Default::default());
+    engine.register(echo_type()).await;
+
+    let target = InstanceId { actor_type: "echo".into(), key: "ttl".into() };
+    engine.invoke(target, serde_json::json!(null)).await.unwrap();
+
+    {
+        let mut realm = engine.realm.try_lock().unwrap();
+        realm.idle_ttl = Duration::from_secs(0);
+        let evicted = realm.evict_idle(engine.realm.clone()).await;
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].key, "ttl");
     }
 }

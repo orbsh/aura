@@ -59,6 +59,7 @@ dependencies = [
  "anyhow",
  "aura-actor",
  "aura-config",
+ "aura-storage",
  "serde",
  "serde_json",
  "tokio",

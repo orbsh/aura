@@ -4,6 +4,7 @@
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
 pub mod event;
+pub mod namespace;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
 use aura_actor::{ActorType, Instance, InstanceId, Job, SharedStore};

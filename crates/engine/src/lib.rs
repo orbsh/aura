@@ -7,7 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub struct Engine {
+    /// The system/default namespace realm (back-compat: single-node tests,
+    /// CLI echo). User-facing surfaces use `namespaces` instead.
     pub realm: SharedRealm,
+    /// Per-user namespace map (Phase 3.6): structural isolation — a
+    /// NamespacedRealm handle cannot reach another namespace.
+    pub namespaces: Arc<aura_realm::namespace::Namespaces>,
 }
 
 impl Engine {
@@ -36,9 +41,12 @@ impl Engine {
                 }
             }
         };
-        let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store)));
+        let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store.clone())));
         Realm::spawn_evictor(&realm);
-        Ok(Self { realm })
+        Ok(Self {
+            realm,
+            namespaces: Arc::new(aura_realm::namespace::Namespaces::new(store)),
+        })
     }
 
     /// Override the idle TTL (default 30s).
@@ -85,6 +93,41 @@ impl Engine {
             .await?
             .wait()
             .await
+    }
+
+    /// Register an actor type into a user namespace (Phase 3.6). The
+    /// namespace is derived from the user credential at registration.
+    pub async fn register_in(&self, namespace: &str, actor: ActorType) {
+        let ns = self.namespaces.realm_of(namespace).await;
+        ns.realm().lock().await.register_type(actor);
+    }
+
+    /// Namespaced call: target resolution = user namespace + node alias +
+    /// operation. A namespace handle never sees another namespace's types
+    /// or events — cross-namespace delivery is not expressible.
+    pub async fn call_in(
+        &self,
+        namespace: &str,
+        target: aura_actor::InstanceId,
+        args: serde_json::Value,
+    ) -> anyhow::Result<aura_actor::call::Waited> {
+        let ns = self.namespaces.realm_of(namespace).await;
+        Realm::call(&ns.realm(), None, target, args)
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Namespaced emit: events route only within the namespace.
+    pub async fn emit_in(
+        &self,
+        namespace: &str,
+        emitter: Option<&str>,
+        event: &str,
+        data: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let ns = self.namespaces.realm_of(namespace).await;
+        Realm::emit(&ns.realm(), emitter, event, data).await
     }
 
     /// Resolve a pending call (cold re-entry): framework delivers the

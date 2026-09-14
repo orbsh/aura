@@ -5,6 +5,7 @@
 
 pub mod event;
 
+use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
 use aura_actor::{ActorType, Instance, InstanceId, Job, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +29,14 @@ pub struct Realm {
     pub idle_ttl: Duration,
     /// Event namespace: routing table + emits whitelist (Phase 3).
     pub router: event::EventRouter,
+    /// Static call declarations per actor type (Phase 3.5). Defaults to
+    /// hot + 30s when a type registers without a spec.
+    call_specs: HashMap<String, CallSpec>,
+    /// Registered calls awaiting results (Phase 3.5). Hot in-flight calls
+    /// carry a deadline (expiry → failure value); cold calls carry their
+    /// session for re-entry routing.
+    pending_calls: HashMap<CallId, PendingEntry>,
+    call_seq: u64,
     /// Unmatched events (bounded ring, diagnostic output).
     pub dead_events: event::DeadEvents,
 }
@@ -41,12 +50,24 @@ impl Realm {
             store,
             idle_ttl: Duration::from_secs(30),
             router: event::EventRouter::default(),
+            call_specs: HashMap::new(),
+            pending_calls: HashMap::new(),
+            call_seq: 0,
             dead_events: event::DeadEvents::default(),
         }
     }
 
     pub fn register_type(&mut self, actor: ActorType) {
+        self.call_specs
+            .entry(actor.name.clone())
+            .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
         self.types.insert(actor.name.clone(), actor);
+    }
+
+    /// Static call declaration for an actor type (Phase 3.5): tier +
+    /// timeout. Split point is the entry, decided here at registration.
+    pub fn declare_call(&mut self, actor_type: &str, spec: CallSpec) {
+        self.call_specs.insert(actor_type.into(), spec);
     }
 
     pub fn actor_type(&self, name: &str) -> Option<&ActorType> {
@@ -133,8 +154,142 @@ impl Realm {
         let _ = job.reply.send(result);
     }
 
+    /// The unified call (Phase 3.5): same path for realm Actor / remote
+    /// Probe / future HTTP targets. Tier split happens HERE at entry —
+    /// hot queues + returns the parking slot; cold registers in
+    /// pending_calls and returns a Pending slot (the caller's task ends).
+    pub async fn call(
+        self_arc: &SharedRealm,
+        caller: Option<&str>,
+        target: InstanceId,
+        args: serde_json::Value,
+    ) -> anyhow::Result<CallSlot> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let call_id = {
+            let mut realm = self_arc.lock().await;
+            if !realm.types.contains_key(&target.actor_type) {
+                anyhow::bail!("unknown actor type: {}", target.actor_type);
+            }
+            let spec = realm
+                .call_specs
+                .get(&target.actor_type)
+                .cloned()
+                .unwrap_or_else(|| CallSpec::hot(Duration::from_secs(30)));
+            match spec.tier {
+                Tier::Hot => {
+                    let deadline = spec
+                        .timeout
+                        .map(|t| (tokio::time::Instant::now() + t, t));
+                    let inst = realm.instance(self_arc.clone(), &target).await?;
+                    inst.mailbox
+                        .tx
+                        .try_send(Job { args: args.clone(), reply: reply_tx })
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "mailbox full: {}/{}",
+                                target.actor_type,
+                                target.key
+                            )
+                        })?;
+                    drop(realm);
+                    // Spawn the consumer that drains this job (submit's
+                    // per-job consumer shape).
+                    let spawn_realm = self_arc.clone();
+                    tokio::spawn(async move {
+                        let job = {
+                            let mut r = spawn_realm.lock().await;
+                            r.instances
+                                .get_mut(&(target.actor_type.clone(), target.key.clone()))
+                                .and_then(|i| {
+                                    // Take only OUR job: recv from this instance's rx.
+                                    i.mailbox.rx.try_recv().ok()
+                                })
+                        };
+                        if let Some(job) = job {
+                            Self::run_job(spawn_realm, &target, job).await;
+                        }
+                    });
+                    return Ok(CallSlot::Hot { rx: reply_rx, deadline });
+                }
+                Tier::Cold => {
+                    realm.call_seq += 1;
+                    let call_id = CallId(format!("call-{}", realm.call_seq));
+                    realm.pending_calls.insert(
+                        call_id.clone(),
+                        PendingEntry {
+                            registered_at: Instant::now(),
+                            deadline: None,
+                            reply: Some(reply_tx),
+                            session: caller.map(|s| s.to_string()),
+                        },
+                    );
+                    call_id
+                }
+            }
+        };
+        // Cold path: the job still reaches the target's mailbox (the
+        // target executes without a parked caller); the result is
+        // resolved back through resolve_call when it completes.
+        let resolve_id = call_id.clone();
+        {
+            let realm = self_arc.clone();
+            tokio::spawn(async move {
+                let rx = Self::submit(&realm, target, args).await;
+                if let Ok(rx) = rx {
+                    if let Ok(result) = rx.await {
+                        Self::resolve_call(&realm, &resolve_id, result).await;
+                    }
+                }
+            });
+        }
+        Ok(CallSlot::Cold { call_id })
+    }
+
+    /// Resolve a pending call: deliver the value through the registered
+    /// reply channel (cold re-entry routing reads `session`). Unknown
+    /// call_id = completed calls never replay (idempotent resolve).
+    pub async fn resolve_call(
+        self_arc: &SharedRealm,
+        call_id: &CallId,
+        result: anyhow::Result<serde_json::Value>,
+    ) -> bool {
+        let Some(mut entry) = self_arc.lock().await.pending_calls.remove(call_id) else {
+            return false;
+        };
+        if let Some(reply) = entry.reply.take() {
+            let _ = reply.send(result);
+        }
+        true
+    }
+
+    /// Registered (pending) call count — observation helper.
+    pub fn pending_calls_len(&self) -> usize {
+        self.pending_calls.len()
+    }
+
+    /// Deadline scan: expired hot in-flight calls become failure values
+    /// delivered through their oneshots (timeout = failure value, never a
+    /// hang). Cold calls have no deadline. Runs on the evictor tick.
+    pub async fn sweep_deadlines(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<CallId> = self
+            .pending_calls
+            .iter()
+            .filter(|(_, e)| matches!(e.deadline, Some(d) if d <= now))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            if let Some(mut entry) = self.pending_calls.remove(&id) {
+                if let Some(reply) = entry.reply.take() {
+                    let _ = reply.send(Err(anyhow::anyhow!("call timed out: {}", id.0)));
+                }
+            }
+        }
+    }
+
     /// Submit a job to an instance: activation + mailbox send. The sender
-    /// awaits the reply oneshot (CallSlot's hot path; Phase 3.5 formalizes).
+    /// awaits the reply oneshot (internal plumbing; the actor-facing call
+    /// is `Realm::call`).
     pub async fn submit(
         self_arc: &SharedRealm,
         target: InstanceId,
@@ -269,6 +424,7 @@ impl Realm {
                 tick.tick().await;
                 let Some(realm) = realm.upgrade() else { break };
                 let mut locked = realm.lock().await;
+                locked.sweep_deadlines().await;
                 locked.evict_idle(realm.clone()).await;
             }
         });
@@ -280,7 +436,13 @@ async fn dispatch_call(
     target: InstanceId,
     args: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    Realm::submit(&realm, target, args).await?.await.map_err(|_| anyhow::anyhow!("call dropped"))?
+    match Realm::call(&realm, None, target, args).await?.wait().await? {
+        Waited::Done(result) => result,
+        Waited::Pending(id) => Err(anyhow::anyhow!(
+            "cold target cannot return a value to a parked caller (call {}); emit instead",
+            id.0
+        )),
+    }
 }
 
 impl Default for Realm {

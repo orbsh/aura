@@ -90,6 +90,8 @@ impl ActorType {
 }
 
 /// Narrow alias so the public API stays readable without a futures dep.
+pub mod call;
+
 pub mod futures_boxed {
     pub type BoxFuture<'a, T> =
         std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

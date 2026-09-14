@@ -54,15 +54,46 @@ impl Engine {
         self.realm.lock().await.register_type(actor);
     }
 
-    /// Invoke a registered actor instance. The call path every surface
-    /// (CLI, HTTP, remote Probe) converges on.
+    /// Invoke a registered actor instance (hot path convenience: wait for
+    /// the value). The general entry is `call`, returning a CallSlot.
     pub async fn invoke(
         &self,
         target: aura_actor::InstanceId,
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        Realm::submit(&self.realm, target, args).await?
+        match self.call(target, args).await? {
+            aura_actor::call::Waited::Done(result) => result,
+            aura_actor::call::Waited::Pending(id) => {
+                anyhow::bail!("cold call returned a Pending slot to a hot caller: {}", id.0)
+            }
+        }
+    }
+
+    /// The unified call (Phase 3.5): every surface — CLI, HTTP, remote
+    /// Probe, actor ctx.invoke — converges here. Hot targets return
+    /// Done on wait; cold targets return Pending(call_id) and the
+    /// result arrives via resolve_call.
+    pub async fn call(
+        &self,
+        target: aura_actor::InstanceId,
+        args: serde_json::Value,
+    ) -> anyhow::Result<aura_actor::call::Waited> {
+        // Slot construction errors (unknown type/full mailbox) are Err;
+        // wait results — including Done(Err(timeout/handler failure)) —
+        // travel inside the Waited so callers see failure as a value.
+        Realm::call(&self.realm, None, target, args)
+            .await?
+            .wait()
             .await
-            .map_err(|_| anyhow::anyhow!("call dropped"))?
+    }
+
+    /// Resolve a pending call (cold re-entry): framework delivers the
+    /// result; unknown call_id is a no-op (completed never replay).
+    pub async fn resolve_call(
+        &self,
+        call_id: &aura_actor::call::CallId,
+        result: anyhow::Result<serde_json::Value>,
+    ) -> bool {
+        Realm::resolve_call(&self.realm, call_id, result).await
     }
 }

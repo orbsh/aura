@@ -15,12 +15,30 @@ use tokio::sync::mpsc;
 /// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Actor calls (ADR-0011,
 /// off ctx): optional, declared on the type, invoked by the runtime around
 /// eviction and reactivation.
+
+/// Actor body: a Rust closure, or a script executed by a probe carrier.
+///
+/// The script form imports the probe runtime instead of reimplementing
+/// language execution: one set of carriers (steel/python/wasmtime/nushell)
+/// serves both the remote actuator and embedded actors. Script actors are
+/// pure functions in this phase (args in, value out); the ctx bridge
+/// (state/invoke from inside scripts via host functions) is the remaining
+/// Phase 2 work.
+#[derive(Clone)]
+pub enum Body {
+    Rust(Arc<Handler>),
+    Script {
+        language: String,
+        source: String,
+        entry: Option<String>,
+    },
+}
+
 #[derive(Clone)]
 pub struct ActorType {
     /// Registered type name, e.g. "echo".
     pub name: String,
-    #[allow(clippy::type_complexity)]
-    pub handler: Arc<Handler>,
+    pub body: Body,
     /// Optional on_sleep: called by the Host before the instance is
     /// evicted (scale-to-zero). Return value is ignored; state flushing is
     /// the store's job, not the hook's.
@@ -40,9 +58,24 @@ pub type SleepHook =
     dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
 
 impl ActorType {
-    /// Define a type with a handler and no lifecycle hooks.
+    /// Define a Rust-closure type with no lifecycle hooks.
     pub fn simple(name: impl Into<String>, handler: Arc<Handler>) -> Self {
-        Self { name: name.into(), handler, on_sleep: None, on_wake: None }
+        Self { name: name.into(), body: Body::Rust(handler), on_sleep: None, on_wake: None }
+    }
+
+    /// Define a script type executed by a probe carrier.
+    pub fn script(
+        name: impl Into<String>,
+        language: impl Into<String>,
+        source: impl Into<String>,
+        entry: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            body: Body::Script { language: language.into(), source: source.into(), entry },
+            on_sleep: None,
+            on_wake: None,
+        }
     }
 
     pub fn with_on_sleep(mut self, hook: Arc<SleepHook>) -> Self {

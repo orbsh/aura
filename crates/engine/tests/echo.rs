@@ -137,6 +137,88 @@ async fn state_survives_scale_to_zero() {
     assert_eq!(engine.invoke(target, serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 3}));
 }
 
+// ------------------------------------------------------- Phase 2 (script) --
+
+// Script actors execute through the probe carriers — the same carrier set
+// the remote actuator uses; language execution is not reimplemented here.
+// Script actors are pure functions in this phase (args in, value out).
+#[cfg(feature = "nushell")]
+#[tokio::test]
+async fn nushell_script_actor() {
+    let engine = Engine::start(&Default::default());
+    engine
+        .register(aura_actor::ActorType::script(
+            "nu-op",
+            "nushell",
+            r#"
+export def execute [args] {
+    { sum: ($args.items | math sum) }
+}
+"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    let out = engine
+        .invoke(
+            InstanceId { actor_type: "nu-op".into(), key: "n1".into() },
+            serde_json::json!({"items": [1, 2, 3]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({"sum": 6}));
+}
+
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn python_script_actor() {
+    let engine = Engine::start(&Default::default());
+    engine
+        .register(aura_actor::ActorType::script(
+            "py-op",
+            "python",
+            r#"def execute(args):
+    return {"doubled": args["x"] * 2}
+"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    let out = engine
+        .invoke(
+            InstanceId { actor_type: "py-op".into(), key: "p1".into() },
+            serde_json::json!({"x": 21}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({"doubled": 42}));
+}
+
+// A script actor naming a language this build does not carry is an error
+// value on the call path — the same validate-at-dispatch rule as probe.
+#[cfg(feature = "nushell")]
+#[tokio::test]
+async fn script_unknown_language_is_error_value() {
+    let engine = Engine::start(&Default::default());
+    engine
+        .register(aura_actor::ActorType::script(
+            "koto-op",
+            "koto",
+            "1 + 2",
+            None,
+        ))
+        .await;
+
+    let err = engine
+        .invoke(
+            InstanceId { actor_type: "koto-op".into(), key: "k1".into() },
+            serde_json::json!(null),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("koto"));
+}
+
 // Idle TTL drives eviction without manual calls: short TTL + evictor tick.
 #[tokio::test]
 async fn idle_ttl_evicts_automatically() {

@@ -7,8 +7,20 @@ license.workspace = true
 [dependencies]
 aura-actor = { path = "../actor" }
 aura-storage = { path = "../storage" }
+probe-runtime = { path = "../../../probe/crates/runtime" }
 aura-config = { path = "../config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true }
+
+[features]
+default = []
+steel = ["probe-runtime/steel"]
+python = ["probe-runtime/python"]
+wasmtime = ["probe-runtime/wasmtime"]
+nushell = ["probe-runtime/nushell"]
+
+[dependencies.anyhow]
+workspace = true
+
+[dependencies.tokio]
+workspace = true

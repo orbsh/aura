@@ -95,10 +95,33 @@ impl Realm {
                 .send(Err(anyhow::anyhow!("unknown actor type: {}", id.actor_type)));
             return;
         };
-        let handler = actor.handler.clone();
+        let body = actor.body.clone();
         let ctx = Self::ctx_for(self_arc.clone(), realm.store.clone(), id);
         drop(realm);
-        let result = handler(ctx, job.args).await;
+        let result = match body {
+            aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
+            aura_actor::Body::Script { language, source, entry } => {
+                // Script actors are pure functions in this phase; the ctx
+                // bridge (state/invoke from scripts) is the remaining
+                // Phase 2 work. The ctx is still constructed so hooks and
+                // future bridge wiring see a uniform shape.
+                let _ = ctx;
+                // Carriers are blocking (in-process VMs, nu subprocess) —
+                // keep them off the async workers.
+                tokio::task::spawn_blocking(move || {
+                    probe_runtime::carrier::execute(
+                        &language,
+                        probe_runtime::carrier::ExecRequest {
+                            source: &source,
+                            entry: entry.as_deref(),
+                            args: &job.args,
+                        },
+                    )
+                })
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")))
+            }
+        };
         let _ = job.reply.send(result);
     }
 

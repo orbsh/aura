@@ -121,10 +121,23 @@ pub struct InstanceId {
 /// owns namespacing (`state:{actor_id}:{field}`); handlers never see keys.
 /// Writes are per-field durable units (wiki §状态落盘的原子化).
 pub trait StateStore: Send + Sync {
+    /// The store's own key encoding for (instance, field). Opaque to
+    /// callers; nesting wrappers prepend their prefix to THESE bytes
+    /// (okm nesting rule: the wrapper knows only its prefix, the engine
+    /// encoding stays opaque).
+    fn key_for(&self, id: &InstanceId, field: &str) -> Vec<u8>;
     fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>>;
     fn set(&self, id: &InstanceId, field: &str, value: Value) -> anyhow::Result<()>;
     fn delete(&self, id: &InstanceId, field: &str) -> anyhow::Result<()>;
-    fn fields(&self, id: &InstanceId) -> anyhow::Result<Vec<String>>;
+    /// Full inner keys sharing a byte prefix — the primitive the nesting
+    /// wrapper uses for `fields` (scan own prefix, strip, delegate).
+    fn scan_keys(&self, key_prefix: &[u8]) -> anyhow::Result<Vec<Vec<u8>>>;
+    /// Raw-key operations: the nesting wrapper's entire surface. The
+    /// wrapper composes `prefix + inner.key_for(...)` and calls these —
+    /// the inner engine never learns about namespaces.
+    fn get_raw(&self, key: &[u8]) -> anyhow::Result<Option<Value>>;
+    fn set_raw(&self, key: Vec<u8>, value: Value) -> anyhow::Result<()>;
+    fn del_raw(&self, key: &[u8]) -> anyhow::Result<()>;
 }
 
 /// Shared handle to the runtime's store.

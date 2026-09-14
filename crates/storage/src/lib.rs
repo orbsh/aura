@@ -12,44 +12,61 @@ use std::sync::{Arc, Mutex};
 /// not a throughput statement.
 #[derive(Default)]
 pub struct InMemoryStore {
-    inner: Mutex<HashMap<(String, String, String), Value>>,
+    inner: Mutex<HashMap<Vec<u8>, Value>>,
+}
+
+/// In-memory key layout mirrors the fjall one (length-prefixed segments):
+/// one key discipline across engines.
+fn mem_key(id: &InstanceId, field: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(8 + id.actor_type.len() + id.key.len() + field.len());
+    k.extend_from_slice(&(id.actor_type.len() as u32).to_be_bytes());
+    k.extend_from_slice(id.actor_type.as_bytes());
+    k.extend_from_slice(&(id.key.len() as u32).to_be_bytes());
+    k.extend_from_slice(id.key.as_bytes());
+    k.extend_from_slice(field.as_bytes());
+    k
 }
 
 impl StateStore for InMemoryStore {
-    fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>> {
+    fn key_for(&self, id: &InstanceId, field: &str) -> Vec<u8> {
+        mem_key(id, field)
+    }
+    fn scan_keys(&self, key_prefix: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
         Ok(self
             .inner
             .lock()
             .unwrap()
-            .get(&(id.actor_type.clone(), id.key.clone(), field.into()))
-            .cloned())
+            .keys()
+            .filter(|k| k.as_slice().starts_with(key_prefix))
+            .cloned()
+            .collect())
+    }
+    fn get_raw(&self, key: &[u8]) -> anyhow::Result<Option<Value>> {
+        Ok(self.inner.lock().unwrap().get(key).cloned())
+    }
+    fn set_raw(&self, key: Vec<u8>, value: Value) -> anyhow::Result<()> {
+        self.inner.lock().unwrap().insert(key, value);
+        Ok(())
+    }
+    fn del_raw(&self, key: &[u8]) -> anyhow::Result<()> {
+        self.inner.lock().unwrap().remove(key);
+        Ok(())
+    }
+    fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>> {
+        Ok(self.inner.lock().unwrap().get(&mem_key(id, field)).cloned())
     }
 
     fn set(&self, id: &InstanceId, field: &str, value: Value) -> anyhow::Result<()> {
         self.inner
             .lock()
             .unwrap()
-            .insert((id.actor_type.clone(), id.key.clone(), field.into()), value);
+            .insert(mem_key(id, field), value);
         Ok(())
     }
 
     fn delete(&self, id: &InstanceId, field: &str) -> anyhow::Result<()> {
-        self.inner
-            .lock()
-            .unwrap()
-            .remove(&(id.actor_type.clone(), id.key.clone(), field.into()));
+        self.inner.lock().unwrap().remove(&mem_key(id, field));
         Ok(())
-    }
-
-    fn fields(&self, id: &InstanceId) -> anyhow::Result<Vec<String>> {
-        Ok(self
-            .inner
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|(t, k, _)| t == &id.actor_type && k == &id.key)
-            .map(|(_, _, f)| f.clone())
-            .collect())
     }
 }
 
@@ -95,16 +112,6 @@ pub mod fjall_store {
             Ok(Self { db, keyspace, _dir: None })
         }
 
-        /// Open a namespace-scoped keyspace: each user namespace gets its
-        /// own keyspace inside one engine — structural isolation at the
-        /// engine level, no key-encoding tricks.
-        pub fn open_namespaced(path: &std::path::Path, namespace: &str) -> fjall::Result<Self> {
-            let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
-            let ks_name = format!("state:{namespace}");
-            let keyspace = db.keyspace(&ks_name, fjall::KeyspaceCreateOptions::default)?;
-            Ok(Self { db, keyspace, _dir: None })
-        }
-
         /// Ephemeral engine over a temp dir (tests).
         pub fn open_tmp() -> fjall::Result<Self> {
             let dir = tempfile::TempDir::new().expect("tempdir");
@@ -120,6 +127,41 @@ pub mod fjall_store {
     }
 
     impl StateStore for FjallStateStore {
+        fn key_for(&self, id: &InstanceId, field: &str) -> Vec<u8> {
+            state_key(id, field)
+        }
+        fn scan_keys(&self, key_prefix: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
+            let mut out = Vec::new();
+            for guard in self.keyspace.prefix(key_prefix) {
+                let k = match guard.key() {
+                    Ok(k) => k,
+                    Err(e) => return Err(anyhow::anyhow!("fjall scan: {e}")),
+                };
+                out.push(k.to_vec());
+            }
+            Ok(out)
+        }
+        fn get_raw(&self, key: &[u8]) -> anyhow::Result<Option<Value>> {
+            Ok(self
+                .keyspace
+                .get(key)
+                .map_err(|e| anyhow::anyhow!("fjall get: {e}"))?
+                .map(|b| serde_json::from_slice(&b))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("state deserialize: {e}"))?)
+        }
+        fn set_raw(&self, key: Vec<u8>, value: Value) -> anyhow::Result<()> {
+            let bytes =
+                serde_json::to_vec(&value).map_err(|e| anyhow::anyhow!("state serialize: {e}"))?;
+            self.keyspace
+                .insert(key, bytes)
+                .map_err(|e| anyhow::anyhow!("fjall insert: {e}"))
+        }
+        fn del_raw(&self, key: &[u8]) -> anyhow::Result<()> {
+            self.keyspace
+                .remove(key)
+                .map_err(|e| anyhow::anyhow!("fjall remove: {e}"))
+        }
         fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>> {
             Ok(self
                 .keyspace
@@ -146,23 +188,6 @@ pub mod fjall_store {
                 .map_err(|e| anyhow::anyhow!("fjall remove: {e}"))
         }
 
-        fn fields(&self, id: &InstanceId) -> anyhow::Result<Vec<String>> {
-            let mut prefix = Vec::with_capacity(8 + id.actor_type.len() + id.key.len());
-            prefix.extend_from_slice(&(id.actor_type.len() as u32).to_be_bytes());
-            prefix.extend_from_slice(id.actor_type.as_bytes());
-            prefix.extend_from_slice(&(id.key.len() as u32).to_be_bytes());
-            prefix.extend_from_slice(id.key.as_bytes());
-            let mut out = Vec::new();
-            for guard in self.keyspace.prefix(&prefix) {
-                let k = match guard.key() {
-                    Ok(k) => k,
-                    Err(e) => return Err(anyhow::anyhow!("fjall scan: {e}")),
-                };
-                // Field name = the tail segment after the instance prefix.
-                out.push(String::from_utf8_lossy(&k[prefix.len()..]).to_string());
-            }
-            Ok(out)
-        }
     }
 }
 

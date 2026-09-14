@@ -1,0 +1,17 @@
+[package]
+name = "aura-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aura"
+path = "src/main.rs"
+
+[dependencies]
+aura-actor = { path = "../actor" }
+aura-engine = { path = "../engine" }
+aura-config = { path = "../config" }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

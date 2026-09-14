@@ -1,0 +1,13 @@
+[package]
+name = "aura-realm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aura-actor = { path = "../actor" }
+aura-config = { path = "../config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

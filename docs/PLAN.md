@@ -4,7 +4,7 @@ Design lives in the wiki (stateless-agent-architecture.md / aura-architecture.md
 
 ## Milestone A — Single binary engine
 
-- [ ] Phase 0 — Workspace skeleton: `crates/{engine,actor,realm,storage,config,cli}`; single-binary start, no external deps (no Docker / etcd / DB). Echo Actor: define → invoke → return.
+- [x] Phase 0 — Workspace skeleton: `crates/{engine,actor,realm,storage,config,cli}`; single-binary start, no external deps (no Docker / etcd / DB). Echo Actor: define → invoke → return.
 - [ ] Phase 1 — Actor runtime: Rust host + Tokio MPSC pipeline; per-Actor context (in-memory modify, on-disk sleep) — ctx surface per ADR-0011 (state/metadata/invoke only; emit/on, contracts, hooks stay off ctx); partition key routing; on_sleep/on_wake scale-to-zero (state → Fjall).
 - [ ] Phase 2 — Embedded languages: Steel (deterministic core, natural sandbox), Python (PyO3), Wasm (Wasmtime) — one language per Actor, Polyglot Bridge, host-function async suspension.
 - [ ] Phase 3 — Realm model: event namespace, call (resolve_call, Actor return) vs emit (fire-and-forget), event composition primitives; interface_schema with returns declaration.

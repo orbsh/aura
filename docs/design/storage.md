@@ -1,7 +1,7 @@
 # 存储架构（设计细节）
 
 > 自 `~/.hermes/wiki/aura-architecture.md` §3 迁入的实现细节；wiki 保留综述。
-> 综述：wiki [Aura 架构 §3](../../../../.hermes/wiki/aura-architecture.md)。
+> 综述：wiki [Aura 架构 §3](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
 
 ## 3. 存储架构
 
@@ -125,11 +125,11 @@ raft-nodes = "node1:9004,node2:9004"  # Openraft 只同步元数据（Actor 注�
 
 **Actor 完全不感知底层引擎**——`ctx.state.get("history")` 的调用方式不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
 
-→ 两条架构路径的完整对比见 [KV 存储引擎架构 §11](../../.hermes/wiki/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb)。三引擎（Fjall/SlateDB/SurrealKV）的 API 差异和选型指南见 [KV 存储引擎架构 §三引擎 API 对比](../../.hermes/wiki/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
+→ 两条架构路径的完整对比见 [KV 存储引擎架构 §11](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb)。三引擎（Fjall/SlateDB/SurrealKV）的 API 差异和选型指南见 [KV 存储引擎架构 §三引擎 API 对比](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
 
 ### 3.2 为什么不用 SQL/Redis
 
-Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查询优化器是多余开销。嵌入式 KV 相比 SQL 的三个系统性优势：C 语言依赖与交叉编译地狱、双重缓存与内存浪费、写锁线程阻塞。详见 [KV 存储引擎 §9.6 SQLite vs 嵌入式 KV](../../.hermes/wiki/kv-storage-engine.md#106-sqlite-vs-嵌入式-kv开源项目的隐形代价)。
+Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查询优化器是多余开销。嵌入式 KV 相比 SQL 的三个系统性优势：C 语言依赖与交叉编译地狱、双重缓存与内存浪费、写锁线程阻塞。详见 [KV 存储引擎 §9.6 SQLite vs 嵌入式 KV](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#106-sqlite-vs-嵌入式-kv开源项目的隐形代价)。
 
 **分层选择**：
 
@@ -222,7 +222,7 @@ ctx.metadata.get("global_counter")     // 获取全局唯一 ID
 
 - **双 API 分离**：`ctx.state`（KV，高性能）处理 Actor 状态，`ctx.metadata`（Raft，强一致）处理全局元数据。两者职责清晰，互不干扰。
 
-→ 详见 [Redis 批判：RESP 协议 vs 二进制序列化](../../.hermes/wiki/redis-critique.md#8-resp-协议-vs-二进制序列化嵌入式架构的物理优势)。Fjall 的 API 设计和与其他引擎的对比见 [KV 存储引擎架构 §三引擎 API 对比](../../.hermes/wiki/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
+→ 详见 [Redis 批判：RESP 协议 vs 二进制序列化](https://github.com/orbsh/wiki/blob/main/redis-critique.md#8-resp-协议-vs-二进制序列化嵌入式架构的物理优势)。Fjall 的 API 设计和与其他引擎的对比见 [KV 存储引擎架构 §三引擎 API 对比](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
 
 ### 3.6 SlateDB + S3 模式（默认推荐）
 
@@ -238,7 +238,7 @@ ctx.metadata.get("global_counter")     // 获取全局唯一 ID
 
 **Durability**：SlateDB 的 WAL 在本地磁盘，节点磁盘丢失时需等 S3 flush 完成才能恢复——flush 前的窗口期存在数据丢失风险。对于 Agent 场景（对话数据可重建），这个风险通常可接受。
 
-**Openraft 状态机集成**：当需要 Actor 状态强一致复制时（TiDB 模式），Openraft 状态机挂载 Fjall 的实现见 [共识协议文档](../../.hermes/wiki/consensus-protocol.md)。
+**Openraft 状态机集成**：当需要 Actor 状态强一致复制时（TiDB 模式），Openraft 状态机挂载 Fjall 的实现见 [共识协议文档](https://github.com/orbsh/wiki/blob/main/consensus-protocol.md)。
 
 ### 3.7 配置与工作量评估
 

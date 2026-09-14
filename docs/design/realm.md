@@ -1,7 +1,7 @@
 # 场域模型（设计细节）
 
 > 自 `~/.hermes/wiki/aura-architecture.md` §5 迁入的实现细节；wiki 保留综述。
-> 综述：wiki [Aura 架构 §5](../../../../.hermes/wiki/aura-architecture.md)。
+> 综述：wiki [Aura 架构 §5](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
 
 ## 5. 场域模型：Actor 间交互与外部世界
 
@@ -821,7 +821,7 @@ Actor 实例的状态是隔离的——CartActor #A 看不到 CartActor #B 的�
 
 **投影 Actor**：一个独立的 Actor（如 DeptStatsActor），按 dept_id 分片，`on("cart_updated")` 持续把用户级数据聚合到部门级 ctx.state。查询时直接读该 Actor 的状态。这是场域模型的自然延伸——投影 Actor 就是一个普通的事件接收 Actor，不需要额外基础设施。原理与反应式架构的流计算预聚合一致：不查询时计算，而是持续监听事件流维护聚合状态。
 
-**Arrow HTAP**：[Arrow 大一统 HTAP 引擎](../../.hermes/wiki/arrow-unified-htap-engine.md) 解决了 ad-hoc 查询问题——Fjall 的 KV blob 可以通过 Arrow 列式化 + Polars 执行多维度扫描、过滤、聚合。适合报表、BI、后台管理等无法预先定义的查询场景。
+**Arrow HTAP**：[Arrow 大一统 HTAP 引擎](https://github.com/orbsh/wiki/blob/main/arrow-unified-htap-engine.md) 解决了 ad-hoc 查询问题——Fjall 的 KV blob 可以通过 Arrow 列式化 + Polars 执行多维度扫描、过滤、聚合。适合报表、BI、后台管理等无法预先定义的查询场景。
 
 **Scatter-gather**：emit 一个查询事件，所有相关 Actor 实例各自响应 partial 结果，由汇总 Actor 收集。问题：不知道有多少实例、不知道何时收齐、延迟取决于最慢的实例。仅在实例数已知且少的场景使用。
 
@@ -1154,7 +1154,7 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 #### 双轨互斥：Fjall 或 SlateDB，二选一
 
-**存储引擎本身也是二选一，不共存。** 与 [KV 存储引擎 §11](../../.hermes/wiki/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb) 的严格互斥一致：
+**存储引擎本身也是二选一，不共存。** 与 [KV 存储引擎 §11](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb) 的严格互斥一致：
 
 | 模式 | 存储引擎 | 分发层 | 真理源 | 归档职责 |
 |:--|:--|:--|:--|:--|
@@ -1179,6 +1179,6 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 **MQ 在 Aura 中整个消失**——被拆解为「容量→S3、吞吐→扩展、进度→KV」三个原生能力。存储引擎二选一，Fjall 方案自留归档职责（首版截断，后续上传 S3）。
 
-→ [KV 存储引擎架构 §11](../../.hermes/wiki/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb) — 双轨互斥的完整论证
+→ [KV 存储引擎架构 §11](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb) — 双轨互斥的完整论证
 
 

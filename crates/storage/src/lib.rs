@@ -69,13 +69,22 @@ pub mod fjall_store {
         _dir: Option<std::sync::Arc<tempfile::TempDir>>,
     }
 
-    /// Key layout: `state/{actor_type}/{key}/{field}`. `actor_type` is
-    /// already namespace-qualified by the caller (system realm passes the
-    /// bare type; user namespaces pass `u:{namespace}:{type}` — see
-    /// NamespacedStore). Slash-delimited: no ambiguity with the two-level
-    /// qualification.
-    fn ns_key(id: &InstanceId, field: &str) -> Vec<u8> {
-        format!("state/{}/{}/{}", id.actor_type, id.key, field).into_bytes()
+    /// Key layout: length-prefixed binary segments —
+    /// `[u32 BE len(type)][type][u32 BE len(key)][key][field]`. No textual
+    /// separators: okm's key discipline is positional width-delimited
+    /// segments (`[ns 2B][slot 1B][fields][pkey]`), so prefix scans match
+    /// structural boundaries, never character coincidences. `actor_type`
+    /// arrives namespace-qualified from the caller (system realm passes
+    /// the bare type; user namespaces pass a two-part qualification — see
+    /// NamespacedStore).
+    fn state_key(id: &InstanceId, field: &str) -> Vec<u8> {
+        let mut k = Vec::with_capacity(8 + id.actor_type.len() + id.key.len() + field.len());
+        k.extend_from_slice(&(id.actor_type.len() as u32).to_be_bytes());
+        k.extend_from_slice(id.actor_type.as_bytes());
+        k.extend_from_slice(&(id.key.len() as u32).to_be_bytes());
+        k.extend_from_slice(id.key.as_bytes());
+        k.extend_from_slice(field.as_bytes());
+        k
     }
 
     impl FjallStateStore {
@@ -83,6 +92,16 @@ pub mod fjall_store {
         pub fn open(path: &std::path::Path) -> fjall::Result<Self> {
             let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
             let keyspace = db.keyspace("aura_state", fjall::KeyspaceCreateOptions::default)?;
+            Ok(Self { db, keyspace, _dir: None })
+        }
+
+        /// Open a namespace-scoped keyspace: each user namespace gets its
+        /// own keyspace inside one engine — structural isolation at the
+        /// engine level, no key-encoding tricks.
+        pub fn open_namespaced(path: &std::path::Path, namespace: &str) -> fjall::Result<Self> {
+            let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
+            let ks_name = format!("state:{namespace}");
+            let keyspace = db.keyspace(&ks_name, fjall::KeyspaceCreateOptions::default)?;
             Ok(Self { db, keyspace, _dir: None })
         }
 
@@ -104,7 +123,7 @@ pub mod fjall_store {
         fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>> {
             Ok(self
                 .keyspace
-                .get(ns_key(id, field))
+                .get(state_key(id, field))
                 .map_err(|e| anyhow::anyhow!("fjall get: {e}"))?
                 .map(|bytes| {
                     serde_json::from_slice(&bytes)
@@ -117,26 +136,30 @@ pub mod fjall_store {
             let bytes = serde_json::to_vec(&value)
                 .map_err(|e| anyhow::anyhow!("state serialize: {e}"))?;
             self.keyspace
-                .insert(ns_key(id, field), bytes)
+                .insert(state_key(id, field), bytes)
                 .map_err(|e| anyhow::anyhow!("fjall insert: {e}"))
         }
 
         fn delete(&self, id: &InstanceId, field: &str) -> anyhow::Result<()> {
             self.keyspace
-                .remove(ns_key(id, field))
+                .remove(state_key(id, field))
                 .map_err(|e| anyhow::anyhow!("fjall remove: {e}"))
         }
 
         fn fields(&self, id: &InstanceId) -> anyhow::Result<Vec<String>> {
-            let prefix = format!("state:{}:{}:", id.actor_type, id.key);
+            let mut prefix = Vec::with_capacity(8 + id.actor_type.len() + id.key.len());
+            prefix.extend_from_slice(&(id.actor_type.len() as u32).to_be_bytes());
+            prefix.extend_from_slice(id.actor_type.as_bytes());
+            prefix.extend_from_slice(&(id.key.len() as u32).to_be_bytes());
+            prefix.extend_from_slice(id.key.as_bytes());
             let mut out = Vec::new();
-            for guard in self.keyspace.prefix(prefix.as_bytes()) {
+            for guard in self.keyspace.prefix(&prefix) {
                 let k = match guard.key() {
                     Ok(k) => k,
                     Err(e) => return Err(anyhow::anyhow!("fjall scan: {e}")),
                 };
-                let full = String::from_utf8_lossy(&k).to_string();
-                out.push(full.trim_start_matches(&prefix).to_string());
+                // Field name = the tail segment after the instance prefix.
+                out.push(String::from_utf8_lossy(&k[prefix.len()..]).to_string());
             }
             Ok(out)
         }

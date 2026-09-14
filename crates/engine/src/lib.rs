@@ -43,10 +43,35 @@ impl Engine {
         };
         let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store.clone())));
         Realm::spawn_evictor(&realm);
-        Ok(Self {
-            realm,
-            namespaces: Arc::new(aura_realm::namespace::Namespaces::new(store)),
-        })
+        // Namespace store factory per engine kind (Phase 4): fjall opens a
+        // namespace-scoped keyspace under the engine's data dir; memory
+        // hands out a fresh map (isolation by construction).
+        let engine_kind = config.engine.clone();
+        let data_dir = config.data_dir.clone();
+        let node_id = config.node_id.clone();
+        let namespaces = Arc::new(aura_realm::namespace::Namespaces::new(move |ns| {
+            match &engine_kind {
+                aura_config::Engine::Memory => Ok(Arc::new(aura_storage::InMemoryStore::default())),
+                aura_config::Engine::Fjall => {
+                    #[cfg(feature = "fjall")]
+                    {
+                        let path = data_dir.clone().unwrap_or_else(|| {
+                            std::env::temp_dir().join(format!("aura-{node_id}"))
+                        });
+                        Ok(Arc::new(
+                            aura_storage::fjall_store::FjallStateStore::open_namespaced(&path, ns)
+                                .map_err(|e| anyhow::anyhow!("fjall open {path:?}/{ns}: {e}"))?,
+                        ))
+                    }
+                    #[cfg(not(feature = "fjall"))]
+                    {
+                        let _ = (ns, data_dir, node_id);
+                        anyhow::bail!("engine=fjall requires building with the `fjall` feature")
+                    }
+                }
+            }
+        }));
+        Ok(Self { realm, namespaces })
     }
 
     /// Override the idle TTL (default 30s).

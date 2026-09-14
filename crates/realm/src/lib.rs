@@ -3,6 +3,8 @@
 //! drop, on_wake on reactivation). Event namespace and emit/on arrive in
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
+pub mod event;
+
 use aura_actor::{ActorType, Instance, InstanceId, Job, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,6 +26,10 @@ pub struct Realm {
     /// Idle TTL: an instance with no job for this long is evicted
     /// (scale-to-zero). State survives via the store; hooks run around it.
     pub idle_ttl: Duration,
+    /// Event namespace: routing table + emits whitelist (Phase 3).
+    pub router: event::EventRouter,
+    /// Unmatched events (bounded ring, diagnostic output).
+    pub dead_events: event::DeadEvents,
 }
 
 impl Realm {
@@ -34,6 +40,8 @@ impl Realm {
             mailbox_capacity: 64,
             store,
             idle_ttl: Duration::from_secs(30),
+            router: event::EventRouter::default(),
+            dead_events: event::DeadEvents::default(),
         }
     }
 
@@ -196,6 +204,58 @@ impl Realm {
             evicted.push(inst.id);
         }
         evicted
+    }
+
+    /// Emit an event into the realm (Phase 3): whitelist check → route
+    /// match → per-route delivery. Fire-and-forget: returns Ok(()) once
+    /// every matched route's job is queued; handler results are discarded
+    /// (an actor that must return values is invoked, not emitted to).
+    ///
+    /// - emitter = None: system/external emission (bypasses whitelist —
+    ///   the whitelist constrains actors, not the host surface).
+    /// - Whitelist violation = error value (audit point, wiki §5.4).
+    /// - No matching route = dead event (stored in the ring, not an error:
+    ///   emitting ahead of a subscriber coming up is legitimate).
+    pub async fn emit(
+        self_arc: &SharedRealm,
+        emitter: Option<&str>,
+        event: &str,
+        data: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let routes = {
+            let mut realm = self_arc.lock().await;
+            if let Some(emitter_type) = emitter {
+                if !realm.router.may_emit(emitter_type, event) {
+                    anyhow::bail!(
+                        "emit rejected: actor type `{}` has not declared event `{}` in emits",
+                        emitter_type,
+                        event
+                    );
+                }
+            }
+            let matched = realm.router.matches(event);
+            if matched.is_empty() {
+                realm.dead_events.push(event, data);
+                return Ok(());
+            }
+            matched
+        };
+        for route in routes {
+            // Partition key from event data (wiki §5.4: the key comes from
+            // the event, not the emitter). Empty field = singleton instance.
+            let key = if route.partition_key_field.is_empty() {
+                "__singleton__".to_string()
+            } else {
+                data.get(&route.partition_key_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("__default__")
+                    .to_string()
+            };
+            let target = InstanceId { actor_type: route.actor_type.clone(), key };
+            // Fire-and-forget: spawn, drop the reply receiver.
+            let _ = Realm::submit(self_arc, target, data.clone()).await?;
+        }
+        Ok(())
     }
 
     /// Periodic eviction tick, spawned once per engine.

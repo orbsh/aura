@@ -11,18 +11,38 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Start the engine: realm over the in-memory store (Fjall arrives with
-    /// the Phase 4 engine matrix) + the idle evictor task.
-    pub fn start(_config: &aura_config::EngineConfig) -> Self {
-        let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(
-            Arc::new(aura_storage::InMemoryStore::default()),
-        )));
-        Realm::spawn_evictor(realm.clone());
-        Self { realm }
+    /// Start the engine: resolve the state store from config, spawn the
+    /// idle evictor. Boot errors on engine/feature mismatches (PLAN Phase 4
+    /// matrix: an engine chosen without its feature compiled in fails at
+    /// boot, never silently falls back).
+    pub fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
+        let store: aura_actor::SharedStore = match config.engine {
+            aura_config::Engine::Memory => Arc::new(aura_storage::InMemoryStore::default()),
+            aura_config::Engine::Fjall => {
+                #[cfg(feature = "fjall")]
+                {
+                    let path = config.data_dir.clone().unwrap_or_else(|| {
+                        std::env::temp_dir().join(format!("aura-{}", config.node_id))
+                    });
+                    Arc::new(aura_storage::fjall_store::FjallStateStore::open(&path)
+                        .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?)
+                }
+                #[cfg(not(feature = "fjall"))]
+                {
+                    let _ = config;
+                    anyhow::bail!(
+                        "engine=fjall requires building with the `fjall` feature"
+                    );
+                }
+            }
+        };
+        let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store)));
+        Realm::spawn_evictor(&realm);
+        Ok(Self { realm })
     }
 
     /// Override the idle TTL (default 30s).
-    pub fn with_idle_ttl(mut self, ttl: Duration) -> Self {
+    pub fn with_idle_ttl(self, ttl: Duration) -> Self {
         if let Ok(mut r) = self.realm.try_lock() {
             r.idle_ttl = ttl;
         }

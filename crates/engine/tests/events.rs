@@ -25,7 +25,7 @@ fn counter_of(name: &'static str) -> ActorType {
 
 #[tokio::test]
 async fn exact_route_partition_key_from_event_data() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(counter_of("cart")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
@@ -56,7 +56,7 @@ async fn exact_route_partition_key_from_event_data() {
 
 #[tokio::test]
 async fn wildcard_route_goes_to_singleton() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(counter_of("audit")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
@@ -84,7 +84,7 @@ async fn wildcard_route_goes_to_singleton() {
 
 #[tokio::test]
 async fn emits_whitelist_rejects_undeclared() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(counter_of("cart")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
@@ -106,7 +106,7 @@ async fn emits_whitelist_rejects_undeclared() {
 
 #[tokio::test]
 async fn unmatched_events_land_in_dead_ring() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     Realm::emit(&engine.realm, None, "nobody_listens", serde_json::json!({"x": 1}))
         .await.unwrap();
     let realm = engine.realm.try_lock().unwrap();
@@ -116,7 +116,7 @@ async fn unmatched_events_land_in_dead_ring() {
 
 #[tokio::test]
 async fn exact_and_wildcard_both_match_deliver_independently() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(counter_of("cart")).await;
     engine.register(counter_of("stats")).await;
     {
@@ -147,7 +147,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
 // Regression: direct invoke still works alongside the event namespace.
 #[tokio::test]
 async fn invoke_path_unaffected() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(
         ActorType::simple(
             "echo",

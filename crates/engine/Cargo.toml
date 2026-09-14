@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tempfile = "3"
 
 [features]
 default = []
@@ -20,3 +21,4 @@ steel = ["aura-realm/steel"]
 python = ["aura-realm/python"]
 wasmtime = ["aura-realm/wasmtime"]
 nushell = ["aura-realm/nushell"]
+fjall = ["aura-storage/fjall"]

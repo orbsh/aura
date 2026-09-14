@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = aura_config::EngineConfig::default();
-    let engine = aura_engine::Engine::start(&config);
+    let engine = aura_engine::Engine::start(&config).expect("engine boot");
 
     // Echo Actor: define → invoke → return. The Phase 0 acceptance path.
     engine

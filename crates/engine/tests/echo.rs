@@ -22,7 +22,7 @@ fn echo_type() -> ActorType {
 
 #[tokio::test]
 async fn invoke_returns_handler_result() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(echo_type()).await;
 
     let out = engine
@@ -37,7 +37,7 @@ async fn invoke_returns_handler_result() {
 
 #[tokio::test]
 async fn ctx_invoke_routes_through_realm() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(echo_type()).await;
 
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
@@ -70,7 +70,7 @@ async fn ctx_invoke_routes_through_realm() {
 
 #[tokio::test]
 async fn unknown_actor_type_is_error_value() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     let err = engine
         .invoke(
             InstanceId { actor_type: "ghost".into(), key: "x".into() },
@@ -83,7 +83,7 @@ async fn unknown_actor_type_is_error_value() {
 
 #[tokio::test]
 async fn partition_key_activates_distinct_instances() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(echo_type()).await;
 
     for key in ["a1", "a2"] {
@@ -104,7 +104,7 @@ async fn partition_key_activates_distinct_instances() {
 // data is not. on_sleep/on_wake run around the boundary.
 #[tokio::test]
 async fn state_survives_scale_to_zero() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(
         ActorType::simple(
             "counter",
@@ -145,7 +145,7 @@ async fn state_survives_scale_to_zero() {
 #[cfg(feature = "nushell")]
 #[tokio::test]
 async fn nushell_script_actor() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine
         .register(aura_actor::ActorType::script(
             "nu-op",
@@ -172,7 +172,7 @@ export def execute [args] {
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn python_script_actor() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine
         .register(aura_actor::ActorType::script(
             "py-op",
@@ -199,7 +199,7 @@ async fn python_script_actor() {
 #[cfg(feature = "nushell")]
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine
         .register(aura_actor::ActorType::script(
             "koto-op",
@@ -225,7 +225,7 @@ async fn idle_ttl_evicts_automatically() {
     // The evictor ticks every 5s; use a 0s TTL and drive one tick manually
     // via the realm to keep the test fast — the tick loop itself is
     // exercised by the running engine.
-    let engine = Engine::start(&Default::default());
+    let engine = Engine::start(&Default::default()).expect("engine boot");
     engine.register(echo_type()).await;
 
     let target = InstanceId { actor_type: "echo".into(), key: "ttl".into() };

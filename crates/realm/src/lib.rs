@@ -75,7 +75,7 @@ impl Realm {
     async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
         let key = (id.actor_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
-            let mut inst = Instance::new(id.clone(), self.mailbox_capacity);
+            let inst = Instance::new(id.clone(), self.mailbox_capacity);
             // on_wake: fresh residency. Runs on first activation too —
             // symmetric with on_sleep; a first-time wake is still a wake.
             if let Some(actor) = self.types.get(&id.actor_type) {
@@ -258,12 +258,16 @@ impl Realm {
         Ok(())
     }
 
-    /// Periodic eviction tick, spawned once per engine.
-    pub fn spawn_evictor(realm: SharedRealm) {
+    /// Periodic eviction tick, spawned once per engine. Holds a Weak
+    /// handle: the evictor never keeps the realm (and its storage engine)
+    /// alive — engine shutdown drops the realm even with the task running.
+    pub fn spawn_evictor(realm: &SharedRealm) {
+        let realm = Arc::downgrade(realm);
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(5));
             loop {
                 tick.tick().await;
+                let Some(realm) = realm.upgrade() else { break };
                 let mut locked = realm.lock().await;
                 locked.evict_idle(realm.clone()).await;
             }

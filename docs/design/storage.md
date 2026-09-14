@@ -1,0 +1,322 @@
+# 存储架构（设计细节）
+
+> 自 `~/.hermes/wiki/aura-architecture.md` §3 迁入的实现细节；wiki 保留综述。
+> 综述：wiki [Aura 架构 §3](../../../../.hermes/wiki/aura-architecture.md)。
+
+## 3. 存储架构
+
+### 3.1 存储引擎抽象：Trait 分离
+
+Aura 的存储层通过两个 trait 实现引擎可插拔——存储引擎（KV 读写）和分发层（多节点协调）正交组合。
+
+#### AuraStorage：统一二进制存储接口
+
+```rust
+use async_trait::async_trait;
+
+#[derive(Debug)]
+pub enum StorageOp {
+    Put(Vec<u8>, Vec<u8>),
+    Delete(Vec<u8>),
+}
+
+/// 统一二进制存储抽象，抹平 Fjall（同步）与 SlateDB（异步）的差异
+#[async_trait]
+pub trait AuraStorage: Send + Sync {
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError>;
+    async fn write_batch(&self, ops: Vec<StorageOp>) -> Result<(), StorageError>;
+    async fn prefix_scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StorageError>;
+}
+```
+
+#### 双轨实现
+
+| 实现 | 引擎 | 包装方式 | 适用场景 |
+|:--|:--|:--|:--|
+| `FjallEngine` | Fjall → 本地 NVMe | `tokio::task::spawn_blocking` 包裹同步 I/O | 私有部署，亚毫秒延迟 |
+| `SlateEngine` | SlateDB → S3 | 天生 `async/await`，直接对接 Tokio | 云原生，无状态计算 |
+
+```rust
+// FjallEngine：同步阻塞 → spawn_blocking 异步包装
+pub struct FjallEngine { keyspace: fjall::Keyspace }
+
+#[async_trait]
+impl AuraStorage for FjallEngine {
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        let ks = self.keyspace.clone();
+        let key = key.to_vec();
+        tokio::task::spawn_blocking(move || {
+            ks.get(&key).map_err(|e| StorageError::Fjall(e.to_string()))
+        }).await.map_err(|e| StorageError::TaskJoin(e.to_string()))?
+    }
+    // write_batch / prefix_scan 类似，均用 spawn_blocking 包裹
+}
+
+// SlateDB：原生异步，直接对接
+pub struct SlateEngine { db: Arc<slatedb::Db> }
+
+#[async_trait]
+impl AuraStorage for SlateEngine {
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        self.db.get(key).await.map_err(|e| StorageError::Slate(e.to_string()))
+    }
+    // write_batch / prefix_scan 直接调用 SlateDB async API
+}
+```
+
+#### AuraCollection：OKM 与存储引擎的绑定容器
+
+OKM 的 `TypedCollection` 通过 `Arc<dyn AuraStorage>` 绑定到具体引擎。上层业务代码通过 `#[derive(KvEncode)]` 声明实体，宏在编译期生成 Key 编码，AuraCollection 负责与底层引擎的读写交互：
+
+```rust
+pub struct AuraCollection<T> {
+    pub storage: Arc<dyn AuraStorage>,  // FjallEngine 或 SlateEngine，运行时切换
+    _marker: PhantomData<T>,
+}
+
+impl<T> AuraCollection<T> where T: Serialize + DeserializeOwned + EntityKeyGenerator {
+    pub async fn save(&self, entity: &T) -> Result<(), StorageError> {
+        let key = entity.generate_compiled_key();
+        let value = bincode::serialize(entity).unwrap();
+        self.storage.write_batch(vec![StorageOp::Put(key, value)]).await
+    }
+
+    pub async fn find(&self, key_spec: &T) -> Result<Option<T>, StorageError> {
+        let key = key_spec.generate_compiled_key();
+        match self.storage.get(&key).await? {
+            Some(bytes) => Ok(Some(bincode::deserialize(&bytes).unwrap())),
+            None => Ok(None),
+        }
+    }
+}
+```
+
+→ OKM 的完整 proc macro 实现见 [OKM 项目](https://github.com/orbsh/okm)。
+
+#### 分发层 trait
+
+```rust
+trait Distribution: Send + Sync {
+    async fn propose(&self, cmd: Command) -> Result<()>;
+}
+```
+
+**两种模式的组合**：
+
+| 模式 | 存储引擎 | 分发层 | 真理源 | 适用场景 |
+|:--|:--|:--|:--|:--|
+| **Fjall（本地）** | Fjall → 本地 NVMe | 落湖备份 + Raft 元数据协调 | 本地 Fjall（落湖兜底） | 私有部署，亚毫秒延迟 |
+| **SlateDB + S3** | SlateDB → S3 | 无操作（S3 自身 HA） | S3 桶 | 云原生，无状态计算，无限容量 |
+
+**数据引擎二选一；Raft 元数据协调正交**（`--raft-nodes` 只同步元数据，不是与 S3 并列的数据分发层）：
+
+```toml
+[storage]
+engine = "fjall"    # 或 "slate"（数据引擎二选一）
+
+[cluster]
+raft-nodes = "node1:9004,node2:9004"  # Openraft 只同步元数据（Actor 注册/路由/配置）
+
+# engine=fjall → 本地 Fjall + 落湖备份
+# engine=slate → SlateDB + S3（无限容量）
+```
+
+> 注意：Openraft（元数据协调）与 S3（数据路径）是**正交的两个轴**，不是二选一的互斥项——多机组网始终需要前者的元数据共识。
+
+**Actor 完全不感知底层引擎**——`ctx.state.get("history")` 的调用方式不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
+
+→ 两条架构路径的完整对比见 [KV 存储引擎架构 §11](../../.hermes/wiki/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb)。三引擎（Fjall/SlateDB/SurrealKV）的 API 差异和选型指南见 [KV 存储引擎架构 §三引擎 API 对比](../../.hermes/wiki/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
+
+### 3.2 为什么不用 SQL/Redis
+
+Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查询优化器是多余开销。嵌入式 KV 相比 SQL 的三个系统性优势：C 语言依赖与交叉编译地狱、双重缓存与内存浪费、写锁线程阻塞。详见 [KV 存储引擎 §9.6 SQLite vs 嵌入式 KV](../../.hermes/wiki/kv-storage-engine.md#106-sqlite-vs-嵌入式-kv开源项目的隐形代价)。
+
+**分层选择**：
+
+| 数据类型 | 默认方案 | 备选 | 理由 |
+|:---|:---|:---|:---|
+| Actor 状态（用户数据） | SlateDB + S3 | Fjall（单机/离线） | S3 自动复制，无需手动同步 |
+| Actor 状态（延迟敏感 + 需强一致复制） | TiDB 模式（每个 Actor = Region） | — | **数据级 Raft 复制**，属 TiDB/TiKV 范畴（非 Openraft 元数据） |
+| 配置/元数据 | Raft（Openraft / etcd） | — | 小数据 + 强一致，Raft 的正确用途 |
+| 脚本/图片（静态资产） | 文件系统同步（git / S3） | — | 静态资产不是数据，不需要共识 |
+
+**Actor 状态的 TiDB 模式**：每个 Actor 天然是一个 shard 边界。Actor:user:alice 独立一个 Raft Group（3 副本），Actor:user:bob 独立另一个。写放大始终 3x，不随 Actor 数量增长。这和 TiDB 的 Region 模型一致——Actor 是天然的分片边界。**但属数据级 Raft 复制**——区别于 Openraft 只同步元数据：此分支需要 actor 数据跨节点复制，是「分片 + Raft」强一致路径，应直接落现成的 TiKV / TiDB 分片机制（或 FoundationDB 得全局事务），非此架构的默认路径（默认 SlateDB+S3 / Fjall+落湖，元数据走 Openraft）。
+
+**大部分场景用 SlateDB + S3**：除非真的需要 <1ms 写延迟 + 强一致，否则 SlateDB + S3 更简单。S3 处理复制，成本低 20 倍，运维无 Raft/PD/Region 调度。
+
+通过将 Fjall + Openraft + 多模态嵌入式运行时揉进同一个单体二进制文件中，消除了现代架构中常见的冗余和嵌套。如果把这套架构里的 Fjall + Openraft 剔除换成 Redis，整个系统将发生严重的**底层架构退化（Structural Regression）**：
+
+| 核心维度 | Fjall + Openraft + 多模态嵌入沙箱（原架构） | 替换为 Redis 的退化形态 |
+|---------|---------------------------------------------|---------------------------|
+| **集群内聚度** | 纯 Rust 单体。Openraft 元数据日志实现 Actor 注册/路由的自愈与强一致（数据落 Fjall+湖 或 SlateDB+S3）。 | 割裂的应用服务器矩阵 + 外部独立的 Redis 实例 + 复杂的 Redis Sentinel/Cluster 运维线。 |
+| **计算局部性** | 计算紧贴存储（Compute Near Data）。多语言虚拟机内存指针直接映射磁盘 Buffer。零网络 RTT，走 CPU 总线速度。 | 计算远离存储。网关每次收请求必须打开 TCP 连接，数据打包成文本型 RESP 协议跨进程传输，重新背负 1.0ms–3.0ms 的网络往返延迟（RTT）。 |
+| **零拷贝** | Rust 生命周期系统（`serde(borrow)`）让多语言虚拟机直接用指针读取磁盘 Buffer，无新内存申请。 | 数据必须在 Redis 侧打包、经 Socket 传输、在 Rust 客户端解包，在堆内存申请新空间大块拷贝。高频内存分配与 GC 开销。 |
+| **多线程并行** | Openraft 元数据共识日志基于 Tokio 异步协程多核高并发，Fjall 多线程 LSM 异步刷盘，Steel/PyO3 各走独立 OS 线程，全网无中心化吞吐卡死。 | Redis 单线程事件循环，一旦运行复杂 Lua 脚本或重度 CPU 计算，全球所有其他读写请求瞬间死锁卡死。 |
+| **Scale-to-Zero** | Fjall LSM-Tree 将不活跃冷状态高度压缩为磁盘 SSTables。Agent 睡着时 RAM 消耗 0 字节。百万级 Agent 也无内存压力。 | Redis 纯内存数据库，所有数据全量躺在物理内存里。智能体扩大到 1 万或 100 万个时，硬件账单指数级爆炸。 |
+| **Token 优化** | 后台静默触发"环境梦境整理（Ambient Consolidation）"，自动将长时文本 Sink 进 S3。 | 必须在应用端写复杂的定时任务（Cron Jobs），高频跨网络去捞内存数据再执行归档。 |
+| **系统复杂度** | 极致极简。1 个可执行文件，0 个外部数据库配置文件，解压即组网。 | 高运维负荷。需要维护多套发布流水线、外部连接池监控以及缓存击穿/雪崩的防御代码。 |
+
+**一句话总结**：把 Fjall + Openraft 换成 Redis，是用系统长期的"运行期高延迟、带宽开销、内存账单膨胀以及单线程死锁风险"，去仅仅换取"在第一周开发时少写几行 Openraft 节点连接代码"的短暂偷懒。没有 Redis 集群的心跳同步紊乱，没有 PostgreSQL 昂贵的连接池耗尽与 SQL 树解析开销，没有 JavaScript（Rivet）运行时的冗余与弱类型妥协。在 Rust 语言的底层安全原语之上，构建了一套跨节点元数据强一致、数据存算分离（Fjall+湖 / SlateDB+S3）的分布式智能体系统。
+
+**Lua 脚本的工程断层**：Redis 为挽救吞吐量引入的 Lua 脚本，除了单线程死锁风险外，还导致主技术栈（Rust/Go）与脚本层发生工程学与调试断层——失去强类型保护、单元测试和 IDE 感知提示。
+
+### 3.3 双 API 设计：ctx.state + ctx.metadata
+
+**Actor 读写 API 分离**：Actor 数据写入需要两套 API——KV 用于本地状态，Raft 用于全局元数据。
+
+```rust
+// Actor 自身状态（KV，本地 Fjall 或 SlateDB+S3）
+ctx.state.get("history")           // 读取对话历史
+ctx.state.set("history", value)    // 写入对话历史
+
+// 全局元数据（Raft，强一致同步到所有节点）
+ctx.metadata.get("actor_registry")     // 查询 Actor 注册表
+ctx.metadata.set("user_status", data)  // 更新用户登录状态
+ctx.metadata.set("gateway_rules", cfg) // 更新网关配置
+ctx.metadata.get("node_health")        // 查询节点健康状态
+ctx.metadata.get("actor_shards")       // 查询 Actor 分片映射
+ctx.metadata.get("global_counter")     // 获取全局唯一 ID
+```
+
+| API | 数据类型 | 默认存储 | 备选 | 复制 |
+|:---|:---|:---|:---|:---|
+| `ctx.state` | Actor 状态（对话/偏好/缓存） | SlateDB + S3 | Fjall（单机/离线） | S3 自动处理 |
+| `ctx.metadata` | Actor 注册表 | Fjall + Raft | — | Raft 强一致 |
+| `ctx.metadata` | 用户登录状态 | Fjall + Raft | — | Raft 强一致 |
+| `ctx.metadata` | 网关配置 | Fjall + Raft | — | Raft 强一致 |
+| `ctx.metadata` | 节点健康状态 | Fjall + Raft | — | Raft 强一致 |
+| `ctx.metadata` | Actor 分片映射（哪个 Actor 在哪个节点） | Fjall + Raft | — | Raft 强一致 |
+| `ctx.metadata` | 全局计数器（唯一 ID 生成） | Fjall + Raft | — | Raft 强一致 |
+
+### 3.4 分布式架构拓扑
+
+```
+[ 客户端网络请求 ]
+│ (打向集群中任意节点)
+▼
+┌─────────────────────────────────────────┐
+│  ctx.state (Actor 状态)  ──► Fjall 本地写入 │  ← 不走 Raft
+│  ctx.metadata (全局元数据) ──► Openraft 共识  │  ← Raft 强一致
+└─────────────────────────────────────────┘
+            │ 元数据写入
+            ▼
+┌───────────────────────┐
+│ OpenRaft 元数据共识     │ ◄───► [ 心跳/日志同步 (仅元数据) ]
+└───────────┬───────────┘
+            │ 应用已共识的元数据
+            ▼
+┌───────────────────────┐
+│ Fjall LSM-Tree 存储    │ (Actor 状态 + 元数据，本地 NVMe)
+└───────────────────────┘
+```
+
+### 3.5 Fjall vs SlateDB
+
+- **Fjall 的定位**：纯 Rust LSM-Tree 存储引擎，进程内嵌入，零网络开销。Actor 状态（`ctx.state`）写入本地 Fjall，不走 Raft。
+
+- **Openraft 的定位**：元数据共识协议。仅同步全局元数据（`ctx.metadata`）——Actor 注册表、用户登录状态、网关配置等小数据。不是数据存储协议，不复制 Actor 状态。
+
+- **Actor 状态复制的正确方案**：
+  - 默认：SlateDB + S3（S3 处理复制，成本低 20 倍）
+  - 延迟敏感：TiDB 模式（每个 Actor = 一个 Raft Group，写放大固定 3x）
+
+- **双 API 分离**：`ctx.state`（KV，高性能）处理 Actor 状态，`ctx.metadata`（Raft，强一致）处理全局元数据。两者职责清晰，互不干扰。
+
+→ 详见 [Redis 批判：RESP 协议 vs 二进制序列化](../../.hermes/wiki/redis-critique.md#8-resp-协议-vs-二进制序列化嵌入式架构的物理优势)。Fjall 的 API 设计和与其他引擎的对比见 [KV 存储引擎架构 §三引擎 API 对比](../../.hermes/wiki/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
+
+### 3.6 SlateDB + S3 模式（默认推荐）
+
+```
+[Client] → [无状态 gRPC Pod] → [SlateDB] → [S3 桶]
+                ↑
+          任意 Pod 可服务（S3 是真理源）
+```
+
+**为什么是默认推荐**：写入性能与 Fjall 相同（都是 MemTable 攒批），但 S3 处理复制（成本低 20 倍），计算节点无状态，运维最简单。Fjall 仅在不能用 S3 时（私有化、离线）考虑，且在大 Value 场景（KV 分离）、复杂本地事务、极致本地性能方面有结构性优势。Fjall 官方无 S3 支持计划。
+
+**Actor 状态读写**：§2.3 的 `ctx.state` 接口不变。SlateDB 的 Block Cache 命中时延迟仍在 μs 级（热数据），未命中时退化为 ms（S3 Range Get）。Agent 场景的热数据（最近对话）天然驻留 Block Cache，冷数据（历史记录）的 ms 级延迟可接受。
+
+**Durability**：SlateDB 的 WAL 在本地磁盘，节点磁盘丢失时需等 S3 flush 完成才能恢复——flush 前的窗口期存在数据丢失风险。对于 Agent 场景（对话数据可重建），这个风险通常可接受。
+
+**Openraft 状态机集成**：当需要 Actor 状态强一致复制时（TiDB 模式），Openraft 状态机挂载 Fjall 的实现见 [共识协议文档](../../.hermes/wiki/consensus-protocol.md)。
+
+### 3.7 配置与工作量评估
+
+**配置示例**：
+
+```toml
+[storage]
+engine = "fjall"    # "fjall" 或 "slate"
+distribution = "raft" # "raft" 或 "s3"
+# 互斥：fjall+raft ✓，slate+s3 ✓，其他组合启动报错
+```
+
+**实现工作量**：
+
+| 任务 | 工作量 | 说明 |
+|:--|:--|:--|
+| `AuraStorage` trait 定义 | 1 天 | 抽象接口 |
+| FjallEngine 实现 | 0.5 天 | 包装现有 Fjall 调用 |
+| SlateEngine 实现 | 1-2 天 | SlateDB API 适配 + async 包装 |
+| `Distribution` trait 定义 | 0.5 天 | 抽象接口 |
+| RaftDist 实现 | 0（已有） | 现有 Openraft 代码直接套 |
+| S3Dist 实现 | 0.5 天 | 无操作桩（S3 自己管 HA） |
+| 配置加载 + 互斥校验 | 0.5 天 | TOML 解析 + 校验 |
+| Actor 层适配 | 0 | ctx.state 接口不变 |
+| 测试（两种模式） | 2-3 天 | Fjall+Raft 现有测试 + SlateDB+S3 新测试 |
+| **总计** | **6-8 天** | |
+
+### 3.8 用户意志主导的多模态路由机制（User-Driven Polyglot Routing）
+
+在传统的 FaaS（如 Windmill）或重型智能体框架中，通常是由"系统架构或框架"死板地规定："这个步骤必须用 Python 跑，那个步骤必须用 JS 跑"。这本质上是对 AI 自由度和人类开发意志的束缚。
+
+在本架构（Fjall + Openraft + Polyglot Core）中，我们彻底打破这种死板的框架绑架。**用什么语言来执行决策、重构代码或处理数据，完全由"用户下达的指令"或"AI 智能体自发生成的策略"动态决定。** Rust 的主 Actor 控制台只负责提供一个没有任何偏见的、纯粹的多语言执行沙箱（Polyglot Engine Room）。
+
+#### 用户驱动的状态指令协议
+
+```rust
+// src/store.rs - 用户驱动的多语言执行提案
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum EngineType {
+    Steel,  // 嵌入式脚本：Lisp 策略引擎
+    PyO3,   // 嵌入式脚本：Python AI/数据引擎
+    Wasm,   // 沙箱运行时：第三方不信任代码（通常用 Rust 编写 .wasm）
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum RaftCommand {
+    UpdateActorState {
+        agent_id: String,
+        serialized_context: Vec<u8>,
+    },
+    TerminateActor {
+        agent_id: String,
+    },
+    // 用户或 AI 动态发起的任意语言执行提案
+    DispatchUserScript {
+        agent_id: String,
+        engine: EngineType,      // 用户决定的语言类型
+        script: String,          // 用户提交的动态脚本
+        target_function: String, // 要调用的目标函数
+        input_payload: Vec<u8>,  // CBOR 编码的动态输入数据
+    },
+}
+```
+
+当用户提交 `DispatchUserScript` 时，本地状态机根据用户选择，将物理内存指针映射到对应的语言虚拟机。运行期交接棒流程为：从 Fjall LSM-Tree 中读出 CBOR 编码的 Actor 状态（零网络延迟）→ 解码为 `ciborium::Value` → 根据用户选择的 EngineType 拉起对应的嵌入式虚拟机（Steel/PyO3/Wasm），Host 从 CBOR Value 中取出字段注入虚拟机执行 → 更新结果状态 → 写回本地 Fjall。Actor 状态不走 Raft，全局元数据变更（如有）通过 `ctx.metadata` 提交给 Openraft。具体的多语言执行逻辑已在 [§2.2](#22-多语言网关纯-rust-混合-actor-实现) 的 `exec_steel_lisp` 和 `exec_embedded_python` 中完整实现，此处不再重复。
+
+#### 用户驱动模式的工程爽点
+
+1. **用户拥有"语法免冲突权"**：
+   如果你要写一段需要跟大模型频繁交互、且在 Neovim 里进行深度协作的核心控制策略，你可以立刻下达指令："这一步我用 Steel Lisp 跑"。这能保证你的大脑完全沉浸在括号的几何边界里，彻底免受 Koto 那种隐式空格语义地雷的折磨。
+
+2. **AI 智能体拥有"生态自选权"**：
+   当你托管在云端的 Hermes 大脑发现："接下来的任务需要去读取一个复杂的深度学习 .bin 权重文件，或者分析一段遗留的 PyTorch 矩阵"时，AI 会自己在分布式提案里写明：`engine: EngineType::PyO3`。它通过纯粹的内存指针，直接在当前 Rust 进程里无缝吃掉 Python 的 AI 生态。
+
+3. **多语言在 Fjall 磁盘里的统一**：
+   不管用户刚才任性地选了 Lisp 还是 Python，它们对智能体状态的修改（Mutation），最终都会被反序列化回最基础的二进制内存块（`Vec<u8>`），写回本地 Fjall。全局元数据变更（如有）通过 `ctx.metadata` 提交给 Openraft 达成共识后，同步到所有节点。
+
+**框架不再是法官，框架只提供执行能力；用户和 AI 的动态意志决定哪种语言在这一毫秒登上多模态内存舞台。**
+
+
+## 4. 序列化协议分析对比

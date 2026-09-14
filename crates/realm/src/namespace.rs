@@ -56,7 +56,10 @@ pub struct NamespacedStore {
 impl NamespacedStore {
     fn qualify(&self, id: &InstanceId) -> InstanceId {
         InstanceId {
-            actor_type: format!("ns:{}:{}", self.namespace, id.actor_type),
+            // `u/{namespace}` — the USER namespace qualification (this is
+            // the second, meaningful "ns"; the first `state/` segment is
+            // the storage-layer prefix in FjallStateStore).
+            actor_type: format!("u/{}:{}", self.namespace, id.actor_type),
             key: id.key.clone(),
         }
     }

@@ -69,8 +69,13 @@ pub mod fjall_store {
         _dir: Option<std::sync::Arc<tempfile::TempDir>>,
     }
 
+    /// Key layout: `state/{actor_type}/{key}/{field}`. `actor_type` is
+    /// already namespace-qualified by the caller (system realm passes the
+    /// bare type; user namespaces pass `u:{namespace}:{type}` — see
+    /// NamespacedStore). Slash-delimited: no ambiguity with the two-level
+    /// qualification.
     fn ns_key(id: &InstanceId, field: &str) -> Vec<u8> {
-        format!("state:{}:{}:{}", id.actor_type, id.key, field).into_bytes()
+        format!("state/{}/{}/{}", id.actor_type, id.key, field).into_bytes()
     }
 
     impl FjallStateStore {

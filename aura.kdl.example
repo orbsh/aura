@@ -1,0 +1,30 @@
+// Aura root configuration (KDL, knus-parsed). Copy to aura.kdl.
+// Secrets never live here — values name environment variables.
+
+node {
+    id "home-node"
+    namespace "default"
+}
+
+// data plane: actor state (normal data)
+data {
+    engine "fjall"
+    path "/var/lib/aura/data"
+
+    // slate alternative (S3-backed; slatedb requires an object store):
+    // engine "slate"
+    // path "/bench/slatedb"
+    // s3 {
+    //     endpoint "http://127.0.0.1:9000"
+    //     bucket "aura"
+    //     key-env "AURA_S3_KEY"
+    //     secret-env "AURA_S3_SECRET"
+    // }
+}
+
+// metadata plane: actor registry, shard map (separate okm instance —
+// independently selectable engine; single-node mode = fjall, own directory)
+meta {
+    engine "fjall"
+    path "/var/lib/aura/meta"
+}

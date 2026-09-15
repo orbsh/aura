@@ -120,7 +120,7 @@ pub extern "C" fn execute(args_ptr: i64) -> i64 {
 
 - Host imports 刻意最小化：无 fs、无 network——能力面（Phase 5）决定授予什么
 - **Rust 服务的唯一发布形态**——k10r/gravity 一类存储型 Rust 服务编译为 `.wasm` 上传运行（`set(lang="wasm", bytes)`），不是编译进 host：编译进 host 会让每个应用 fork 一份 aura（加服务就要重打包），平台退化成框架。OKM schema 代码原样编译进 wasm，存储走 `VirtualStorage` 帧上抛——host 侧 NestStorage 执行器（Phase 6.6）在 registry 分配的 app ns 前缀下承载物理存储（ADR-0007 存储承载分流）。静态 OKM derive，不需要 okm-dynamic
-- `ActorType::simple`（进程内 Rust 闭包）是 **builtin-only**——仅限框架自身机制（evictor 类）与测试，不是服务发布路径；加载 Rust 服务的通道是 wasm，不是 dylib/编译期
+- aura 引擎本身**不提供进程内 Rust Actor**——框架机制（evictor 类）就是 realm 内的普通逻辑，包装成 Actor 绕一圈没有意义；Rust 代码要成为 Actor 只有一条路：编译为 wasm 上传。`ActorType` 的 Rust 闭包形态仅存在于测试脚手架
 - `interface_schema` 声明路径与 python/steel 相同（导出同名函数返回 JSON），注册期生效
 
 ---

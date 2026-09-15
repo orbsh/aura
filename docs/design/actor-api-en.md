@@ -158,10 +158,11 @@ pub extern "C" fn execute(args_ptr: i64) -> i64 {
   up-call — the host's NestStorage executor (Phase 6.6) carries the
   physical store under a registry-allocated app ns prefix (ADR-0007,
   storage-carriage split). Static OKM derives; no okm-dynamic needed
-- `ActorType::simple` (in-process Rust closure) is **builtin-only** —
-  framework mechanics (evictor-class) and tests; not a service release
-  path. The channel for loading Rust services is wasm, not dylibs or
-  compile-time
+- The aura engine ships **no in-process Rust actor form** — framework
+  mechanics (the evictor class) are plain realm logic, not actors;
+  wrapping them as actors would be a pointless detour. Rust code becomes
+  an actor through exactly one channel: compile to wasm and upload. The
+  Rust-closure form of `ActorType` exists only in test scaffolding
 - The `interface_schema` declaration path matches python/steel (export a
   function of the same name returning JSON) and takes effect at
   registration

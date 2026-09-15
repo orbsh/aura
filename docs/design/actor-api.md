@@ -26,7 +26,7 @@
 | | python | steel | nushell | wasm |
 |---|---|---|---|---|
 | 进程内 | ✅ | ✅ | ❌ 子进程 | ✅ VM |
-| ctx host 函数 | ✅ | ✅ | ❌（显式报错） | Phase 后续 |
+| ctx host 函数 | ✅ | ✅ | ❌（显式报错） | 经帧上抛（Phase 6.6） |
 | 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | 重隔离三方代码 |
 
 **`interface_schema` 对 probe 透明**：probe 的 carrier 只负责"加载源码 → 调 entry → 序列化结果"，`interface_schema` 对它就是普通函数调用，没有任何特殊意义。 Aura 是赋予其意义的唯一一方——注册时调用它做元数据自省（事件契约、`lifecycle.idle_ttl`）。同一个脚本交给 probe 执行时，`interface_schema` 只是一个没人调用的死函数；交给 aura 注册时，它成为类型定义的元数据来源。
@@ -119,7 +119,8 @@ pub extern "C" fn execute(args_ptr: i64) -> i64 {
 ```
 
 - Host imports 刻意最小化：无 fs、无 network——能力面（Phase 5）决定授予什么
-- ctx host 函数在 wasm 上尚未接线；当前 wasm 适合纯计算型操作
+- **Rust 服务的唯一发布形态**——k10r/gravity 一类存储型 Rust 服务编译为 `.wasm` 上传运行（`set(lang="wasm", bytes)`），不是编译进 host：编译进 host 会让每个应用 fork 一份 aura（加服务就要重打包），平台退化成框架。OKM schema 代码原样编译进 wasm，存储走 `VirtualStorage` 帧上抛——host 侧 NestStorage 执行器（Phase 6.6）在 registry 分配的 app ns 前缀下承载物理存储（ADR-0007 存储承载分流）。静态 OKM derive，不需要 okm-dynamic
+- `ActorType::simple`（进程内 Rust 闭包）是 **builtin-only**——仅限框架自身机制（evictor 类）与测试，不是服务发布路径；加载 Rust 服务的通道是 wasm，不是 dylib/编译期
 - `interface_schema` 声明路径与 python/steel 相同（导出同名函数返回 JSON），注册期生效
 
 ---

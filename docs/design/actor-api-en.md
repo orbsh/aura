@@ -36,7 +36,7 @@ following — each takes one JSON argument and returns a JSON value:
 | | python | steel | nushell | wasm |
 |---|---|---|---|---|
 | In-process | ✅ | ✅ | ❌ subprocess | ✅ VM |
-| ctx host functions | ✅ | ✅ | ❌ (explicit error) | later phase |
+| ctx host functions | ✅ | ✅ | ❌ (explicit error) | via frame up-call (Phase 6.6) |
 | Best for | business logic | AI-generated ops | pipeline/CLI shape | heavily-isolated 3rd-party code |
 
 **`interface_schema` is transparent to probe**: a probe carrier only does
@@ -149,8 +149,19 @@ pub extern "C" fn execute(args_ptr: i64) -> i64 {
 
 - Host imports are deliberately minimal: no fs, no network — the
   capability surface (Phase 5) decides what is granted
-- ctx host functions are not yet wired on wasm; wasm currently suits pure
-  computation operations
+- **The only release form for Rust services** — storage-bearing services
+  of the k10r/gravity class compile to `.wasm` and upload at runtime
+  (`set(lang="wasm", bytes)`), not into the host binary: compiling them
+  in would fork the platform per app (every new service = repackage),
+  collapsing the platform into a framework. OKM schema code compiles into
+  the wasm unchanged, and storage goes through a `VirtualStorage` frame
+  up-call — the host's NestStorage executor (Phase 6.6) carries the
+  physical store under a registry-allocated app ns prefix (ADR-0007,
+  storage-carriage split). Static OKM derives; no okm-dynamic needed
+- `ActorType::simple` (in-process Rust closure) is **builtin-only** —
+  framework mechanics (evictor-class) and tests; not a service release
+  path. The channel for loading Rust services is wasm, not dylibs or
+  compile-time
 - The `interface_schema` declaration path matches python/steel (export a
   function of the same name returning JSON) and takes effect at
   registration

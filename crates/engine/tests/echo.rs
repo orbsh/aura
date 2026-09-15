@@ -240,6 +240,54 @@ async fn idle_ttl_evicts_automatically() {
     }
 }
 
+// Per-type TTL: a type's own residency policy overrides the realm-wide
+// default — the mechanism Phase 6.5's retention window rides on (a
+// turn-executor declares a long TTL; entity actors fall back to default).
+#[tokio::test]
+async fn per_type_idle_ttl_overrides_realm_default() {
+    let engine = Engine::start(&Default::default()).expect("engine boot");
+
+    // "dweller": 10-minute TTL (long-lived resident, the retention-window
+    // shape). "echo": no override — realm default applies.
+    let dweller = ActorType::simple(
+        "dweller",
+        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
+            Box::pin(async move { Ok(args) })
+        }),
+    )
+    .with_idle_ttl(Duration::from_secs(600));
+    engine.register(dweller).await;
+    engine.register(echo_type()).await;
+
+    engine
+        .invoke(
+            InstanceId { actor_type: "dweller".into(), key: "d1".into() },
+            serde_json::json!(null),
+        )
+        .await
+        .unwrap();
+    engine
+        .invoke(
+            InstanceId { actor_type: "echo".into(), key: "e1".into() },
+            serde_json::json!(null),
+        )
+        .await
+        .unwrap();
+
+    {
+        let mut realm = engine.realm.try_lock().unwrap();
+        realm.idle_ttl = Duration::from_secs(0); // default: everything idle
+        let evicted = realm.evict_idle(engine.realm.clone()).await;
+        // Only echo is evicted; the dweller's own TTL keeps it resident.
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].actor_type, "echo");
+        // A second pass evicts nothing more: the dweller is still under
+        // its own 600s TTL even though the realm default is 0s.
+        let again = realm.evict_idle(engine.realm.clone()).await;
+        assert!(again.is_empty());
+    }
+}
+
 // ------------------------------------------------- Phase 2.5 (ctx bridge) --
 //
 // Script actors reach the host through named functions: one JSON argument
@@ -348,3 +396,56 @@ async fn script_state_survives_eviction() {
     assert_eq!(out, serde_json::json!({"count": 2}));
 }
 
+
+// Script-declared TTL: `interface_schema()` introspection seeds
+// `ActorType.idle_ttl` at registration (host ← script; the script never
+// touches the engine). The retention window rides this for script
+// turn-executors.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn script_interface_schema_declares_idle_ttl() {
+    let engine = Engine::start(&Default::default()).expect("engine boot");
+    engine
+        .register(aura_actor::ActorType::script(
+            "py-dweller",
+            "python",
+            r#"
+def interface_schema(args):
+    return {"lifecycle": {"idle_ttl": "5m"}}
+
+def execute(args):
+    return {"ok": True}
+"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    // Register introspected the declaration: the type now carries a
+    // per-type TTL even though the host never called with_idle_ttl.
+    {
+        let realm = engine.realm.try_lock().unwrap();
+        let actor = realm.actor_type("py-dweller").unwrap();
+        assert_eq!(actor.idle_ttl, Some(Duration::from_secs(300)));
+    }
+
+    // Plain script without the lifecycle section: no TTL adopted.
+    engine
+        .register(aura_actor::ActorType::script(
+            "py-plain",
+            "python",
+            r#"
+def interface_schema(args):
+    return {"receives": {}}
+
+def execute(args):
+    return {"ok": True}
+"#,
+            Some("execute".into()),
+        ))
+        .await;
+    {
+        let realm = engine.realm.try_lock().unwrap();
+        let actor = realm.actor_type("py-plain").unwrap();
+        assert_eq!(actor.idle_ttl, None);
+    }
+}

@@ -49,8 +49,25 @@ impl Engine {
         let namespaces = Arc::new(aura_realm::namespace::Namespaces::new(store.clone()));
         Ok(Self { realm, namespaces })
     }
+}
 
-    /// Override the idle TTL (default 30s).
+/// Parse a human duration suffix: "300s" / "5m" / "2h" (bare digits are
+/// rejected — units are mandatory so declarations are unambiguous).
+fn parse_duration_suffix(s: &str) -> Option<Duration> {
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n: u64 = num.parse().ok()?;
+    match unit {
+        "s" => Some(Duration::from_secs(n)),
+        "m" => Some(Duration::from_secs(n * 60)),
+        "h" => Some(Duration::from_secs(n * 3600)),
+        _ => None,
+    }
+}
+
+impl Engine {
+
+    /// Override the idle TTL (realm-wide default; per-type TTL overrides
+    /// this — see `ActorType::with_idle_ttl`).
     pub fn with_idle_ttl(self, ttl: Duration) -> Self {
         if let Ok(mut r) = self.realm.try_lock() {
             r.idle_ttl = ttl;
@@ -59,7 +76,21 @@ impl Engine {
     }
 
     /// Register an actor type with this engine's realm.
-    pub async fn register(&self, actor: ActorType) {
+    ///
+    /// For script types (python/steel/wasm), the registration runs the
+    /// script's `interface_schema()` introspection ONCE and adopts
+    /// declared metadata into the type definition — `lifecycle.idle_ttl`
+    /// seeds `ActorType.idle_ttl` when the host did not set one
+    /// explicitly. The host-side builder always wins over the script
+    /// declaration (explicit > introspected). The script never touches
+    /// the engine: introspection is a pure function the host calls,
+    /// direction is host ← script.
+    pub async fn register(&self, mut actor: ActorType) {
+        if actor.idle_ttl.is_none() {
+            if let Some(ttl) = aura_realm::introspect_idle_ttl(&actor).await {
+                actor.idle_ttl = Some(ttl);
+            }
+        }
         self.realm.lock().await.register_type(actor);
     }
 

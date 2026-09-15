@@ -2,6 +2,7 @@
 
 > 自 `~/.hermes/wiki/aura-architecture.md` §5 迁入的实现细节；wiki 保留综述。
 > 综述：wiki [Aura 架构 §5](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
+> 相关：[数据分区（内部机制）](partitioning.md)、[Actor API（脚本语言参考）](actor-api.md)。
 
 ## 5. 场域模型：Actor 间交互与外部世界
 
@@ -93,6 +94,8 @@ fjall partition: "actor_defs"
 `on()` handler 在 Actor 实例激活时从 Fjall 读取最新版本的脚本，加载到对应 VM 执行。实例驱逐后，下次激活重新从 Fjall 读取。
 
 ### 5.4 interface_schema()
+
+脚本元数据的统一声明面。注册时 Host 调用一次（纯函数，无 ctx，方向是 Host ← 脚本——脚本从不反向访问 engine）。返回结构的 `lifecycle` 段声明驻留策略：`"idle_ttl"` 接受秒数或带单位字符串（`"300s"` / `"5m"` / `"2h"`，单位必填）；Host 侧 builder（Rust 类型）显式声明的值优先于脚本自省值。注意 carrier 契约：入口函数统一带一个参数调用，`interface_schema(args)` 需声明形参（语言允许默认值时可用 `def interface_schema(args=None)`）。
 
 `interface_schema()` 是 Actor 的**统一契约**——声明接收事件，以及可选的发射事件清单。
 

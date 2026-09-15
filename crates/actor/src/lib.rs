@@ -7,6 +7,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// An Actor type definition. The handler is a Rust async function for now;
@@ -39,6 +40,12 @@ pub struct ActorType {
     /// Registered type name, e.g. "echo".
     pub name: String,
     pub body: Body,
+    /// Idle TTL for this type's instances: how long after the last job
+    /// before the evictor reclaims the residency (scale-to-zero). `None`
+    /// = fall back to the realm-wide default. Per-type because residency
+    /// value differs by role — a turn-executor dwells through its
+    /// retention window while an entity actor can be reclaimed quickly.
+    pub idle_ttl: Option<Duration>,
     /// Optional on_sleep: called by the Host before the instance is
     /// evicted (scale-to-zero). Return value is ignored; state flushing is
     /// the store's job, not the hook's.
@@ -60,7 +67,13 @@ pub type SleepHook =
 impl ActorType {
     /// Define a Rust-closure type with no lifecycle hooks.
     pub fn simple(name: impl Into<String>, handler: Arc<Handler>) -> Self {
-        Self { name: name.into(), body: Body::Rust(handler), on_sleep: None, on_wake: None }
+        Self {
+            name: name.into(),
+            body: Body::Rust(handler),
+            idle_ttl: None,
+            on_sleep: None,
+            on_wake: None,
+        }
     }
 
     /// Define a script type executed by a probe carrier.
@@ -73,9 +86,16 @@ impl ActorType {
         Self {
             name: name.into(),
             body: Body::Script { language: language.into(), source: source.into(), entry },
+            idle_ttl: None,
             on_sleep: None,
             on_wake: None,
         }
+    }
+
+    /// Declare a per-type idle TTL (residency policy). See the field doc.
+    pub fn with_idle_ttl(mut self, ttl: Duration) -> Self {
+        self.idle_ttl = Some(ttl);
+        self
     }
 
     pub fn with_on_sleep(mut self, hook: Arc<SleepHook>) -> Self {

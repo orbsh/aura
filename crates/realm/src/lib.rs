@@ -436,12 +436,24 @@ impl Realm {
     /// instance. State survives in the store — scale-to-zero drops the
     /// resident, not the data.
     pub async fn evict_idle(&mut self, self_arc: SharedRealm) -> Vec<InstanceId> {
-        let ttl = self.idle_ttl;
+        let default_ttl = self.idle_ttl;
+        // Per-type residency policy: the type's own TTL wins; `None` falls
+        // back to the realm-wide default. Residency value differs by role —
+        // a turn-executor dwells through its retention window while an
+        // entity actor can be reclaimed quickly (Phase 6.5).
+        let ttl_of = |type_name: &str| -> Duration {
+            self.types
+                .get(type_name)
+                .and_then(|a| a.idle_ttl)
+                .unwrap_or(default_ttl)
+        };
         let mut evicted = Vec::new();
         let keys: Vec<(String, String)> = self
             .instances
             .iter()
-            .filter(|(_, inst)| inst.last_activity.elapsed() > ttl)
+            .filter(|(k, inst)| {
+                inst.last_activity.elapsed() > ttl_of(&k.0)
+            })
             .map(|(k, _)| k.clone())
             .collect();
         for key in keys {
@@ -548,5 +560,54 @@ async fn dispatch_call(
 impl Default for Realm {
     fn default() -> Self {
         Self::new(Arc::new(aura_storage::InMemoryStore::default()))
+    }
+}
+
+/// Introspect a script type's `interface_schema()` (no ctx — a pure
+/// function the host calls at registration; direction host ← script, the
+/// script never touches the engine) and extract `lifecycle.idle_ttl` if
+/// declared. Accepts a number (seconds) or a string with a mandatory
+/// unit suffix ("300s" / "5m" / "2h"). Introspection failure or missing
+/// declaration = `None`, never a registration error — declaration is
+/// optional metadata.
+pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Duration> {
+    let aura_actor::Body::Script { language, source, entry: _ } = &actor.body else {
+        return None; // Rust types declare TTL via the builder
+    };
+    let raw = tokio::task::spawn_blocking({
+        let language = language.clone();
+        let source = source.clone();
+        move || {
+            probe_runtime::carrier::execute(
+                &language,
+                probe_runtime::carrier::ExecRequest {
+                    source: &source,
+                    entry: Some("interface_schema"),
+                    args: &serde_json::Value::Null,
+                    host: None,
+                },
+            )
+        }
+    })
+    .await;
+    let result = raw.ok()?.ok();
+    let ttl = result.as_ref()?.get("lifecycle")?.get("idle_ttl")?;
+    match ttl {
+        serde_json::Value::Number(n) => n.as_u64().map(Duration::from_secs),
+        serde_json::Value::String(s) => parse_duration_suffix(s),
+        _ => None,
+    }
+}
+
+/// Parse a human duration suffix: "300s" / "5m" / "2h". Bare digits are
+/// rejected — units are mandatory so declarations are unambiguous.
+fn parse_duration_suffix(s: &str) -> Option<Duration> {
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n: u64 = num.parse().ok()?;
+    match unit {
+        "s" => Some(Duration::from_secs(n)),
+        "m" => Some(Duration::from_secs(n * 60)),
+        "h" => Some(Duration::from_secs(n * 3600)),
+        _ => None,
     }
 }

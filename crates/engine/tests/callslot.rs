@@ -10,25 +10,24 @@ use aura_engine::Engine;
 use std::sync::Arc;
 use std::time::Duration;
 
+// Steel script actors (4.5a). slow_echo: nushell subprocess — its natural
+// spawn latency (~100-500ms) provides the slow handler the deadline tests need.
+const ECHO: &str = r#"
+(define (execute args) args)
+"#;
+
 fn echo() -> ActorType {
-    ActorType::simple(
-        "echo",
-        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move { Ok(args) })
-        }),
-    )
+    ActorType::script("echo", "steel", ECHO, Some("execute".into()))
 }
 
 fn slow_echo() -> ActorType {
-    ActorType::simple(
-        "slow_echo",
-        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                Ok(args)
-            })
-        }),
-    )
+    const SLOW: &str = r#"
+export def execute [args] {
+    sleep 1sec
+    args
+}
+"#;
+    ActorType::script("slow_echo", "nushell", SLOW, Some("execute".into()))
 }
 
 #[tokio::test]
@@ -80,11 +79,11 @@ async fn hot_timeout_is_failure_value() {
 #[tokio::test]
 async fn cold_call_returns_pending_without_parking() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let mut approval = ActorType::simple(
+    let mut approval = ActorType::script(
         "approval",
-        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move { Ok(args) })
-        }),
+        "steel",
+        ECHO,
+        Some("execute".into()),
     );
     approval.on_wake = None;
     engine.register(approval).await;

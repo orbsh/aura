@@ -6,17 +6,23 @@ use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
 use aura_engine::Engine;
 use std::sync::Arc;
 
+const COUNTER: &str = r#"
+(define (execute args)
+  (let* ((got (ctx_state_get "count"))
+         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
+    (ctx_state_set (hash "field" "count" "value" (+ n 1)))
+    (hash "count" (+ n 1))))
+"#;
+const LISTENER: &str = r#"
+(define (execute args)
+  (let* ((got (ctx_state_get "seen"))
+         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
+    (ctx_state_set (hash "field" "seen" "value" (+ n 1)))
+    n))
+"#;
+
 fn counter() -> ActorType {
-    ActorType::simple(
-        "counter",
-        Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move {
-                let n = ctx.state.get("count")?.and_then(|v| v.as_i64()).unwrap_or(0);
-                ctx.state.set("count", serde_json::json!(n + 1))?;
-                Ok(serde_json::json!({ "count": n + 1 }))
-            })
-        }),
-    )
+    ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
 }
 
 #[tokio::test]
@@ -49,15 +55,11 @@ async fn events_do_not_cross_namespaces() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Same event subscription in two namespaces; the emit goes to one.
     let listener = || {
-        ActorType::simple(
+        ActorType::script(
             "listener",
-            Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-                Box::pin(async move {
-                    let n = ctx.state.get("seen")?.and_then(|v| v.as_i64()).unwrap_or(0);
-                    ctx.state.set("seen", serde_json::json!(n + 1))?;
-                    Ok(serde_json::Value::Null)
-                })
-            }),
+            "steel",
+            LISTENER,
+            Some("execute".into()),
         )
     };
     engine.register_in("alice", listener()).await;
@@ -73,7 +75,7 @@ async fn events_do_not_cross_namespaces() {
         "event": "order.created", "user_id": "u1"
     })).await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let alice = engine.namespaces.realm_of("alice").await;
     let bob = engine.namespaces.realm_of("bob").await;

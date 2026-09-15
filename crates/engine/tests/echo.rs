@@ -4,18 +4,25 @@
 //! surface (ADR-0011). Phase 1: state survives eviction (scale-to-zero
 //! drops the resident, not the data); on_sleep/on_wake run around it.
 
-use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
+use aura_actor::{ActorType, InstanceId};
 use aura_engine::Engine;
-use std::sync::Arc;
 use std::time::Duration;
 
+// Steel script actors (4.5a): script source is the only public actor form.
+const ECHO: &str = r#"
+(define (execute args) args)
+"#;
+
+const CALLER: &str = r#"
+(define (execute args)
+  (ctx_invoke (string-append
+    "{\"type\": \"echo\", \"key\": \""
+    (hash-ref args "target_key")
+    "\", \"handler\": \"execute\", \"args\": {\"via\": \"ctx.invoke\"}}")))
+"#;
+
 fn echo_type() -> ActorType {
-    ActorType::simple(
-        "echo",
-        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move { Ok(args) })
-        }),
-    )
+    ActorType::script("echo", "steel", ECHO, Some("execute".into()))
 }
 
 // ---------------------------------------------------------------- Phase 0 --
@@ -44,21 +51,9 @@ async fn ctx_invoke_routes_through_realm() {
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
     // actor sees; target resolution is registry-declared.
     engine
-        .register(ActorType::simple(
-            "caller",
-            Arc::new(|ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-                Box::pin(async move {
-                    let key = args["target_key"].as_str().unwrap_or("a2").to_string();
-                    ctx.invoke(
-                        InstanceId { actor_type: "echo".into(), key },
-                "execute",
-                        serde_json::json!({"via": "ctx.invoke"}),
-                    )
-                    .await
-                })
-            }),
-        ))
-        .await;
+        .register(ActorType::script("caller", "steel", CALLER, Some("execute".into())))
+        .await
+        .unwrap();
 
     let out = engine
         .invoke(
@@ -110,25 +105,17 @@ async fn partition_key_activates_distinct_instances() {
 #[tokio::test]
 async fn state_survives_scale_to_zero() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    // RMW via the ctx bridge: read, bump, write — per-field durable units.
+    const COUNTER: &str = r#"
+(define (execute args)
+  (let* ((got (ctx_state_get "{\"field\": \"count\"}"))
+         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
+    (ctx_state_set (string-append "{\"field\": \"count\", \"value\": " (number->string (+ n 1)) "}"))
+    (hash "count" (+ n 1))))
+"#;
     engine.register(
-        ActorType::simple(
-            "counter",
-            Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-                Box::pin(async move {
-                    // RMW: read, bump, write — per-field durable units.
-                    let n = ctx.state.get("count")?.and_then(|v| v.as_i64()).unwrap_or(0);
-                    ctx.state.set("count", serde_json::json!(n + 1))?;
-                    Ok(serde_json::json!({ "count": n + 1 }))
-                })
-            }),
-        )
-        .with_on_sleep(Arc::new(|_ctx: Ctx| -> BoxFuture<'static, anyhow::Result<()>> {
-            Box::pin(async { Ok(()) }) // advisory; the store already has it
-        }))
-        .with_on_wake(Arc::new(|_ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async { Ok(serde_json::Value::Null) })
-        })),
-    ).await;
+        ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
+    ).await.unwrap();
 
     let target = InstanceId { actor_type: "counter".into(), key: "k1".into() };
     assert_eq!(engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 1}));
@@ -257,13 +244,8 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 
     // "dweller": 10-minute TTL (long-lived resident, the retention-window
     // shape). "echo": no override — realm default applies.
-    let dweller = ActorType::simple(
-        "dweller",
-        Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move { Ok(args) })
-        }),
-    )
-    .with_idle_ttl(Duration::from_secs(600));
+    let dweller = ActorType::script("dweller", "steel", ECHO, Some("execute".into()))
+        .with_idle_ttl(Duration::from_secs(600));
     engine.register(dweller).await;
     engine.register(echo_type()).await;
 

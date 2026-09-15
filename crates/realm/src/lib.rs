@@ -13,11 +13,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
 
-/// Extract a field name (string) from a host-bridge JSON argument.
+/// Extract a field name from a host-bridge JSON argument: a bare string
+/// (`"count"`) or an object (`{"field": "count"}`) — both documented forms.
 fn json_str_field(arg: &serde_json::Value) -> anyhow::Result<String> {
-    arg.as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("expected a string field name"))
+    match arg {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Object(o) => o
+            .get("field")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("expected a string field name")),
+        _ => anyhow::bail!("expected a string field name"),
+    }
 }
 
 /// Extract (field, value) from `{ "field": ..., "value": ... }`.

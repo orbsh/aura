@@ -19,17 +19,15 @@ mod fjall_tests {
         }
     }
 
+    const COUNTER: &str = r#"
+(define (execute args)
+  (let* ((got (ctx_state_get "count"))
+         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
+    (ctx_state_set (hash "field" "count" "value" (+ n 1)))
+    (hash "count" (+ n 1))))
+"#;
     fn counter() -> ActorType {
-        ActorType::simple(
-            "counter",
-            Arc::new(|ctx: Ctx, _args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-                Box::pin(async move {
-                    let n = ctx.state.get("count")?.and_then(|v| v.as_i64()).unwrap_or(0);
-                    ctx.state.set("count", serde_json::json!(n + 1))?;
-                    Ok(serde_json::json!({ "count": n + 1 }))
-                })
-            }),
-        )
+        ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
     }
 
     #[test]

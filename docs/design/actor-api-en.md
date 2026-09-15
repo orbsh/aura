@@ -102,13 +102,14 @@ following — each takes one JSON argument and returns a JSON value:
 | `@on` multi-entry | ✅ decorator | `on` fn | one handler for now (direct calls declare the handler name) | export convention |
 | Best for | business logic | AI-generated ops | pipeline/CLI shape | heavily-isolated 3rd-party code |
 
-**`interface_schema` is transparent to probe**: a probe carrier only does
-"load source → call entry → serialize result". The `@on` collector the
-python carrier injects is language-shape (a declaration registry); the
-schema-derivation semantics belong to aura — introspect at upload and
-persist. The same script handed to probe execution has a dead
-`interface_schema` that nobody calls; handed to aura upload, it becomes
-the type definition's metadata source.
+**`interface_schema` is transparent to the execution path**: the probe
+execution carrier only does "load source → call entry → serialize
+result" and never touches `interface_schema`. Declaration collection
+(python `@on` injection, steel `on` builtin) is language-shape; the
+assembly and merge semantics live in the one `carrier::introspect` call
+that aura makes at upload and persists. The same script handed to probe
+execution has an `interface_schema` nobody calls; handed to aura upload,
+it becomes the type definition's metadata source.
 
 ---
 

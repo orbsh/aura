@@ -305,57 +305,69 @@ struct WildcardRoute {
 
 通配符用 `Vec` 而非 HashMap，因为匹配是反向的（给定事件名，找哪些前缀能匹配），HashMap 帮不上忙。通配符数量通常很少（几个投影 Actor），线性扫描足够。如果通配符多到成为瓶颈，再换 Trie。
 
-**分发路径**：
+**分发路径（Phase 4.5c 事件队列模型，已实现）**：
 
 ```rust
-impl RealmHost {
-    async fn dispatch_event(&self, event_name: &str, data: Value) {
-        let mut matched_routes = Vec::new();
+impl Realm {
+    // emit 的投递目标不是实例 mailbox，而是 (声明事件, partition) 队列。
+    // 两段式：先激活全部匹配路由的目标实例（订阅先于发送），再按队列去重发送。
+    async fn emit(self_arc: &SharedRealm, emitter: Option<&str>,
+                  event: &str, data: Value) -> anyhow::Result<()> {
+        let routes = self.router.matches(event);
+        if routes.is_empty() { self.dead_events.push(event, data); return Ok(()); }
 
-        // 1. 精确匹配
-        if let Some(routes) = self.router.exact.get(event_name) {
-            matched_routes.extend(routes.iter().cloned());
-        }
+        let mut queued: HashSet<(String, String)> = Default::default();
+        let mut targets = Vec::new();
 
-        // 2. 通配符匹配：线性扫描所有通配符前缀
-        for wr in &self.router.wildcard {
-            if event_name.starts_with(&wr.prefix) {
-                matched_routes.push(Route {
-                    actor_type: wr.actor_type.clone(),
-                    partition_key_field: String::new(),  // 无 partition key
-                    handler: wr.handler.clone(),
-                });
-            }
-        }
-
-        // 3. 无匹配 → dead event
-        if matched_routes.is_empty() {
-            self.dead_events.push(event_name, data);
-            return;
-        }
-
-        // 4. 对每个匹配的路由，投递到对应 Actor 实例
-        for route in matched_routes {
-            if route.partition_key_field.is_empty() {
-                // 通配符 handler → 单例实例（固定 key "__singleton__"）
-                let instance = self.get_or_activate(
-                    &route.actor_type, "__singleton__",
-                );
-                instance.mailbox.send(Event::new(event_name, data.clone()));
+        // 第一段：激活 + 去重
+        for route in routes {
+            // 队列身份：@on 声明了 key → (route 事件, partition)；
+            // 未声明 key → (route 事件, "__singleton__")。
+            // partition 值来自事件数据（key 字段取值），不来自发射者。
+            let partition = if route.partition_key_field.is_empty() {
+                "__singleton__".to_string()
             } else {
-                // 精确 handler → 按 partition key 路由
-                let key = data.get(&route.partition_key_field)
+                data.get(&route.partition_key_field)
                     .and_then(|v| v.as_str())
-                    .unwrap_or("__default__");
-                let instance = self.get_or_activate(
-                    &route.actor_type, key,
-                );
-                instance.mailbox.send(Event::new(event_name, data.clone()));
+                    .unwrap_or("__default__").to_string()
+            };
+            // 虚拟 Actor 语义：emit 到未激活的实例先激活它——
+            // 它的 @on 订阅在消息入队前绑定（每个订阅者私有 Receiver，
+            // 即 per-subscription cursor；实例不拥有队列）。
+            let target = InstanceId { actor_type: route.actor_type.clone(), key: partition.clone() };
+            if !self.instances.contains_key(&(route.actor_type.clone(), partition.clone())) {
+                self.instance(self_arc.clone(), &target).await?;
+            }
+            // 按队列去重：两条路由绑定同一队列（多个订阅类型监听同一事件）
+            // 时只发送一次——队列扇出到全部订阅者，重复发送会双重投递。
+            if queued.insert((route.event.clone(), partition.clone())) {
+                targets.push((route, partition));
             }
         }
+
+        // 第二段：向每个队列广播一次
+        for (route, partition) in targets {
+            let queue = self.event_queues
+                .entry((route.event.clone(), partition))
+                .or_insert_with(|| broadcast::channel(self.mailbox_capacity).0);
+            if queue.receiver_count() == 0 {
+                // 活过又离开的订阅者是自己的信号；刚激活的已有 Receiver。
+                self.dead_events.push(event, data.clone());
+                continue;
+            }
+            let _ = queue.send(QueuedJob { handler: event.into(), args: data.clone() });
+        }
+        Ok(())
     }
 }
 ```
+
+**队列语义**：
+
+- 事件不属于任何 Actor。队列在场域层，实例激活时按其类型的 `@on` 声明绑定订阅（私有 Receiver = per-subscription cursor）。
+- 一个队列可有多个订阅者（多个 Actor 类型监听同一事件）——一对多投递是结构性的，不是 fan-out 模拟。
+- 串行语义：每实例的订阅消费任务一次只处理一条（逐队列顺序 drain）——同一实例串行由 cursor 保持，实例不拥有队列。
+- 直接调用不走队列：`ctx.invoke` / `engine.invoke` 是点对点（实例 mailbox 保留用于统一调用模型），事件投递才走共享队列。
 
 **通配符参数的实例化**：通配符参数不绑定 partition key，路由到固定 key `"__singleton__"` 的实例——整个 Actor 类型只有一个实例。这与投影 Actor 的场景一致：一个 DeptStatsActor 实例监听所有 `order.*` 事件，持续聚合。
 
@@ -700,7 +712,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 | **Become/Unbecome** | Akka | `set(lang, script)` 是更激进的版本——运行时切换行为函数和语言。可实现状态机：收到事件后 `set("python", "active_handler.py")` 切换入口函数 |
 | **Stash** | Akka | Actor 刚唤醒、Fjall 状态还在恢复时，先 stash 事件，恢复完成后回放 |
 | **Dead Letters** | Akka/Erlang | emit 的事件如果没有匹配的接收 Actor，或目标 Actor 崩溃且无 supervisor 重启，进入 dead event log。用于调试和事件审计 |
-| **Backpressure** | Reactive Streams | Actor 入口函数的 mailbox（Tokio bounded MPSC）满了时，emit 方收到压力信号（阻塞/降级/丢弃） |
+| **Backpressure** | Reactive Streams | 事件队列（bounded broadcast channel，容量 = mailbox capacity）满了时，emit 方收到压力信号（阻塞/降级/丢弃）；单个订阅者跟不上时自己收到 Lagged 信号（丢弃计数可见） |
 | **Passivation / Virtual Actor** | Akka / Orleans | 空闲 Actor 从内存驱逐（Scale-to-Zero），按需激活。Aura 的实例化机制基于此（详见 [§5.11](#511-actor-实例化与分片)） |
 
 ### 5.9 与现有 Actor 框架的对比
@@ -736,7 +748,7 @@ tellus 的 `Error` 是单一语言（Rust）类型系统的产物：同一种语
 
 **先定性：既非传统 Actor 模型，也非 CSP——是「场域化事件总线的 actor 封装」的混合体。**
 
-传统 Actor 模型的三根支柱——actor 树（监管层级）、ActorRef 一等收件箱、tell/ask 直发——Aura 都没有（或只有退化形态）：无监管树（仅保留崩溃重启式 supervision，§5.8）、无 ActorRef 一等收件箱（内部 bounded mailbox 只是路由之下的串行化 + 背压实现细节，不可寻址）、通信靠匿名事件总线而非直发。它不是 CSP：没有显式类型化 channel，也没有同步会合（rendezvous）——`emit` 是 fire-and-forget 的 pub/sub。
+传统 Actor 模型的三根支柱——actor 树（监管层级）、ActorRef 一等收件箱、tell/ask 直发——Aura 都没有（或只有退化形态）：无监管树（仅保留崩溃重启式 supervision，§5.8）、无 ActorRef 一等收件箱（内部的事件队列 + per-subscription cursor 只是路由之下的串行化 + 背压实现细节，不可寻址）、通信靠匿名事件总线而非直发。它不是 CSP：没有显式类型化 channel，也没有同步会合（rendezvous）——`emit` 是 fire-and-forget 的 pub/sub。
 
 Aura 从 actor 保留下来的是**封装性**：state 按 partition key 隔离、单线程串行消费、实例状态自持。真正的新东西是把**事件总线升格为主通信原语**（见第 1 条），用一个共享场域（Event Realm）替代 per-entity 的寻址队列——一片匿名 pub/sub 黑板，不关心谁发射、谁处理。
 
@@ -797,7 +809,7 @@ emit("remove_from_cart", {"user_id": "A", "item_id": "X"})
 | 阶段 | 行为 |
 |------|------|
 | **激活** | 事件到达，Realm 按 partition key 查找实例 → 不存在则从 Fjall 恢复状态（或新建空状态）→ 加载脚本和入口函数 |
-| **运行** | 处理事件，可 emit，状态立即持久化。事件进入实例的 bounded MPSC mailbox，单线程串行消费 |
+| **运行** | 处理事件，可 emit，状态立即持久化。事件经 (事件, partition) 队列投递到该实例的私有订阅 Receiver，串行消费 |
 | **空闲** | 超时无事件 → 状态落盘 Fjall → 内存驱逐（Scale-to-Zero） |
 | **再激活** | 新事件到达 → 从 Fjall 恢复 → 继续 |
 

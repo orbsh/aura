@@ -64,7 +64,7 @@ def audit(args): ...
 | `@on` 多入口 | ✅ 装饰器 | `on` 函数 | 暂单 handler（直接调用声明 handler 名） | 导出约定 |
 | 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | 重隔离三方代码 |
 
-**`interface_schema` 对 probe 透明**：probe 的 carrier 只负责"加载源码 → 调 entry → 序列化结果"。python carrier 注入的 `@on` 收集器是语言形态（声明 registry），schema 推导语义归 aura——上传时自省并持久化。同一个脚本交给 probe 执行时，`interface_schema` 只是一个没人调用的死函数；交给 aura 上传时，它成为类型定义的元数据来源。
+**`interface_schema` 对执行路径透明**：probe 的执行 carrier 只负责"加载源码 → 调 entry → 序列化结果"，从不触碰 `interface_schema`。声明收集（python `@on` 注入、steel `on` 内建）是语言形态，组装与合并语义在 `carrier::introspect` 一层——aura 上传时调用它一次并持久化。同一个脚本交给 probe 执行时，`interface_schema` 只是一个没人调用的函数；交给 aura 上传时，它成为类型定义的元数据来源。
 
 ---
 

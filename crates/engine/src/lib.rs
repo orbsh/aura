@@ -13,6 +13,10 @@ pub struct Engine {
     /// Per-user namespace map (Phase 3.6): structural isolation — a
     /// NamespacedRealm handle cannot reach another namespace.
     pub namespaces: Arc<aura_realm::namespace::Namespaces>,
+    /// The meta okm plane (Phase 4 two-instance model): actor definitions
+    /// and their introspected metadata persist here, independent of actor
+    /// state on the data plane.
+    pub meta_store: aura_actor::SharedStore,
 }
 
 impl Engine {
@@ -20,47 +24,47 @@ impl Engine {
     /// idle evictor. Boot errors on engine/feature mismatches (PLAN Phase 4
     /// matrix: an engine chosen without its feature compiled in fails at
     /// boot, never silently falls back).
-    pub fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
-        let store: aura_actor::SharedStore = match config.engine {
-            aura_config::Engine::Memory => Arc::new(aura_storage::InMemoryStore::default()),
-            aura_config::Engine::Fjall => {
-                #[cfg(feature = "fjall")]
-                {
-                    let path = config.data_dir.clone().unwrap_or_else(|| {
-                        std::env::temp_dir().join(format!("aura-{}", config.node_id))
-                    });
-                    Arc::new(aura_storage::fjall_store::FjallStateStore::open(&path)
-                        .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?)
-                }
-                #[cfg(not(feature = "fjall"))]
-                {
-                    let _ = config;
-                    anyhow::bail!(
-                        "engine=fjall requires building with the `fjall` feature"
-                    );
-                }
-            }
-        };
+    pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
+        let store = Self::open_engine(&config.engine, config.data_dir.clone(), &config.node_id)?;
+        let meta_store =
+            Self::open_engine(&config.meta_engine, config.meta_dir.clone(), &config.node_id)?;
         let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store.clone())));
         Realm::spawn_evictor(&realm);
         // Namespaces share the engine's store through PrefixStore (okm
         // nesting style: the wrapper prepends its prefix, the engine stays
         // untouched and key-format-agnostic).
         let namespaces = Arc::new(aura_realm::namespace::Namespaces::new(store.clone()));
-        Ok(Self { realm, namespaces })
+        // Boot reload (Phase 4.5b): persisted script actors re-register from
+        // the meta store — definitions outlive the process.
+        let engine = Self { realm, namespaces, meta_store: meta_store.clone() };
+        for def in aura_actor::persist::load_all(&meta_store)? {
+            engine.register(def.to_type()).await?;
+        }
+        Ok(engine)
     }
-}
 
-/// Parse a human duration suffix: "300s" / "5m" / "2h" (bare digits are
-/// rejected — units are mandatory so declarations are unambiguous).
-fn parse_duration_suffix(s: &str) -> Option<Duration> {
-    let (num, unit) = s.split_at(s.len() - 1);
-    let n: u64 = num.parse().ok()?;
-    match unit {
-        "s" => Some(Duration::from_secs(n)),
-        "m" => Some(Duration::from_secs(n * 60)),
-        "h" => Some(Duration::from_secs(n * 3600)),
-        _ => None,
+    fn open_engine(
+        engine: &aura_config::Engine,
+        dir: Option<std::path::PathBuf>,
+        node_id: &str,
+    ) -> anyhow::Result<aura_actor::SharedStore> {
+        match engine {
+            aura_config::Engine::Memory => Ok(Arc::new(aura_storage::InMemoryStore::default())),
+            aura_config::Engine::Fjall => {
+                #[cfg(feature = "fjall")]
+                {
+                    let path = dir
+                        .unwrap_or_else(|| std::env::temp_dir().join(format!("aura-{node_id}")));
+                    Ok(Arc::new(aura_storage::fjall_store::FjallStateStore::open(&path)
+                        .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?))
+                }
+                #[cfg(not(feature = "fjall"))]
+                {
+                    let _ = (engine, dir, node_id);
+                    anyhow::bail!("engine=fjall requires building with the `fjall` feature")
+                }
+            }
+        }
     }
 }
 
@@ -85,13 +89,37 @@ impl Engine {
     /// declaration (explicit > introspected). The script never touches
     /// the engine: introspection is a pure function the host calls,
     /// direction is host ← script.
-    pub async fn register(&self, mut actor: ActorType) {
-        if actor.idle_ttl.is_none() {
-            if let Some(ttl) = aura_realm::introspect_idle_ttl(&actor).await {
-                actor.idle_ttl = Some(ttl);
+    pub async fn register(&self, mut actor: ActorType) -> anyhow::Result<()> {
+        // Phase 4.5c: derive delivery routes from the introspected schema —
+        // `receives` (event → key field) seeds the router per @on
+        // declaration; empty key = singleton (per-event queue consumer).
+        if let Some(schema) = aura_realm::introspect_schema(&actor).await {
+            if actor.idle_ttl.is_none() {
+                if let Some(ttl) = schema.get("lifecycle").and_then(|l| l.get("idle_ttl")).and_then(parse_ttl) {
+                    actor.idle_ttl = Some(ttl);
+                }
+            }
+            if let Some(receives) = schema.get("receives").and_then(|r| r.as_object()) {
+                let mut realm = self.realm.lock().await;
+                for (event, spec) in receives {
+                    let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
+                    realm.router.on(event.clone(), &actor.name, key_field);
+                }
+            }
+            if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {
+                let mut realm = self.realm.lock().await;
+                for pattern in wildcards.iter().filter_map(|p| p.as_str()) {
+                    realm.router.on_wildcard(pattern, &actor.name);
+                }
             }
         }
+        // Phase 4.5b: persist script-actor definitions + introspected TTL
+        // to the meta store — definitions outlive the process.
+        if let Some(def) = aura_actor::persist::PersistedActor::from_type(&actor) {
+            aura_actor::persist::persist(&self.meta_store, &def)?;
+        }
         self.realm.lock().await.register_type(actor);
+        Ok(())
     }
 
     /// Invoke a registered actor instance (hot path convenience: wait for
@@ -99,9 +127,10 @@ impl Engine {
     pub async fn invoke(
         &self,
         target: aura_actor::InstanceId,
+        handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        match self.call(target, args).await? {
+        match self.call(target, handler, args).await? {
             aura_actor::call::Waited::Done(result) => result,
             aura_actor::call::Waited::Pending(id) => {
                 anyhow::bail!("cold call returned a Pending slot to a hot caller: {}", id.0)
@@ -116,12 +145,13 @@ impl Engine {
     pub async fn call(
         &self,
         target: aura_actor::InstanceId,
+        handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<aura_actor::call::Waited> {
         // Slot construction errors (unknown type/full mailbox) are Err;
         // wait results — including Done(Err(timeout/handler failure)) —
         // travel inside the Waited so callers see failure as a value.
-        Realm::call(&self.realm, None, target, args)
+        Realm::call(&self.realm, None, target, handler, args)
             .await?
             .wait()
             .await
@@ -141,10 +171,11 @@ impl Engine {
         &self,
         namespace: &str,
         target: aura_actor::InstanceId,
+        handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<aura_actor::call::Waited> {
         let ns = self.namespaces.realm_of(namespace).await;
-        Realm::call(&ns.realm(), None, target, args)
+        Realm::call(&ns.realm(), None, target, handler, args)
             .await?
             .wait()
             .await
@@ -170,5 +201,20 @@ impl Engine {
         result: anyhow::Result<serde_json::Value>,
     ) -> bool {
         Realm::resolve_call(&self.realm, call_id, result).await
+    }
+}
+
+/// Parse lifecycle.idle_ttl from a schema value: number (seconds) or a
+/// string with a mandatory unit suffix ("300s" / "5m" / "2h").
+fn parse_ttl(v: &serde_json::Value) -> Option<std::time::Duration> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().map(std::time::Duration::from_secs),
+        serde_json::Value::String(s) => match (s.chars().last()?, s[..s.len() - 1].parse::<u64>().ok()?) {
+            ('s', n) => Some(std::time::Duration::from_secs(n)),
+            ('m', n) => Some(std::time::Duration::from_secs(n * 60)),
+            ('h', n) => Some(std::time::Duration::from_secs(n * 3600)),
+            _ => None,
+        },
+        _ => None,
     }
 }

@@ -44,7 +44,7 @@ mod fjall_tests {
                 data_dir: None,
                 ..Default::default()
             };
-            let err = Engine::start(&config).unwrap_err();
+            let err = Engine::start(&config).await.unwrap_err();
             assert!(err.to_string().contains("fjall feature"));
         }
     }
@@ -56,20 +56,21 @@ mod fjall_tests {
 
         // Engine #1: two calls → count = 2, persisted in fjall (WAL).
         {
-            let engine = Engine::start(&fjall_config(dir.path())).unwrap();
+            let engine = Engine::start(&fjall_config(dir.path())).await.unwrap();
             engine.register(counter()).await;
             let target = InstanceId { actor_type: "counter".into(), key: "k".into() };
-            engine.invoke(target.clone(), serde_json::json!(null)).await.unwrap();
-            engine.invoke(target, serde_json::json!(null)).await.unwrap();
+            engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+            engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
         } // Engine dropped — process-restart semantics.
 
         // Engine #2: fresh engine over the same data dir; state restored
         // lazily from the store on first touch → count continues at 3.
-        let engine = Engine::start(&fjall_config(dir.path())).unwrap();
+        let engine = Engine::start(&fjall_config(dir.path())).await.unwrap();
         engine.register(counter()).await;
         let out = engine
             .invoke(
                 InstanceId { actor_type: "counter".into(), key: "k".into() },
+                "execute",
                 serde_json::json!(null),
             )
             .await

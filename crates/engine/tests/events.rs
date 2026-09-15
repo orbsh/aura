@@ -25,7 +25,7 @@ fn counter_of(name: &'static str) -> ActorType {
 
 #[tokio::test]
 async fn exact_route_partition_key_from_event_data() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(counter_of("cart")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
@@ -56,7 +56,7 @@ async fn exact_route_partition_key_from_event_data() {
 
 #[tokio::test]
 async fn wildcard_route_goes_to_singleton() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(counter_of("audit")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
@@ -83,30 +83,33 @@ async fn wildcard_route_goes_to_singleton() {
 }
 
 #[tokio::test]
-async fn emits_whitelist_rejects_undeclared() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(counter_of("cart")).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
-        r.router.declare_emits("cart", vec!["cart_updated".into()]);
+        r.router.on("cart_updated", "cart", "user_id");
     }
 
-    // Declared emit: passes the boundary.
-    assert!(Realm::emit(&engine.realm, Some("cart"), "cart_updated", serde_json::json!({})).await.is_ok());
-    // Undeclared: rejected as an error value (audit point).
-    let err = Realm::emit(&engine.realm, Some("cart"), "ghost_event", serde_json::json!({}))
-        .await.unwrap_err();
-    assert!(err.to_string().contains("has not declared"));
-    // No declaration at all: nothing may be emitted.
-    assert!(Realm::emit(&engine.realm, Some("other"), "cart_updated", serde_json::json!({})).await.is_err());
-    // System emission (None) bypasses the actor whitelist — the whitelist
-    // constrains actors, not the host surface.
-    assert!(Realm::emit(&engine.realm, None, "anything", serde_json::json!({})).await.is_ok());
+    // ADR-0012: emits are never declared or validated — the receiver set is
+    // a runtime fact. A matching subscriber receives.
+    assert!(Realm::emit(&engine.realm, Some("cart"), "cart_updated", serde_json::json!({
+        "event": "cart_updated", "user_id": "u1"
+    })).await.is_ok());
+    // No subscriber: the event lands in the dead ring — the observable
+    // boundary, not a registration error.
+    assert!(Realm::emit(&engine.realm, Some("cart"), "ghost_event", serde_json::json!({
+        "event": "ghost_event"
+    })).await.is_ok());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let realm = engine.realm.try_lock().unwrap();
+    assert_eq!(realm.dead_events.len(), 1);
+    assert_eq!(realm.dead_events.snapshot()[0].0, "ghost_event");
 }
 
 #[tokio::test]
 async fn unmatched_events_land_in_dead_ring() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Realm::emit(&engine.realm, None, "nobody_listens", serde_json::json!({"x": 1}))
         .await.unwrap();
     let realm = engine.realm.try_lock().unwrap();
@@ -116,7 +119,7 @@ async fn unmatched_events_land_in_dead_ring() {
 
 #[tokio::test]
 async fn exact_and_wildcard_both_match_deliver_independently() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(counter_of("cart")).await;
     engine.register(counter_of("stats")).await;
     {
@@ -147,7 +150,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
 // Regression: direct invoke still works alongside the event namespace.
 #[tokio::test]
 async fn invoke_path_unaffected() {
-    let engine = Engine::start(&Default::default()).expect("engine boot");
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(
         ActorType::simple(
             "echo",
@@ -157,9 +160,43 @@ async fn invoke_path_unaffected() {
         )
     ).await;
     let out = engine
-        .invoke(InstanceId { actor_type: "echo".into(), key: "a".into() }, serde_json::json!({"x": 1}))
+        .invoke(InstanceId { actor_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
         .await
         .unwrap();
     assert_eq!(out, serde_json::json!({"x": 1}));
     let _ = InstanceId { actor_type: String::new(), key: String::new() }; // silence unused if refactors
+}
+
+// ------------------------------------- Phase 4.5c (step 2: event queues) --
+//
+// One-to-many is structural: two actor types subscribed to the same event
+// each get the message through their own private queue Receiver. The
+// per-subscription cursor keeps each instance's consumption serial.
+#[tokio::test]
+async fn one_event_multiple_subscriber_types() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine.register(counter_of("cart")).await;
+    engine.register(counter_of("stats")).await;
+    {
+        let mut r = engine.realm.try_lock().unwrap();
+        r.router.on("order.created", "cart", "user_id");
+        r.router.on("order.created", "stats", "user_id");
+    }
+
+    Realm::emit(&engine.realm, None, "order.created", serde_json::json!({
+        "event": "order.created", "user_id": "alice"
+    })).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let realm = engine.realm.try_lock().unwrap();
+    // Both subscriber types received the same event, independently.
+    assert_eq!(
+        realm.store.get(&InstanceId { actor_type: "cart".into(), key: "alice".into() }, "events").unwrap(),
+        Some(serde_json::json!(1))
+    );
+    assert_eq!(
+        realm.store.get(&InstanceId { actor_type: "stats".into(), key: "alice".into() }, "events").unwrap(),
+        Some(serde_json::json!(1))
+    );
 }

@@ -33,11 +33,12 @@ fn slow_echo() -> ActorType {
 
 #[tokio::test]
 async fn hot_call_parks_and_returns() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     engine.register(echo()).await;
     let waited = engine
         .call(
             InstanceId { actor_type: "echo".into(), key: "a".into() },
+                "execute",
             serde_json::json!({"hot": true}),
         )
         .await
@@ -50,7 +51,7 @@ async fn hot_call_parks_and_returns() {
 
 #[tokio::test]
 async fn hot_timeout_is_failure_value() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     let mut slow = slow_echo();
     slow.on_wake = None;
     engine.register(slow).await;
@@ -65,6 +66,7 @@ async fn hot_timeout_is_failure_value() {
     let err = engine
         .call(
             InstanceId { actor_type: "slow_echo".into(), key: "s".into() },
+                "execute",
             serde_json::json!(null),
         )
         .await
@@ -77,7 +79,7 @@ async fn hot_timeout_is_failure_value() {
 
 #[tokio::test]
 async fn cold_call_returns_pending_without_parking() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     let mut approval = ActorType::simple(
         "approval",
         Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
@@ -96,6 +98,7 @@ async fn cold_call_returns_pending_without_parking() {
     let waited = engine
         .call(
             InstanceId { actor_type: "approval".into(), key: "human".into() },
+                "execute",
             serde_json::json!({"ask": "allow rm -rf?"}),
         )
         .await
@@ -121,7 +124,7 @@ async fn cold_call_returns_pending_without_parking() {
 
 #[tokio::test]
 async fn resolve_unknown_call_is_noop() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     // Completed calls never replay: resolving an unknown id is a no-op.
     assert!(!engine
         .resolve_call(&CallId("ghost".into()), Ok(serde_json::json!(1)))
@@ -130,7 +133,7 @@ async fn resolve_unknown_call_is_noop() {
 
 #[tokio::test]
 async fn deadline_scan_fails_expired_hot_calls() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     let mut slow = slow_echo();
     slow.on_wake = None;
     engine.register(slow).await;
@@ -144,6 +147,7 @@ async fn deadline_scan_fails_expired_hot_calls() {
     let slot = engine
         .call(
             InstanceId { actor_type: "slow_echo".into(), key: "s".into() },
+                "execute",
             serde_json::json!(null),
         )
         .await

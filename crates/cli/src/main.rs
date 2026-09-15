@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = aura_config::EngineConfig::default();
-    let engine = aura_engine::Engine::start(&config).expect("engine boot");
+    let engine = aura_engine::Engine::start(&config).await.expect("engine boot");
 
     // Echo Actor: define → invoke → return. The Phase 0 acceptance path.
     engine
@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         .await;
 
     let target = InstanceId { actor_type: "echo".into(), key: "a1".into() };
-    let result = engine.invoke(target, serde_json::json!({"hello": "aura"})).await?;
+    let result = engine.invoke(target, "execute", serde_json::json!({"hello": "aura"})).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
 
     // Chained invoke: echo.a2 invoked BY echo.a1's ctx — exercises ctx.invoke
@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
                     let nested = ctx
                         .invoke(
                             InstanceId { actor_type: "echo".into(), key: "a2".into() },
+                            "execute",
                             serde_json::json!({"via": "ctx.invoke"}),
                         )
                         .await?;
@@ -45,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let result = engine
         .invoke(
             InstanceId { actor_type: "caller".into(), key: "c1".into() },
+            "execute",
             serde_json::json!(null),
         )
         .await?;

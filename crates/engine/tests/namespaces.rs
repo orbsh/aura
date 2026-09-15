@@ -21,15 +21,15 @@ fn counter() -> ActorType {
 
 #[tokio::test]
 async fn same_type_key_isolated_per_namespace() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     // Same type, same key, two users: independent state.
     engine.register_in("alice", counter()).await;
     engine.register_in("bob", counter()).await;
 
     let target = InstanceId { actor_type: "counter".into(), key: "k".into() };
-    engine.call_in("alice", target.clone(), serde_json::json!(null)).await.unwrap();
-    engine.call_in("alice", target.clone(), serde_json::json!(null)).await.unwrap();
-    engine.call_in("bob", target.clone(), serde_json::json!(null)).await.unwrap();
+    engine.call_in("alice", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+    engine.call_in("alice", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+    engine.call_in("bob", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
 
     // alice's count is 2, bob's is 1 — the namespaces never mixed.
     let alice = engine.namespaces.realm_of("alice").await;
@@ -46,7 +46,7 @@ async fn same_type_key_isolated_per_namespace() {
 
 #[tokio::test]
 async fn events_do_not_cross_namespaces() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     // Same event subscription in two namespaces; the emit goes to one.
     let listener = || {
         ActorType::simple(
@@ -92,7 +92,7 @@ async fn events_do_not_cross_namespaces() {
 
 #[tokio::test]
 async fn type_registered_in_one_namespace_is_unknown_in_another() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     engine.register_in("alice", counter()).await;
 
     // Bob's namespace has no "counter" type: target resolution fails —
@@ -101,6 +101,7 @@ async fn type_registered_in_one_namespace_is_unknown_in_another() {
         .call_in(
             "bob",
             InstanceId { actor_type: "counter".into(), key: "k".into() },
+                "execute",
             serde_json::json!(null),
         )
         .await
@@ -110,7 +111,7 @@ async fn type_registered_in_one_namespace_is_unknown_in_another() {
 
 #[tokio::test]
 async fn namespaces_are_lazy_and_observable() {
-    let engine = Engine::start(&Default::default()).unwrap();
+    let engine = Engine::start(&Default::default()).await.unwrap();
     assert!(engine.namespaces.live().await.is_empty());
     engine.register_in("alice", counter()).await;
     let _ = engine.namespaces.realm_of("bob").await;

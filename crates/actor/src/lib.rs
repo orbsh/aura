@@ -111,6 +111,7 @@ impl ActorType {
 
 /// Narrow alias so the public API stays readable without a futures dep.
 pub mod call;
+pub mod persist;
 
 pub mod futures_boxed {
     pub type BoxFuture<'a, T> =
@@ -196,7 +197,7 @@ pub struct Invoke {
 pub mod dispatch_handle {
     use super::*;
     pub type DispatchHandle = Arc<
-        dyn Fn(InstanceId, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
+        dyn Fn(InstanceId, &str, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
             + Send
             + Sync,
     >;
@@ -205,8 +206,8 @@ pub mod dispatch_handle {
 impl Invoke {
     /// Call the dispatch target and wait for its result. Used by the script
     /// ctx bridge (which blocks inside spawn_blocking).
-    pub async fn call(&self, target: InstanceId, args: Value) -> anyhow::Result<Value> {
-        (self.dispatch.clone())(target, args).await
+    pub async fn call(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
+        (self.dispatch.clone())(target, handler, args).await
     }
 }
 
@@ -220,8 +221,8 @@ impl Ctx {
     }
 
     /// The single controlled call surface (ADR-0011).
-    pub async fn invoke(&self, target: InstanceId, args: Value) -> anyhow::Result<Value> {
-        (self.invoke.dispatch.clone())(target, args).await
+    pub async fn invoke(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
+        (self.invoke.dispatch.clone())(target, handler, args).await
     }
 
     /// The instance's state store handle. Used by the script ctx bridge to
@@ -247,6 +248,9 @@ pub struct Mailbox {
 /// A unit of work: call args + the reply channel (oneshot, `reply_to`
 /// semantics; the general call model lands at Phase 3.5).
 pub struct Job {
+    /// Handler name the delivery addresses: the event name for event
+    /// delivery, the caller-declared function for direct invocation.
+    pub handler: String,
     pub args: Value,
     pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>>,
 }
@@ -258,11 +262,26 @@ impl Mailbox {
     }
 }
 
+/// A job traveling an event queue: handler name + args. No reply channel —
+/// event delivery is fire-and-forget (an actor that must return values is
+/// invoked, not emitted to). Clone: broadcast queues fan it out to every
+/// subscriber.
+#[derive(Clone)]
+pub struct QueuedJob {
+    pub handler: String,
+    pub args: Value,
+}
+
 /// Live instance: mailbox + last-activity instant, the unit the runtime
 /// loop schedules and the idle-TTL evicts.
 pub struct Instance {
     pub id: InstanceId,
     pub mailbox: Mailbox,
+    /// Event-queue subscriptions (Phase 4.5c step 2): one private Receiver
+    /// per (event, partition) queue this instance's @on declarations bind —
+    /// the per-subscription cursor that keeps consumption serial here.
+    pub subscriptions:
+        Vec<((String, String), tokio::sync::broadcast::Receiver<QueuedJob>)>,
     /// Last job arrival; the evictor compares against idle_ttl.
     pub last_activity: std::time::Instant,
 }
@@ -270,7 +289,7 @@ pub struct Instance {
 impl Instance {
     pub fn new(id: InstanceId, capacity: usize) -> Self {
         let mailbox = Mailbox::new(id.clone(), capacity);
-        Self { id, mailbox, last_activity: std::time::Instant::now() }
+        Self { id, mailbox, subscriptions: Vec::new(), last_activity: std::time::Instant::now() }
     }
 }
 

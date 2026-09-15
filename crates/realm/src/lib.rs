@@ -53,6 +53,11 @@ pub struct Realm {
     pub idle_ttl: Duration,
     /// Event namespace: routing table + emits whitelist (Phase 3).
     pub router: event::EventRouter,
+    /// Event queues (Phase 4.5c step 2): one broadcast channel per
+    /// (event, partition) — an event belongs to no actor; every subscriber
+    /// instance holds its own Receiver (per-subscription cursor), so
+    /// one-to-many delivery is structural and serial-per-instance survives.
+    event_queues: HashMap<(String, String), tokio::sync::broadcast::Sender<aura_actor::QueuedJob>>,
     /// Static call declarations per actor type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -77,6 +82,7 @@ impl Realm {
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
+            event_queues: HashMap::new(),
             dead_events: event::DeadEvents::default(),
         }
     }
@@ -108,9 +114,10 @@ impl Realm {
         aura_actor::Ctx::new(
             id.clone(),
             store,
-            Arc::new(move |target, args| {
+            Arc::new(move |target, handler: &str, args| {
                 let realm = dispatch_realm.clone();
-                Box::pin(async move { dispatch_call(realm, target, args).await })
+                let handler = handler.to_string();
+                Box::pin(async move { dispatch_call(realm, target, &handler, args).await })
             }),
         )
     }
@@ -176,12 +183,29 @@ impl Realm {
                     .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `type`"))?;
                 let key = obj.get("key").and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `key`"))?;
+                let handler = obj.get("handler").and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `handler` (the function to call)"))?;
                 let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
                 let target = InstanceId { actor_type: ty.to_string(), key: key.to_string() };
-                handle.block_on(dispatch(target, args))
+                handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
         fns
+    }
+
+    /// Run one queued event job against an instance: same execution path
+    /// as run_job, but the result is discarded (event delivery is
+    /// fire-and-forget; an actor that must return values is invoked).
+    async fn run_job_queued(self_arc: SharedRealm, id: &InstanceId, job: aura_actor::QueuedJob) {
+        let reply_tx = tokio::sync::oneshot::channel();
+        let job = Job { handler: job.handler, args: job.args, reply: reply_tx.0 };
+        // Drop the receiver: no one observes the reply.
+        let mut realm = self_arc.lock().await;
+        if let Some(i) = realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone())) {
+            i.last_activity = std::time::Instant::now();
+        }
+        drop(realm);
+        Self::run_job(self_arc, id, job).await;
     }
 
     /// Resolve (type, key) to a live instance, activating on first touch
@@ -189,7 +213,7 @@ impl Realm {
     async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
         let key = (id.actor_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
-            let inst = Instance::new(id.clone(), self.mailbox_capacity);
+            let mut inst = Instance::new(id.clone(), self.mailbox_capacity);
             // on_wake: fresh residency. Runs on first activation too —
             // symmetric with on_sleep; a first-time wake is still a wake.
             if let Some(actor) = self.types.get(&id.actor_type) {
@@ -198,7 +222,57 @@ impl Realm {
                     on_wake(ctx, serde_json::Value::Null).await?;
                 }
             }
+            // Subscribe to the event queues this type's @on declarations
+            // bind (Phase 4.5c step 2): a private Receiver per queue — the
+            // per-subscription cursor. Key-less routes bind the singleton
+            // queue; keyed routes bind the partition this instance owns.
+            if let Some(actor) = self.types.get(&id.actor_type) {
+                for route in self.router.routes_of(&id.actor_type) {
+                    // The instance key IS the partition value for keyed
+                    // routes (emit derives the key from the route's key
+                    // field); key-less routes bind the singleton queue.
+                    let partition = if route.partition_key_field.is_empty() {
+                        "__singleton__".to_string()
+                    } else {
+                        id.key.clone()
+                    };
+                    // NOTE: for keyed routes the partition value equals the
+                    // instance key only when the route derives the key from
+                    // the same field emit used — which it does by
+                    // construction (emit set key = data[field]).
+                    let qid = (route.event.clone(), partition);
+                    if let Some(tx) = self.event_queues.get(&qid) {
+                        inst.subscriptions.push((qid.clone(), tx.subscribe()));
+                    } else {
+                        let (tx, rx) = tokio::sync::broadcast::channel(self.mailbox_capacity);
+                        self.event_queues.insert(qid.clone(), tx.clone());
+                        inst.subscriptions.push((qid.clone(), rx));
+                    }
+                }
+            }
+            let subs = std::mem::take(&mut inst.subscriptions);
             self.instances.insert(key.clone(), inst);
+            // Spawn the instance's subscription consumer: drains every
+            // bound queue serially (one job at a time, in queue order) —
+            // the serial-per-instance guarantee lives in this loop.
+            let consumer_realm = self_arc.clone();
+            let consumer_id = id.clone();
+            tokio::spawn(async move {
+                for (qid, mut rx) in subs {
+                    loop {
+                        match rx.recv().await {
+                            Ok(job) => {
+                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                eprintln!("queue {qid:?}: subscriber lagged, {n} events dropped");
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            });
         } else if let Some(inst) = self.instances.get_mut(&key) {
             inst.last_activity = Instant::now();
         }
@@ -222,7 +296,7 @@ impl Realm {
         drop(realm);
         let result = match body {
             aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
-            aura_actor::Body::Script { language, source, entry } => {
+            aura_actor::Body::Script { language, source, entry: _ } => {
                 // Phase 2.5 ctx bridge: host functions exposed to the script.
                 // The script runs inside spawn_blocking, so host fns may
                 // block on the async ctx (state I/O, invoke round-trip).
@@ -241,7 +315,10 @@ impl Realm {
                         &language,
                         probe_runtime::carrier::ExecRequest {
                             source: &source,
-                            entry: entry.as_deref(),
+                            // The job's handler name addresses the function:
+                            // the event name for event delivery, the
+                            // caller-declared name for direct invocation.
+                            entry: Some(&job.handler),
                             args: &job.args,
                             host: host.as_ref(),
                         },
@@ -262,8 +339,10 @@ impl Realm {
         self_arc: &SharedRealm,
         caller: Option<&str>,
         target: InstanceId,
+        handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<CallSlot> {
+        let handler = handler.to_string();
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let call_id = {
             let mut realm = self_arc.lock().await;
@@ -283,7 +362,7 @@ impl Realm {
                     let inst = realm.instance(self_arc.clone(), &target).await?;
                     inst.mailbox
                         .tx
-                        .try_send(Job { args: args.clone(), reply: reply_tx })
+                        .try_send(Job { handler: handler.to_string(), args: args.clone(), reply: reply_tx })
                         .map_err(|_| {
                             anyhow::anyhow!(
                                 "mailbox full: {}/{}",
@@ -334,7 +413,7 @@ impl Realm {
         {
             let realm = self_arc.clone();
             tokio::spawn(async move {
-                let rx = Self::submit(&realm, target, args).await;
+                let rx = Self::submit(&realm, target, &handler, args).await;
                 if let Ok(rx) = rx {
                     if let Ok(result) = rx.await {
                         Self::resolve_call(&realm, &resolve_id, result).await;
@@ -393,6 +472,7 @@ impl Realm {
     pub async fn submit(
         self_arc: &SharedRealm,
         target: InstanceId,
+        handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -404,7 +484,7 @@ impl Realm {
             let inst = realm.instance(self_arc.clone(), &target).await?;
             inst.mailbox
                 .tx
-                .try_send(Job { args, reply: reply_tx })
+                .try_send(Job { handler: handler.to_string(), args, reply: reply_tx })
                 .map_err(|_| anyhow::anyhow!("mailbox full: {}/{}", target.actor_type, target.key))?;
         }
         // Runtime loop drains the mailbox; spawn a consumer for this job
@@ -491,15 +571,9 @@ impl Realm {
     ) -> anyhow::Result<()> {
         let routes = {
             let mut realm = self_arc.lock().await;
-            if let Some(emitter_type) = emitter {
-                if !realm.router.may_emit(emitter_type, event) {
-                    anyhow::bail!(
-                        "emit rejected: actor type `{}` has not declared event `{}` in emits",
-                        emitter_type,
-                        event
-                    );
-                }
-            }
+            // ADR-0012: no emits whitelist — the receiver set is a runtime
+            // fact; an emit with no subscribers lands in the dead ring.
+            // `emitter` stays in the signature for audit/recording.
             let matched = realm.router.matches(event);
             if matched.is_empty() {
                 realm.dead_events.push(event, data);
@@ -507,10 +581,19 @@ impl Realm {
             }
             matched
         };
+        // Dedupe by queue id: several routes may bind the same queue
+        // (two subscriber types on one event) — the queue fans out to all
+        // of them; a second send would double-deliver. Activation of every
+        // matched route's target happens in the SAME pass, before any
+        // send, so every subscriber binds its Receiver before the message
+        // lands.
+        let mut queued: std::collections::HashSet<(String, String)> = Default::default();
+        let mut targets: Vec<(event::Route, String)> = Vec::new();
         for route in routes {
-            // Partition key from event data (wiki §5.4: the key comes from
-            // the event, not the emitter). Empty field = singleton instance.
-            let key = if route.partition_key_field.is_empty() {
+            // Queue identity: @on-declared key → per-(event, partition);
+            // no key → per-event singleton queue. The key comes from the
+            // event data (wiki §5.4), not the emitter.
+            let partition = if route.partition_key_field.is_empty() {
                 "__singleton__".to_string()
             } else {
                 data.get(&route.partition_key_field)
@@ -518,9 +601,48 @@ impl Realm {
                     .unwrap_or("__default__")
                     .to_string()
             };
-            let target = InstanceId { actor_type: route.actor_type.clone(), key };
-            // Fire-and-forget: spawn, drop the reply receiver.
-            let _ = Realm::submit(self_arc, target, data.clone()).await?;
+            // Virtual-actor activation: emitting to an instance that has
+            // never run activates it first, so its @on subscriptions bind
+            // before the event lands in the queue.
+            let target = InstanceId {
+                actor_type: route.actor_type.clone(),
+                key: partition.clone(),
+            };
+            {
+                let mut realm = self_arc.lock().await;
+                if !realm.instances.contains_key(&(route.actor_type.clone(), partition.clone())) {
+                    drop(realm);
+                    let mut r = self_arc.lock().await;
+                    r.instance(self_arc.clone(), &target).await?;
+                }
+            }
+            if queued.insert((route.event.clone(), partition.clone())) {
+                targets.push((route, partition));
+            }
+        }
+        for (route, partition) in targets {
+            let mut realm = self_arc.lock().await;
+            let capacity = realm.mailbox_capacity;
+            // Queue id uses the route's declared event (exact name or the
+            // wildcard pattern): the subscriber binds the same declaration,
+            // so pattern listeners and exact listeners see independent
+            // queues even when both match one emit.
+            let queue = realm
+                .event_queues
+                .entry((route.event.clone(), partition))
+                .or_insert_with(|| tokio::sync::broadcast::channel(capacity).0);
+            // No live subscriber = nothing will ever drain this message →
+            // dead-event ring (a subscriber arrived and left is its own
+            // signal; a not-yet-activated subscriber was just activated).
+            if queue.receiver_count() == 0 {
+                realm.dead_events.push(&event, data.clone());
+                continue;
+            } else {
+                let _ = queue.send(aura_actor::QueuedJob {
+                    handler: event.to_string(),
+                    args: data.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -546,9 +668,10 @@ impl Realm {
 async fn dispatch_call(
     realm: SharedRealm,
     target: InstanceId,
+    handler: &str,
     args: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    match Realm::call(&realm, None, target, args).await?.wait().await? {
+    match Realm::call(&realm, None, target, handler, args).await?.wait().await? {
         Waited::Done(result) => result,
         Waited::Pending(id) => Err(anyhow::anyhow!(
             "cold target cannot return a value to a parked caller (call {}); emit instead",
@@ -570,7 +693,7 @@ impl Default for Realm {
 /// unit suffix ("300s" / "5m" / "2h"). Introspection failure or missing
 /// declaration = `None`, never a registration error — declaration is
 /// optional metadata.
-pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Duration> {
+pub async fn introspect_schema(actor: &aura_actor::ActorType) -> Option<serde_json::Value> {
     let aura_actor::Body::Script { language, source, entry: _ } = &actor.body else {
         return None; // Rust types declare TTL via the builder
     };
@@ -578,6 +701,10 @@ pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Durati
         let language = language.clone();
         let source = source.clone();
         move || {
+            // Uniform contract: every carrier assembles `interface_schema`
+            // at load (python: implicit decorator-derived merged with an
+            // explicit partial declaration; steel/nushell/wasm: the script
+            // writes it). One call, one name, no language branch.
             probe_runtime::carrier::execute(
                 &language,
                 probe_runtime::carrier::ExecRequest {
@@ -590,8 +717,13 @@ pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Durati
         }
     })
     .await;
-    let result = raw.ok()?.ok();
-    let ttl = result.as_ref()?.get("lifecycle")?.get("idle_ttl")?;
+    raw.ok()?.ok()
+}
+
+/// Extract `lifecycle.idle_ttl` from a script type's introspected schema.
+pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Duration> {
+    let result = introspect_schema(actor).await?;
+    let ttl = result.get("lifecycle")?.get("idle_ttl")?;
     match ttl {
         serde_json::Value::Number(n) => n.as_u64().map(Duration::from_secs),
         serde_json::Value::String(s) => parse_duration_suffix(s),

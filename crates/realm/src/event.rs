@@ -33,8 +33,8 @@ pub struct Route {
 pub struct EventRouter {
     exact: HashMap<String, Vec<Route>>,
     wildcard: Vec<(String, Route)>, // prefix (without trailing `*`)
-    /// Whitelist per actor type: which event names it may emit.
-    emits: HashMap<String, Vec<String>>,
+    // ADR-0012: no emits whitelist — the receiver set is a runtime fact;
+    // the dead-event ring is the audit surface.
 }
 
 use std::collections::HashMap;
@@ -64,22 +64,21 @@ impl EventRouter {
         ));
     }
 
-    /// Declare the emits whitelist for an actor type.
-    pub fn declare_emits(&mut self, actor_type: &str, emits: Vec<String>) {
-        self.emits.insert(actor_type.into(), emits);
-    }
-
-    /// Whitelist check (ADR-0011 audit point): an actor with no `emits`
-    /// declaration may not emit at all.
-    pub fn may_emit(&self, actor_type: &str, event: &str) -> bool {
-        self.emits
-            .get(actor_type)
-            .map(|list| list.iter().any(|e| e == event))
-            .unwrap_or(false)
-    }
-
     /// All routes matching an event name: exact first, then wildcards.
     /// A single event may hit both — each match delivers independently.
+    /// All routes bound by one actor type (its @on declarations) — the
+    /// subscription set an activated instance binds its queue Receivers
+    /// against (Phase 4.5c step 2).
+    pub fn routes_of(&self, actor_type: &str) -> Vec<Route> {
+        self.exact
+            .values()
+            .flatten()
+            .filter(|r| r.actor_type == actor_type)
+            .cloned()
+            .chain(self.wildcard.iter().filter(|(_, r)| r.actor_type == actor_type).map(|(_, r)| r.clone()))
+            .collect()
+    }
+
     pub fn matches(&self, event: &str) -> Vec<Route> {
         let mut out: Vec<Route> = self
             .exact

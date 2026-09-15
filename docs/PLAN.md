@@ -1,25 +1,149 @@
 # PLAN
 
-Design lives in the wiki (summaries) and ADRs; detailed design moved into this repo: `docs/design/storage.md` (storage architecture) and `docs/design/realm.md` (field model), cross-referenced with the wiki. This file only sequences phases.
+Design lives in the wiki (summaries) and ADRs; detailed design moved into this repo: `docs/design/storage.md` (storage architecture), `docs/design/realm.md` (field model), `docs/design/partitioning.md` (data partitioning), `docs/design/actor-api.md` (script actor reference), cross-referenced with the wiki. This file only sequences phases.
 
 ## Milestone A — Single binary engine
 
-- [ ] **Phase 4.5 — Platform actor model (PRIORITY, before Milestone B work): Actor definitions live on the data plane, never the compile plane.** Ruling: the engine ships NO in-process Rust actor — framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour. k10r/gravity-class Rust services ship as `.wasm` artifacts uploaded at runtime (`set(lang="wasm", bytes)`) — compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework. Work items: (1) wasm carrier completion — pointer marshalling (Phase 4 `link` payloads), ctx bridge host imports on wasm, `interface_schema` introspection (Rust-exported fn returning JSON, same contract as python/steel); (2) metadata declaration unified on the type — per-type idle_ttl landed, but receives/emits are still declared imperatively on `realm.router` post-registration; move them onto `ActorType` (`.on(event, key_field)` / `.emits([...])` builders, script types adopt from `interface_schema` introspection at register) so `register_type` assembles routes as a side effect and hot-swap updates them — one declaration surface per type; (3) REMOVE the Rust-closure actor form (`ActorType::simple`) from the public API entirely — the engine ships no in-process Rust actor: framework mechanics (the evictor class) are plain realm logic, not actors, and wrapping them as actors is a pointless detour; Rust code becomes an actor through exactly one channel — compile to wasm and upload. Rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path; (4) NUSHELL OPEN QUESTION (needs discussion, not silently resolved): nushell actors are subprocess-carried with no ctx bridge (explicit error) — as platform actors they are second-class (no state, no invoke), yet language-selection.md assigns nu the system-interaction quadrant via probe. Decide: nu stays probe-only (drop nu as aura actor language), or nu gains a bridge story (stdin/stdout frame protocol like the CGI shape but bidirectional), or accept second-class nu actors. Affects whether the nushell carrier stays in aura's feature set.
 - [x] Phase 0 — Workspace skeleton: `crates/{engine,actor,realm,storage,config,cli}`; single-binary start, no external deps (no Docker / etcd / DB). Echo Actor: define → invoke → return.
 - [x] Phase 1 — Actor runtime: Rust host + Tokio MPSC pipeline; per-Actor context (in-memory modify, on-disk sleep) — ctx surface per ADR-0011 (state/metadata/invoke only; emit/on, contracts, hooks stay off ctx); partition key routing; on_sleep/on_wake scale-to-zero (state → Fjall).
-- [x] Phase 2 — Embedded languages: implemented by importing the probe runtime's carriers (steel/python/wasmtime/nushell, feature-forwarded) instead of an in-tree Polyglot Bridge — one carrier implementation serves the remote actuator and embedded actors. `ActorType::script(language, source, entry)`; script bodies run via spawn_blocking. Remaining: ctx bridge (state/invoke from inside scripts via host functions) and host-function async suspension — tracked as Phase 2.5.
-- [~] Phase 2.5 — Script-actor ctx bridge LANDED; dynamic schema remains. Host functions exposed into carrier scripts: probe-runtime gains `HostBridge`/`HostFn` (`ExecRequest.host`); carriers marshal one JSON arg in / native value out (steel builtins via `register_fn` + native hash/number marshal; python via `PyCFunction::new_closure`; nushell subprocess cannot call back — bridge absent there, carrier errors if demanded). Realm `host_bridge_for` builds `ctx_state_get/set/delete` (scoped to the instance's own state — cross-instance reach not expressible) and `ctx_invoke` (blocks on the Phase 3.5 unified call model inside spawn_blocking). Acceptance: steel/python scripts store+read state, invoke other actors, and state survives eviction. Remaining: dynamic schema — the prerequisite for the okm access-method routing model (event payloads key a fixed `id` field, the event name maps to an okm ns, routing resolves through that ns's access methods → id → partition key, one-to-many delivery; replaces `Realm::Route.partition_key_field` string extraction) once okm dynamic-schema instances can be declared at runtime.
-- [x] Phase 3 — Realm model: event namespace landed — emit routing (exact + wildcard-prefix, partition key extracted from event data, singleton `__singleton__` for wildcards), emits whitelist enforced at the Realm boundary (undeclared emit = error value; system/None bypasses — the whitelist constrains actors, not the host), bounded dead-event ring for unmatched events. Event names are dotted (`order.created`); wildcard prefix requires the dot. RouteMode composition primitives (on_join/on_batch/on_debounce) are a follow-up layer; interface_schema dynamic (script-declared) form arrives with the Phase 2.5 ctx bridge.
-- [x] Phase 3.5 — Unified call model (CallSlot): `ctx.invoke()` with oneshot + `pending_calls` + `reply_to` is the single call mode for HTTP / realm Actor / remote Probe targets. Two-tier waiting split at the entry by static tool declaration (never mid-wait): hot path — task parks on the oneshot (memory-only, no thread held, no persistence); cold path — wait never enters park: transcript persisted, task ends, suspension recorded as a session event (`turn T waits for call C`), re-entry from transcript on result (completed calls never replayed). Timeout = failure value (Result via oneshot); no suspend/continue instruction (continuation snapshots are not feasible in Rust and unnecessary under entry-split). Cold-call declaration rides Gravity's tool registration.
-- [x] Phase 3.6 — User namespace isolation: structural at construction — each namespace owns a Realm (types/instances/router/pending_calls) AND a namespace-qualified state store — PrefixStore wraps the shared engine per okm's nesting model: `[2B BE len(ns)][ns]` prepended to every key the inner store produces (raw ops get/set/del/scan prefix after inner key_for); no textual separators, inner format unknown to the wrapper, so cross-namespace state/events/targets are not expressible; a NamespacedRealm handle cannot reach another namespace. Surfaces: `register_in` / `call_in` / `emit_in`; namespaces lazy + observable. Probe registration credential = user credential → namespace derived at registration; tool target resolution = user namespace + node alias + operation. Loose inbound message cap (anomaly guard only — not a data-plane design; large artifacts never enter the control plane).
-- [~] Phase 4 — Root config `aura.kdl` (KDL via knus, krystallizer ADR-0007 pattern: no secrets in file, env-var names only) landed: `node` / `data` / `meta` top-level nodes, `TryFrom<RootConfig> for EngineConfig` with unknown-engine rejection; slate engine shape (S3 endpoint block) parses now, adapter lands with the slate plane. Storage engines (two-instance okm model): normal data and metadata are TWO separate okm instances with independently selectable engines (fjall | slate); single-node mode runs both on fjall in different directories. ns isolation is per-instance (key layout `[ns 2B][slot 1B]…`, indexes ns-bound at the outermost byte), so ns reuse across the two instances never collides — okm needs zero changes, Table/EdgeTable take any store handle. Fjall data-plane landed (`FjallStateStore`, per-field native LSM writes, boot error on feature mismatch — never silent fallback; acceptance: state survives engine restart). Remaining: slate engine option on both planes.
-- [ ] Phase 5 — Metadata plane (openraft PAUSED): metadata is its own okm instance (independent engine choice). Single-writer model: the shard map / actor registry has exactly one logical writer (the control plane), persisted in slatedb and cached by nodes — no multi-writer consensus needed. Routing invariant: partition key → shard mapping is stable, requests follow the data (a session's turns always land on the machine hosting its partition; history never 'goes missing', it just isn't where a misrouted request looks). Structural cost, accepted: a node's partitions freeze on node failure until recovery/migration — zero replication write amplification; a shard needing high-availability gets carried by FDB/TiKV (wiki ruling: no self-built strong-consistency replication). Openraft returns only when a real second metadata writer appears (multi-node concurrent registry updates). Hot reload of actor definitions rides the meta instance (write new definition → nodes re-read on activation).
+- [x] Phase 2 — Embedded languages: implemented by importing the probe runtime's carriers (steel/python/wasmtime/nushell, feature-forwarded) instead of an in-tree Polyglot Bridge — one carrier implementation serves the remote actuator and embedded actors. `ActorType::script(language, source, entry)`; script bodies run via spawn_blocking.
+- [~] Phase 2.5 — Script-actor ctx bridge
+  - [x] Host functions exposed into carrier scripts: probe-runtime gains `HostBridge`/`HostFn` (`ExecRequest.host`); carriers marshal one JSON arg in / native value out
+    - steel: builtins via `register_fn`, native hash/number marshal
+    - python: `PyCFunction::new_closure` closures
+    - nushell: subprocess cannot call back — bridge absent, carrier errors if demanded; TTL via interface_schema introspection works (one spawn)
+  - [x] Realm `host_bridge_for`: `ctx_state_get/set/delete` (scoped to the instance's own state — cross-instance reach not expressible) and `ctx_invoke` (blocks on the unified call model inside spawn_blocking)
+  - [x] Acceptance: steel/python scripts store+read state, invoke other actors, state survives eviction
+  - [ ] Remaining: dynamic schema — prerequisite for the okm access-method routing model
+    - event payloads key a fixed `id` field; event name maps to an okm ns
+    - routing resolves through that ns's access methods: index scan → id → partition key (one-to-many delivery)
+    - replaces `Realm::Route.partition_key_field` string extraction
+- [ ] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)**
+  - Problem: spawn-per-job — every message re-loads source, builds a fresh VM, runs the entry, drops it
+    - script globals never survive between messages
+    - idle_ttl eviction loses nothing → per-type TTL / retention-window semantics meaningless for script actors
+  - Target shape: the resident `Instance` owns a live VM session
+    - first message loads source + builds the VM; subsequent messages reuse it (globals, cached handles alive)
+    - `ctx_state_*` keeps write-through-to-store as the correctness backstop (durable truth always in the store)
+    - idle_ttl eviction destroys the VM with the instance (nothing to flush unless a script opts into snapshotting later)
+    - rebuild = re-instantiate VM + read fields on demand (same as activation today)
+  - Carrier API: a SESSION form beside the stateless `execute`
+    - `session(language, source, host)` builds the VM once; `session.call(entry, args)` re-enters per message; `drop` destroys
+    - python: interpreter namespace cached per instance
+    - steel: engine cached per instance
+    - wasm: `Module` compiled once + resident `Store`/`Instance` (independent of the ctx-bridge frame path, which stays Phase 6.6)
+    - nushell: EXCLUDED (subprocess, one-shot by construction — part of the Phase 4.5 open question)
+  - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics
+    - aura decides WHEN a residency (and its VM) dies: realm-wide default TTL + per-type override + script-introspected value
+    - eviction is instance-level (mailbox + residency set + partition serial semantics live in aura)
+    - probe NEVER self-expires an actor VM session (two owners of one lifecycle = drift)
+    - probe-side independent expiry applies only to probe-internal operations aura does not track
+  - Affinity + offline (remote probes)
+    - registry records the actor→probe binding: affinity is metadata, not a routing hop
+    - requests follow the data (Phase 5 invariant); the registry answers "where is the residency now"
+    - probe offline: (a) connection drop flips registry presence; (b) in-flight invocations fail with the call model's normal error-value semantics; (c) residency declared lost, not silently kept — recovery = re-activation on next connection (VM rebuilt, working set re-fetched); (d) while offline, messages queue in the realm mailbox (bounded) or fail per the caller's tier
+  - Probe parallelism: control-plane concern, not a probe threading model
+    - same-node-serial mailbox semantics stay the default (two ops writing one file is a policy violation, not a scheduling bug)
+    - parallelism = control plane expresses it as separate partitions/instances or explicit operation-declared concurrency; conflict responsibility at the caller/plane level
+  - Acceptance: two consecutive invocations of a python/steel script actor share in-VM global state (counter in globals, not ctx_state); state still survives eviction via ctx_state; evicted instance's VM is dropped; probe disconnect flips registry presence and in-flight calls fail as error values
+- [x] Phase 3 — Realm model: event namespace landed
+  - emit routing: exact + wildcard-prefix (dotted names, `order.created`; wildcard requires the dot)
+  - partition key extracted from event data; singleton `__singleton__` for wildcards
+  - emits whitelist enforced at the Realm boundary (undeclared emit = error value; system/None bypasses — the whitelist constrains actors, not the host)
+  - bounded dead-event ring for unmatched events
+  - follow-ups: RouteMode composition primitives (on_join/on_batch/on_debounce); interface_schema dynamic (script-declared) form arrives with the Phase 2.5 ctx bridge
+- [x] Phase 3.5 — Unified call model (CallSlot): `ctx.invoke()` with oneshot + `pending_calls` + `reply_to` is the single call mode for HTTP / realm Actor / remote Probe targets
+  - Two-tier waiting split at the entry by static tool declaration (never mid-wait)
+    - hot: task parks on the oneshot (memory-only, no thread held, no persistence)
+    - cold: wait never enters park — transcript persisted, task ends, suspension recorded as a session event; re-entry from transcript on result (completed calls never replayed)
+  - Timeout = failure value (Result via oneshot); no suspend/continue instruction (not feasible in Rust, unnecessary under entry-split)
+  - Cold-call declaration rides Gravity's tool registration
+- [x] Phase 3.6 — User namespace isolation: structural at construction
+  - each namespace owns a Realm (types/instances/router/pending_calls) AND a namespace-qualified state store
+  - PrefixStore wraps the shared engine per okm's nesting model: `[2B BE len(ns)][ns]` prepended to every key the inner store produces (raw ops get/set/del/scan prefix after inner key_for)
+  - no textual separators; inner format unknown to the wrapper → cross-namespace state/events/targets not expressible
+  - surfaces: `register_in` / `call_in` / `emit_in`; namespaces lazy + observable
+  - probe registration credential = user credential → namespace derived at registration; tool target resolution = user namespace + node alias + operation
+  - loose inbound message cap (anomaly guard only — large artifacts never enter the control plane)
+- [~] Phase 4 — Root config + two-instance storage
+  - [x] Root config `aura.kdl` (KDL via knus, krystallizer ADR-0007 pattern: no secrets in file, env-var names only): `node` / `data` / `meta` top-level nodes, `TryFrom<RootConfig> for EngineConfig` with unknown-engine rejection; slate engine shape (S3 endpoint block) parses now
+  - [x] Two-instance okm model: data and metadata are TWO separate okm instances, engines independently selectable (fjall | slate); single-node runs both on fjall in different directories; ns isolation per-instance → ns reuse never collides, okm needs zero changes
+  - [x] Fjall data-plane (`FjallStateStore`, per-field native LSM writes, boot error on feature mismatch — never silent fallback; acceptance: state survives engine restart)
+  - [ ] Remaining: slate engine option on both planes
+- [ ] **Phase 4.5 — Platform actor model (PRIORITY): Actor definitions live on the data plane, never the compile plane**
+  - Ruling: the engine ships NO in-process Rust actor
+    - framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
+    - k10r/gravity-class Rust services ship as `.wasm` artifacts uploaded at runtime (`set(lang="wasm", bytes)`)
+    - compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework
+  - Work items
+    - [ ] wasm carrier completion: pointer marshalling (Phase 4 `link` payloads), ctx bridge host imports on wasm, `interface_schema` introspection (Rust-exported fn returning JSON, same contract as python/steel)
+    - [ ] metadata declaration unified on the type: per-type idle_ttl landed, but receives/emits are still declared imperatively on `realm.router` post-registration
+      - move onto `ActorType` (`.on(event, key_field)` / `.emits([...])` builders; script types adopt from `interface_schema` introspection at register)
+      - `register_type` assembles routes as a side effect; hot-swap updates them — one declaration surface per type
+    - [ ] remove the Rust-closure actor form (`ActorType::simple`) from the public API
+      - rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path
+    - [ ] NUSHELL OPEN QUESTION (needs discussion, not silently resolved)
+      - nushell actors are subprocess-carried with no ctx bridge (explicit error) — as platform actors they are second-class (no state, no invoke)
+      - language-selection.md assigns nu the system-interaction quadrant via probe
+      - options: nu stays probe-only (drop nu as aura actor language) / nu gains a bridge story (stdin/stdout frame protocol, bidirectional CGI) / accept second-class nu actors
+      - affects whether the nushell carrier stays in aura's feature set
+- [ ] **Phase 4.5a — PRIORITY CLEANUP: remove the Rust-closure actor form (`ActorType::simple`) from the public API, immediately after Phase 4.5 lands its replacement**
+  - the engine ships NO in-process Rust actor — framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
+  - Rust code becomes an actor through exactly one channel: compile to wasm and upload
+  - concrete removals
+    - delete `ActorType::simple` (or confine it to `#[cfg(test)]` scaffolding)
+    - rewrite the cli echo demo (`crates/cli/src/main.rs` — two `ActorType::simple` registrations) onto a steel script actor
+    - migrate engine tests (`echo.rs` / `events.rs` / `callslot.rs` / `fjall_state.rs` / `namespaces.rs`) onto script actors (wasm/steel/python) as the acceptance path
+  - done = no `ActorType::simple` outside `#[cfg(test)]`; public docs describe one actor form per language (script source or wasm artifact)
+- [x] **Phase 4.5b — PRIORITY: actor metadata lifecycle — introspect-once at upload, persist to the meta store, never re-introspect on the execution path**
+  - Lifecycle model (authoritative)
+    - UPLOAD (`set`) is its own lifecycle and may never execute
+    - at upload the host introspects `interface_schema()` ONCE (a pure function; one carrier load, one call, result extracted, load discarded)
+    - extracted metadata (receives / emits / lifecycle.idle_ttl / returns) is PERSISTED into the meta okm instance, keyed alongside the actor definition (`actor_defs`-adjacent; same versioning, content-hash dedup and rollback semantics as the script bytes)
+    - EXECUTION never calls `interface_schema` — the schema is a static record in the metadata store; message handling loads the script (latest version) and calls the entry only
+    - VERSION CHANGE (a new `set`) re-introspects once and updates the persisted metadata; until then the old metadata governs
+  - Carrier-uniform: python/steel (loaded module), nushell (one spawn per call — introspection is one spawn running a generated `interface_schema` wrapper; the current "not wired for nushell" limitation is a TODO, not a capability gap), wasm (one module instantiation — same one-shot shape as nushell)
+  - Corrections to the current implementation
+    - [x] (a) `actor/src/persist.rs`: `PersistedActor` record (language/source/entry/idle_ttl/schema) persisted via `engine.register` (now returns `Result`); meta okm instance constructed per config (`meta_engine`/`meta_dir`); boot reload re-registers types from the meta store — metadata survives node restart
+    - [x] (b) execution path introspection-free, locked by acceptance (definition + TTL survive restart on the same meta dir, immediately invocable)
+    - [x] (c) nushell introspection works through the generic carrier path (generated wrapper calls `interface_schema(args)`; zero carrier changes) — acceptance: nu script declares `idle_ttl: 5m`, register seeds it
+    - [x] (d) docs: realm.md §script persistence + actor-api.md state the three-lifecycle model (upload/introspect+persist — execute/read metadata — version change/re-introspect), replacing any "load once, call schema then entry" phrasing
+  - Done = metadata survives node restart from the meta store; execution path provably schema-free; all four carriers (python/steel/nushell/wasm) deliver declared metadata through the same upload-time introspection contract
+- [~] **Phase 4.5c — PRIORITY: multi-entry actors + event-queue semantics (corrects the single-entry model in the current implementation)**
+  - Problem: the current model is asymmetric and wrong on two axes
+    - definition: one `execute` entry, but emits are multiple exits — an actor with several handlers must split into several actors, duplicating shared logic
+    - delivery: events are fanned out into per-actor mailboxes, which bakes in "an event belongs to an actor" — wrong for one-to-many (several actors listen to one event)
+  - Ruling (restores the realm.md §on-decorator design + fixes delivery semantics)
+    - MULTI-ENTRY: handlers declare `@on(event, key=...)` per handler (python decorator / steel `on` fn / wasm export convention) — one actor type, many handlers; shared logic stays in one place. NO standalone single-entry mode: a direct call (`ctx.invoke` / engine `invoke(target, handler, args)`) DECLARES the handler name in its payload — no reserved names, no implicit entry; event delivery addresses the handler by the event name
+    - `interface_schema` is assembled IMPLICITLY and merged with an explicit partial declaration (not "derived, hand-written wins"): decorators own receives/wildcard_receives; the script contributes lifecycle etc.; the merged single function is the only thing aura calls — uniform across languages (rust/wasm: `#[on(x)]` generates the same implicit fn; steel/nushell hand-write it). EMITS are never collected or validated (ADR-0012): receiver set is a runtime fact — dead ring + delivery log are the observation surface; source parsing deferred until it serves a real consumer (Windmill criterion)
+    - partition key declared on the decorator (`@on("add_to_cart", key="user_id")`), bound to the handler — not in a separate schema block
+    - EVENT QUEUES replace per-actor mailboxes for event delivery: each queue holds one event family; @on-declared `key` → queue is per-(event, partition); no key declared → queue is per-event (singleton consumers)
+      - an event belongs to NO actor; a queue may have multiple subscribers (one-to-many delivery is structural, not a fan-out simulation)
+      - actor instances subscribe to queues per their @on declarations; serial-per-(actor-instance) semantics preserved by per-subscription cursor, not by owning the queue
+    - emits: no hand-written whitelist, no static collection, no registration validation (ADR-0012) — an emit with no subscribers lands in the dead ring; that ring is the audit surface
+  - Scope / order: touches realm delivery path (router → queues), actor type definition (decorators → derived metadata feeding 4.5b introspection), carrier contract (handlers are addressed by event name, not a single entry) — lands with/after 4.5 metadata unification so the derived schema feeds the same meta-store persistence
+  - Progress
+    - [x] step 1 — decorator-derived metadata + router seeding: python carrier injects an `@on` collector at import (identity decorator, `(event, key)` registry) and ASSEMBLES an implicit `interface_schema` merged field-wise with an explicit partial declaration (decorators own receives/wildcard_receives; the script contributes lifecycle etc.) — aura calls `interface_schema` uniformly across languages, no python branch; `engine.register` reads the full schema and seeds `router.on(event, type, key)` / `on_wildcard` per declaration (acceptance: exact + key-less + wildcard routes derive from decorators; merged schema carries decorator receives AND explicit lifecycle)
+    - [x] step 2 — delivery path: per-(event, partition) broadcast queues replace per-route submit-to-instance-mailbox for event delivery; `@on` key → (event, partition) queue, no key → per-event singleton queue; each subscriber instance holds a private Receiver (per-subscription cursor) drained by a serial consumer task; emit activates matched route targets BEFORE sending (virtual-actor activation) and dedupes sends per queue; queue id = route's declared event (exact name or wildcard pattern) — acceptance: one event, two subscriber types, both receive exactly once
+    - [ ] step 3 — steel `on` fn + nushell/wasm equivalents of the collector contract; steel AST extraction per realm.md
+    - [x] step 4 — DROPPED (ADR-0012): static emit collection + registration validation rejected — the lint catches only a subset the dead ring already reports better, warm-up/placement on an unguaranteed graph wastes runtime resources, and collected emits re-duplicate the emit call site (the same drift the whitelist had); may_emit whitelist check removed from the emit path
+    - [~] step 5 — docs: actor-api.md bilingual rewritten to multi-entry model (lifecycle + event-queue semantics + @on examples per language) — landed; realm.md session-queue section + wiki §6.2/§mailbox updated (wiki aura-architecture §5 bullet + §6.2 lifecycle, stateless-agent-architecture probe adapter wording)
+  - Docs status: realm.md §on-decorator matches the ruling; actor-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture probe-adapter wording updated to event-queue semantics (2026-09-15)
 
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Actor hosting: Gravity as Actor type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.
-- [ ] Phase 6.5 — Resident execution windows (retention-period dwell): replaces strict single-shot release. MECHANISM LANDED: idle TTL sunk to ActorType (`idle_ttl: Option<Duration>`, `with_idle_ttl` builder; per-type override with realm-wide default fallback) — the retention window IS the turn-executor's per-type TTL, no second mechanism. Remaining: turn-executor type wiring (Gravity hosting, Phase 6) declares its long TTL; same-session consecutive tool calls fill via in-memory oneshot (hot loop does zero persistence per call); session persisted + executor released at turn end or retention expiry; a new same-session turn within the window reuses the resident executor (skips session fetch). Stateless semantics intact — state externalization (executor holds no session state) is what "stateless" means; the resident is a discardable hot cache, rebuildable from the event stream. Persistence delta: call_id only. Probe Actor type hosting: actor_type = Probe, partition_key = node_id; the connection plane adapts outbound WS frames to Realm mailbox semantics (frame down = event delivery, frame up = reply_to return via `resolve_call`) — adapter, not a bypass.
-- [ ] Phase 6.6 — Storage Actor (ADR-0010): host `#[kv_storage]` executor instances — one declared instance per application (ns = app_id/tenant_id prefix). The executor's surface is exactly one method: frame in (op + bytes) → scan bytes out; arrival path (outbound WS / realm events / in-process direct call) is the caller's business, invisible to the executor. The receiver holds no OKM semantics: prepend declared prefix, execute, fill back. Structural isolation: handles are prefix-bound at construction; namespace escape is not expressible.
+- [~] Phase 6.5 — Resident execution windows (retention-period dwell): replaces strict single-shot release
+  - [x] MECHANISM LANDED: idle TTL sunk to ActorType (`idle_ttl: Option<Duration>`, `with_idle_ttl` builder; per-type override with realm-wide default fallback) — the retention window IS the turn-executor's per-type TTL, no second mechanism
+  - [ ] turn-executor type wiring (Gravity hosting, Phase 6) declares its long TTL
+  - [ ] same-session consecutive tool calls fill via in-memory oneshot (hot loop: zero persistence per call); session persisted + executor released at turn end or retention expiry; a new same-session turn within the window reuses the resident executor (skips session fetch)
+  - Stateless semantics intact — state externalization (executor holds no session state) is what "stateless" means; the resident is a discardable hot cache, rebuildable from the event stream. Persistence delta: call_id only.
+  - Probe Actor type hosting: actor_type = Probe, partition_key = node_id; the connection plane adapts outbound WS frames to Realm mailbox semantics (frame down = event delivery, frame up = reply_to return via `resolve_call`) — adapter, not a bypass.
+- [ ] Phase 6.6 — Storage Actor (ADR-0010): host `#[kv_storage]` executor instances
+  - one declared instance per application (ns = app_id/tenant_id prefix)
+  - surface is exactly one method: frame in (op + bytes) → scan bytes out; arrival path (outbound WS / realm events / in-process direct call) is the caller's business, invisible to the executor
+  - the receiver holds no OKM semantics: prepend declared prefix, execute, fill back
+  - structural isolation: handles are prefix-bound at construction; namespace escape is not expressible
 - [ ] Phase 7 — Probe embedding: container execution base (heavy-isolation end of the Wasmtime lineage) as an in-realm base component; probe repo deploys as remote actuator via outbound registration.
 - [ ] Phase 8 — Prism hosting: WS gateway as Aura-resident component (client connections pin here, not on Gravity); turn delivery = realm events. Prism repo owns the protocol, this repo owns the connection plane.
 

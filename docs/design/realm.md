@@ -77,21 +77,23 @@
 set(<lang>, <script/wasm>)
 ```
 
-提交或更新一个 Actor **定义**（类型）。`lang` ∈ {Steel, Python, Wasm}。脚本内导出 `interface_schema()` + 单一入口函数（事件名映射为函数参数）。运行时调用 `set()` 可热替换 Actor 实现——不仅换行为，还换语言。
+提交或更新一个 Actor **定义**（类型）。`lang` ∈ {Steel, Python, Wasm}。脚本内以 `@on` 装饰器（或 steel `on` 函数 / wasm 导出约定）声明多入口 handler（事件名映射为函数参数），`interface_schema` 由装饰器推导（手写可覆盖 lifecycle）。名字为 `execute` 的 handler 是直接调用通道（`ctx.invoke`）的目标，无特权。运行时调用 `set()` 可热替换 Actor 实现——不仅换行为，还换语言。
 
 `set()` 定义的是类型，不是实例。Actor 实例由 Realm 根据 partition key 按需激活（详见 [§5.11](#511-actor-实例化与分片)）。
 
-**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在 Fjall 中，不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3），不走 Raft。Fjall 的 LSM-Tree 天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
+**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在 **meta okm 实例**（与 Actor 状态的 data 实例分离，Phase 4 两实例模型；当前实现为 `actor/src/persist.rs` + `meta_engine`/`meta_dir` 配置），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3），不走 Raft。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
 
 ```
-fjall partition: "actor_defs"
+meta instance, partition: "actor_defs"
   key:   <actor_type_name>
   value: CBOR { lang, script_bytes, version, content_hash, committed_at, committed_by }
 ```
 
-**去重**：`set()` 提交前先计算 `script_bytes` 的哈希（content_hash），与 Fjall 中最新版本的 `content_hash` 比较——相同则忽略，不写入新版本。避免 CI 重复部署或无意义的热重载。
+**去重**：`set()` 提交前先计算 `script_bytes` 的哈希（content_hash），与 meta 实例中最新版本的 `content_hash` 比较——相同则忽略，不写入新版本。避免 CI 重复部署或无意义的热重载。
 
-`on()` handler 在 Actor 实例激活时从 Fjall 读取最新版本的脚本，加载到对应 VM 执行。实例驱逐后，下次激活重新从 Fjall 读取。
+**三条生命周期线分离**（Phase 4.5b 裁决）：上传（`set`）是独立生命周期——上传时 Host 自省 `interface_schema()` 一次，元数据（receives/emits/lifecycle）与定义一并持久化；执行永不调用 `interface_schema`——消息处理只加载脚本（最新版本）调 handler，元数据从 meta store 读取；版本变更（新 `set`）重新自省一次、更新持久化元数据，此前旧元数据治理。已实现：`PersistedActor` 记录 + `engine.register` 持久化 + boot 重载（见 PLAN Phase 4.5b）。
+
+`on()` handler 在 Actor 实例激活时从 meta 实例读取最新版本的脚本，加载到对应 VM 执行。实例驱逐后，下次激活重新从 meta 实例读取。
 
 ### 5.4 interface_schema()
 

@@ -1,18 +1,79 @@
 # Actor API (Script Language Reference)
 
 > Script contracts and host functions per language. English primary;
-> Chinese counterpart linked at each section end.
+> Chinese counterpart: [actor-api.md](actor-api.md).
 > Execution model and design background: [realm.md](realm.md);
 > introspection mechanism: [§5.4](realm.md#54-interface_schema).
 
+## Lifecycle (three separate lines)
+
+```
+UPLOAD (set)     its own lifecycle; may never execute
+  └─ host introspects once (calls interface_schema(), or derives from @on decorators)
+  └─ metadata (receives/wildcard_receives/lifecycle) extracted and persisted to the meta store
+  └─ receives derives the delivery routes (event → type + key field)
+EXECUTION        per message: load script (latest version) → address handler by event name → run
+  └─ interface_schema is NEVER called — it is already a static record in the meta store
+VERSION CHANGE   a new `set` re-introspects once and updates the persisted metadata and routes;
+                 until then the old metadata governs
+```
+
+## Event-Driven Model (Multi-Entry)
+
+An Actor type is **multi-entry**: `@on` decorators (steel's `on` function,
+wasm's export convention) declare which event each handler listens to,
+and the event name is the handler's addressing name. There is no single
+entry — the single-entry model was asymmetric (one way in, many ways out
+via emits) and forced actors with several handlers to split apart,
+duplicating shared logic.
+
+```python
+@on("add_to_cart", key="user_id")   # partition key declared on the decorator
+def add(args): ...
+
+@on("remove_from_cart")             # no key → singleton consumer
+def remove(args): ...
+
+@on("order.*")                      # prefix wildcard → wildcard_receives, singleton
+def audit(args): ...
+```
+
+**Delivery semantics: event queues, not actor mailboxes**. An event
+belongs to no actor — `emit("add_to_cart", data)` writes the event into
+the `add_to_cart` event queue; a queue for a handler with a declared
+`key` partitions by `(event, partition)` (the key field's value comes
+from the event data), a queue without a key is one queue per event. A
+queue can have **multiple subscribers** (several actor types listening
+to one event — one-to-many is structural, not a fan-out simulation).
+Actor instances subscribe to queues per their `@on` declarations; a
+per-subscription cursor keeps each instance's consumption serial — the
+instance does not own the queue.
+
+**Emits are never declared, collected, or validated (ADR-0012)**: the
+receiver set of an event is a runtime fact — an emit with no subscriber
+lands in the dead-event ring, which is the observable audit surface.
+Source-level emit collection is deferred until it serves a real consumer
+(the Windmill criterion: parse when the parse drives an action only the
+parse can make correct).
+
+**`interface_schema` is assembled implicitly and merged with the explicit
+part**: the carrier builds an implicit `interface_schema` at module
+assembly (`receives` from `@on` parameters, wildcards into
+`wildcard_receives`) and merges it field-wise with a partial explicit
+declaration the script writes — decorators own receives, the script
+contributes lifecycle and anything else the decorators cannot express.
+The single merged function is the only thing aura calls. rust/wasm get
+the same implicit function from `#[on(x)]` annotations; steel/nushell
+hand-write this one function.
+
 ## Common Contract (All Languages)
 
-A script Actor = **one source file** + **two conventional entry points**:
+A script Actor = **one source file** + **a set of handler functions**:
 
-| Entry | Required | Purpose |
-|-------|----------|---------|
-| `interface_schema(args)` | optional | Called once by the host at registration; declares metadata (event contract, residency policy). Pure function, no side effects; the argument is ignored |
-| `execute(args)` (or a custom entry) | yes | Message-handling entry; the event name maps to the function argument |
+| Function | Required | Purpose |
+|----------|----------|---------|
+| handlers (multiple `@on` functions) | yes | Message-handling entries; the event name maps to the function argument. Event delivery addresses the handler by event name; a direct call (`ctx.invoke` / engine `invoke`) declares in its payload which handler to call |
+| `interface_schema(args)` | optional | Hand-written metadata (lifecycle); derived from decorators when absent |
 
 **Execution contract**: JSON in (one argument, already decoded into a
 structured value), JSON-serializable value out; failures surface as the
@@ -27,7 +88,7 @@ following — each takes one JSON argument and returns a JSON value:
   is not expressible)
 - `ctx_state_set({"field": ..., "value": ...})` → `{"ok": true}`
 - `ctx_state_delete(field)` → `{"ok": true}`
-- `ctx_invoke({"type": ..., "key": ..., "args": ...})` → the target
+- `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
   Actor's return value (blocking wait through the unified call model;
   timeout = failure value)
 
@@ -37,16 +98,17 @@ following — each takes one JSON argument and returns a JSON value:
 |---|---|---|---|---|
 | In-process | ✅ | ✅ | ❌ subprocess | ✅ VM |
 | ctx host functions | ✅ | ✅ | ❌ (explicit error) | via frame up-call (Phase 6.6) |
+| Resident VM (Phase 2.6) | ✅ | ✅ | ❌ one-shot | ✅ |
+| `@on` multi-entry | ✅ decorator | `on` fn | one handler for now (direct calls declare the handler name) | export convention |
 | Best for | business logic | AI-generated ops | pipeline/CLI shape | heavily-isolated 3rd-party code |
 
 **`interface_schema` is transparent to probe**: a probe carrier only does
-"load source → call entry → serialize result" — `interface_schema` is to
-it just another function call with no special meaning. Aura is the only
-party that gives it meaning: the host calls it once at registration for
-metadata introspection (event contract, `lifecycle.idle_ttl`). The same
-script handed to probe execution has a dead `interface_schema` that nobody
-calls; handed to aura registration, it becomes the type definition's
-metadata source.
+"load source → call entry → serialize result". The `@on` collector the
+python carrier injects is language-shape (a declaration registry); the
+schema-derivation semantics belong to aura — introspect at upload and
+persist. The same script handed to probe execution has a dead
+`interface_schema` that nobody calls; handed to aura upload, it becomes
+the type definition's metadata source.
 
 ---
 
@@ -55,53 +117,72 @@ metadata source.
 [中文](#python)
 
 ```python
-# Metadata declaration (optional; called once at registration)
-def interface_schema(args=None):
-    return {
-        "receives": {
-            "add_to_cart": {"key": "user_id"}
-        },
-        "emits": ["cart_updated"],
-        "lifecycle": {"idle_ttl": "5m"}   # number = seconds; string needs a unit s/m/h
-    }
-
-# Message entry
-def execute(args):
+@on("add_to_cart", key="user_id")
+def add(args):
     # args: the decoded JSON value (dict/list/...), not a string
-    ctx_state_set('{"field": "visits", "value": 1}')
-    got = ctx_state_get(json.dumps("visits"))   # host fns take a JSON string
+    ctx_state_set('{"field": "visits", "value": 1}')   # host fns take a JSON string
+    got = ctx_state_get('{"field": "visits"}')
     echo = ctx_invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
     return {"stored": got["value"], "echo": echo["x"]}
+
+@on("remove_from_cart")
+def remove(args):
+    return {"removed": True}
+
+@on("order.*")          # wildcard: listens to a class of events, singleton instance
+def audit(args):
+    return None
+
+# optional explicit partial declaration: merged field-wise with the
+# decorator-derived receives (decorators own receives; this adds lifecycle etc.)
+def interface_schema(args=None):
+    return {"lifecycle": {"idle_ttl": "5m"}}   # number = seconds; string needs a unit s/m/h
 ```
 
-Note: host-function arguments are **one JSON string** (decoded at the
-carrier boundary) — build them with `json.dumps(...)`; return values are
-already native dicts (no `json.loads` needed).
+Notes:
 
-No-entry semantics: setting a module-level `result` variable also works
-(when registered without an entry).
+- host-function arguments are **one JSON string** (decoded at the
+  carrier boundary) — build them with `json.dumps(...)`; return values
+  are already native dicts (no `json.loads` needed)
+- the `@on` decorator is injected by the carrier; scripts never define
+  `on` themselves; the decorator is an identity transform — decorated
+  functions remain directly callable
+- wildcards are prefix-only (`prefix.*`, etcd-style), matching
+  `order.created` but not `order`; wildcard-declared handlers route to
+  the singleton instance
+- **a direct call declares which function to call**: the `ctx_invoke`
+  payload must carry a `handler` field (the function name), and so must
+  engine `invoke(target, handler, args)` — no reserved function names, no
+  implicit entry; when registered without an entry, a module-level
+  `result` variable also works
 
 ## Steel
 
 [中文](#steel)
 
 ```scheme
-;; Metadata declaration (optional)
-(define (interface_schema args)
-  '((lifecycle . ((idle_ttl . "5m")))))
+;; Multi-entry: the `on` function declares event listening (schema inline,
+;; no separate interface_schema)
+(on "add_to_cart"
+  (schema (key "user_id"))
+  (lambda (args)
+    (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
+    (let* ((got (ctx_state_get "{\"field\": \"visits\"}"))
+           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"args\": {\"x\": 1}}")))
+      (hash "visits" (hash-ref got "value")
+            "echo" (hash-ref echoed "x")))))
 
-;; Message entry
-(define (execute args)
-  (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
-  (let* ((got (ctx_state_get "\"visits\""))
-         (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"args\": {\"x\": 1}}")))
-    (hash "visits" (hash-ref got "value")
-          "echo" (hash-ref echoed "x"))))
+;; Hand-written metadata (optional) — use hash, not alist (pairs have no
+;; JSON mapping)
+(define (interface_schema args)
+  (hash "lifecycle" (hash "idle_ttl" "5m")))
 ```
 
 Host-function arguments are JSON strings (native steel values marshal
 automatically); **return values are native steel values** — hashes,
 numbers, and booleans are directly usable, no JSON string re-parsing.
+Alists (`'((k . v))`) have no JSON marshal — declaration structures use
+`hash` exclusively.
 
 No-entry semantics: define a `*result*` variable in the source.
 
@@ -111,7 +192,8 @@ No-entry semantics: define a `*result*` variable in the source.
 
 ```nu
 # Subprocess execution: no ctx host functions (cannot call back into the
-# host — script actors needing ctx must use an in-process carrier)
+# host — script actors needing ctx must use an in-process carrier);
+# no VM residency (one-shot, no memory space)
 export def execute [args] {
     { sum: ($args.items | math sum) }
 }
@@ -121,19 +203,26 @@ export def execute [args] {
   through module import and is explicitly rejected
 - The argument is one parsed value (record/list), not a string; the return
   value must survive `to json --raw`
-- `interface_schema` declarations do not take effect on nushell (the
-  registration-time subprocess introspection is technically feasible but
-  not wired; nushell Actors declare TTL host-side)
+- nushell carries a **single direct-call handler** (`execute`; the
+  subprocess shape does not match multi-entry addressing);
+  `interface_schema` declarations work through the generic wrapper
+  (`export def interface_schema [args]` can declare a lifecycle TTL);
+  scenarios needing `@on` multi-entry + ctx use python/steel
 
 ## Wasm (written in Rust)
 
 [中文](#wasm-rust-用-rust-编写)
 
-The carrier for third-party untrusted code: hardware-grade isolation
-(Wasmtime), distinct from the soft isolation of in-process VMs.
+The only release form for Rust services: compile to `.wasm` and upload at
+runtime (`set(lang="wasm", bytes)`), not into the host binary — compiling
+them in would fork the platform per app, collapsing the platform into a
+framework. Storage never enters the sandbox: the OKM schema compiles into
+the wasm unchanged, with the `VirtualStorage` implementation swapped for
+a frame up-call — the host-side NestStorage executor carries the physical
+store under a registry-allocated app ns prefix (ADR-0007 storage-carriage
+split). Static OKM derives; no okm-dynamic needed.
 
-Convention (skeleton; pointer marshalling lands with Phase 4 `link`
-payloads):
+Convention (Phase 4 `link` payload lands pointer marshalling):
 
 ```rust
 // Build target wasm32-wasi; the module exports one of:
@@ -147,25 +236,18 @@ pub extern "C" fn execute(args_ptr: i64) -> i64 {
 }
 ```
 
+- Multi-entry export convention: each handler exports as a function
+  named after its event (`add_to_cart(i64) -> i64`) — the event name is
+  the export name, and `interface_schema` derives from the export list
+  (lands with Phase 4.5c step 3)
+- The `interface_schema` declaration path matches python/steel: export a
+  function of the same name returning JSON (pointer convention) — it
+  takes effect at upload-time introspection
 - Host imports are deliberately minimal: no fs, no network — the
   capability surface (Phase 5) decides what is granted
-- **The only release form for Rust services** — storage-bearing services
-  of the k10r/gravity class compile to `.wasm` and upload at runtime
-  (`set(lang="wasm", bytes)`), not into the host binary: compiling them
-  in would fork the platform per app (every new service = repackage),
-  collapsing the platform into a framework. OKM schema code compiles into
-  the wasm unchanged, and storage goes through a `VirtualStorage` frame
-  up-call — the host's NestStorage executor (Phase 6.6) carries the
-  physical store under a registry-allocated app ns prefix (ADR-0007,
-  storage-carriage split). Static OKM derives; no okm-dynamic needed
-- The aura engine ships **no in-process Rust actor form** — framework
-  mechanics (the evictor class) are plain realm logic, not actors;
-  wrapping them as actors would be a pointless detour. Rust code becomes
-  an actor through exactly one channel: compile to wasm and upload. The
-  Rust-closure form of `ActorType` exists only in test scaffolding
-- The `interface_schema` declaration path matches python/steel (export a
-  function of the same name returning JSON) and takes effect at
-  registration
+- The aura engine ships **no in-process Rust actor** — framework
+  mechanics (the evictor class) are plain realm logic; Rust code becomes
+  an actor through exactly one channel: compile to wasm and upload
 
 ---
 
@@ -175,5 +257,6 @@ probe = **the operation execution plane**: `ToolCall` in → `execute()` →
 `ToolResult` out. It knows nothing about Actors, events, or the semantics
 of `interface_schema` — all of these are **aura's field-layer concepts**.
 The same python file: as a probe operation only `execute` is called; as an
-aura Actor the `interface_schema` runs first and `execute` becomes the
-instance's message entry. One file, two hosts, transparent contracts.
+aura Actor the introspection runs first and every `@on` handler becomes
+one of the instance's message entries. One file, two hosts, transparent
+contracts.

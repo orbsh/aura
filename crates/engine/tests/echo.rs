@@ -239,3 +239,112 @@ async fn idle_ttl_evicts_automatically() {
         assert_eq!(evicted[0].key, "ttl");
     }
 }
+
+// ------------------------------------------------- Phase 2.5 (ctx bridge) --
+//
+// Script actors reach the host through named functions: one JSON argument
+// in, one JSON value out. `ctx_state_*` touch the instance's own state
+// (scoped to self_id — cross-instance reach is not expressible);
+// `ctx_invoke` rides the unified call model (Phase 3.5).
+
+// Steel script: set a counter field, read it back, and invoke another
+// actor through ctx_invoke.
+#[cfg(feature = "steel")]
+#[tokio::test]
+async fn steel_script_ctx_bridge() {
+    let engine = Engine::start(&Default::default()).expect("engine boot");
+
+    // Target invoked from the script: echoes back its args.
+    engine.register(echo_type()).await;
+    engine
+        .register(aura_actor::ActorType::script(
+            "steel-ctx",
+            "steel",
+            r#"
+(define (execute args)
+  (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
+  (let* ((got (ctx_state_get "\"visits\""))
+         (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"ttl2\", \"args\": {\"hello\": true}}")))
+    (hash "present" (hash-ref got "present") "visits" (hash-ref got "value") "echo" (hash-ref echoed "hello")))
+)"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    let out = engine
+        .invoke(
+            InstanceId { actor_type: "steel-ctx".into(), key: "s1".into() },
+            serde_json::json!(null),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({"present": true, "visits": 1, "echo": true})
+    );
+}
+
+// Python script: same bridge surface — state + invoke.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn python_script_ctx_bridge() {
+    let engine = Engine::start(&Default::default()).expect("engine boot");
+    engine.register(echo_type()).await;
+    engine
+        .register(aura_actor::ActorType::script(
+            "py-ctx",
+            "python",
+            r#"
+import json
+
+def execute(args):
+    ctx_state_set(json.dumps({"field": "color", "value": "blue"}))
+    got = ctx_state_get(json.dumps("color"))
+    echo = ctx_invoke(json.dumps({"type": "echo", "key": "ttl3", "args": {"ok": 7}}))
+    return {"stored": got["value"], "echo": echo["ok"]}
+"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    let out = engine
+        .invoke(
+            InstanceId { actor_type: "py-ctx".into(), key: "p1".into() },
+            serde_json::json!(null),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({"stored": "blue", "echo": 7}));
+}
+
+// State written through the bridge persists across eviction: the script
+// actor's field survives scale-to-zero.
+#[cfg(feature = "steel")]
+#[tokio::test]
+async fn script_state_survives_eviction() {
+    let engine = Engine::start(&Default::default()).expect("engine boot");
+    engine
+        .register(aura_actor::ActorType::script(
+            "steel-counter",
+            "steel",
+            r#"
+(define (execute args)
+  (let* ((prev (ctx_state_get "\"count\""))
+         (n (if (hash-ref prev "present") (+ 1 (hash-ref prev "value")) 1)))
+    (ctx_state_set (string-append "{\"field\": \"count\", \"value\": " (number->string n) "}"))
+    (hash "count" n))
+)"#,
+            Some("execute".into()),
+        ))
+        .await;
+
+    let target = InstanceId { actor_type: "steel-counter".into(), key: "c1".into() };
+    let out = engine.invoke(target.clone(), serde_json::json!(null)).await.unwrap();
+    assert_eq!(out, serde_json::json!({"count": 1}));
+
+    engine.realm.lock().await.evict_idle(engine.realm.clone()).await;
+
+    let out = engine.invoke(target, serde_json::json!(null)).await.unwrap();
+    assert_eq!(out, serde_json::json!({"count": 2}));
+}
+

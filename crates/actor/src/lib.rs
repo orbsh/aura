@@ -182,6 +182,14 @@ pub mod dispatch_handle {
     >;
 }
 
+impl Invoke {
+    /// Call the dispatch target and wait for its result. Used by the script
+    /// ctx bridge (which blocks inside spawn_blocking).
+    pub async fn call(&self, target: InstanceId, args: Value) -> anyhow::Result<Value> {
+        (self.dispatch.clone())(target, args).await
+    }
+}
+
 impl Ctx {
     pub fn new(self_id: InstanceId, store: SharedStore, dispatch: dispatch_handle::DispatchHandle) -> Self {
         Self {
@@ -194,6 +202,17 @@ impl Ctx {
     /// The single controlled call surface (ADR-0011).
     pub async fn invoke(&self, target: InstanceId, args: Value) -> anyhow::Result<Value> {
         (self.invoke.dispatch.clone())(target, args).await
+    }
+
+    /// The instance's state store handle. Used by the script ctx bridge to
+    /// build sync host functions over this instance's own state.
+    pub fn state_store(&self) -> SharedStore {
+        self.state.store.clone()
+    }
+
+    /// The invoke dispatch handle, for sync wrappers around `invoke`.
+    pub fn invoke_handle(&self) -> dispatch_handle::DispatchHandle {
+        self.invoke.dispatch.clone()
     }
 }
 

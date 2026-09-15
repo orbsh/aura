@@ -13,6 +13,29 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
 
+/// Extract a field name (string) from a host-bridge JSON argument.
+fn json_str_field(arg: &serde_json::Value) -> anyhow::Result<String> {
+    arg.as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("expected a string field name"))
+}
+
+/// Extract (field, value) from `{ "field": ..., "value": ... }`.
+fn json_field_value(arg: &serde_json::Value) -> anyhow::Result<(String, serde_json::Value)> {
+    let obj = arg
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("expected an object with `field` and `value`"))?;
+    let field = obj
+        .get("field")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing `field`"))?;
+    let value = obj
+        .get("value")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing `value`"))?;
+    Ok((field.to_string(), value))
+}
+
 /// Shared realm handle: the dispatcher closes over this.
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 
@@ -92,6 +115,75 @@ impl Realm {
         )
     }
 
+    /// Host functions exposed to script actors (Phase 2.5 ctx bridge).
+    /// Contract: one JSON-string argument in, one JSON value out — the
+    /// carrier marshals; the host owns semantics. `ctx_state_get` /
+    /// `ctx_state_set` / `ctx_state_delete` hit the instance's own state
+    /// (the store scopes reads/writes to self_id — no cross-instance
+    /// reach); `ctx_invoke` blocks on the unified call model.
+    fn host_bridge_for(
+        ctx: &aura_actor::Ctx,
+    ) -> std::collections::BTreeMap<String, probe_runtime::carrier::HostFn> {
+        use probe_runtime::carrier::HostFn;
+
+        let self_id = ctx.self_id.clone();
+        let store = ctx.state_store();
+        let get_id = self_id.clone();
+        let get_store = store.clone();
+        let set_id = self_id.clone();
+        let set_store = store.clone();
+        let del_id = self_id.clone();
+        let del_store = store;
+        let dispatch = ctx.invoke_handle();
+        let handle = tokio::runtime::Handle::current();
+
+        let mut fns: std::collections::BTreeMap<String, HostFn> = Default::default();
+        fns.insert(
+            "ctx_state_get".into(),
+            Arc::new(move |arg: serde_json::Value| {
+                let field = json_str_field(&arg)?;
+                match get_store.get(&get_id, &field)? {
+                    Some(v) => Ok(serde_json::json!({ "present": true, "value": v })),
+                    None => Ok(serde_json::json!({ "present": false })),
+                }
+            }) as HostFn,
+        );
+        fns.insert(
+            "ctx_state_set".into(),
+            Arc::new(move |arg: serde_json::Value| {
+                let (field, value) = json_field_value(&arg)?;
+                set_store.set(&set_id, &field, value)?;
+                Ok(serde_json::json!({ "ok": true }))
+            }) as HostFn,
+        );
+        fns.insert(
+            "ctx_state_delete".into(),
+            Arc::new(move |arg: serde_json::Value| {
+                let field = json_str_field(&arg)?;
+                del_store.delete(&del_id, &field)?;
+                Ok(serde_json::json!({ "ok": true }))
+            }) as HostFn,
+        );
+        fns.insert(
+            "ctx_invoke".into(),
+            Arc::new(move |arg: serde_json::Value| {
+                // arg: { "type": ..., "key": ..., "args": ... }. Blocks the
+                // script thread on the unified call model (Phase 3.5) — the
+                // script itself runs in spawn_blocking, so this is bounded
+                // by the call's own tier/timeout semantics.
+                let obj = arg.as_object().ok_or_else(|| anyhow::anyhow!("ctx_invoke expects an object"))?;
+                let ty = obj.get("type").and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `type`"))?;
+                let key = obj.get("key").and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `key`"))?;
+                let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                let target = InstanceId { actor_type: ty.to_string(), key: key.to_string() };
+                handle.block_on(dispatch(target, args))
+            }) as HostFn,
+        );
+        fns
+    }
+
     /// Resolve (type, key) to a live instance, activating on first touch
     /// (virtual actor). Reactivation after eviction runs on_wake.
     async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
@@ -131,13 +223,19 @@ impl Realm {
         let result = match body {
             aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
             aura_actor::Body::Script { language, source, entry } => {
-                // Script actors are pure functions in this phase; the ctx
-                // bridge (state/invoke from scripts) is the remaining
-                // Phase 2 work. The ctx is still constructed so hooks and
-                // future bridge wiring see a uniform shape.
-                let _ = ctx;
-                // Carriers are blocking (in-process VMs, nu subprocess) —
-                // keep them off the async workers.
+                // Phase 2.5 ctx bridge: host functions exposed to the script.
+                // The script runs inside spawn_blocking, so host fns may
+                // block on the async ctx (state I/O, invoke round-trip).
+                // Nushell runs as a subprocess and cannot call back — pass
+                // no bridge there; the carrier errors if one is required.
+                let pure_nushell = language == "nushell";
+                let host = if pure_nushell {
+                    None
+                } else {
+                    Some(probe_runtime::carrier::HostBridge {
+                        functions: Self::host_bridge_for(&ctx),
+                    })
+                };
                 tokio::task::spawn_blocking(move || {
                     probe_runtime::carrier::execute(
                         &language,
@@ -145,6 +243,7 @@ impl Realm {
                             source: &source,
                             entry: entry.as_deref(),
                             args: &job.args,
+                            host: host.as_ref(),
                         },
                     )
                 })

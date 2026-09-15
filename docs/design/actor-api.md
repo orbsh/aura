@@ -107,17 +107,21 @@ def interface_schema(args=None):
 [English](#steel-1)
 
 ```scheme
-;; 多入口：on 函数声明事件监听（schema 内嵌，无独立 interface_schema）
-(on "add_to_cart"
-  (schema (key "user_id"))
+;; 多入口：on 内建声明事件监听（carrier 注入，body 运行时收集）
+;; 参数：事件名、key 字段（空字符串 = 单例）、handler
+(on "add_to_cart" "user_id"
   (lambda (args)
     (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
     (let* ((got (ctx_state_get "{\"field\": \"visits\"}"))
-           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"args\": {\"x\": 1}}")))
+           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
       (hash "visits" (hash-ref got "value")
             "echo" (hash-ref echoed "x")))))
 
-;; 手写元数据（可选）——用 hash，不用 alist（alist 的 pair 无 JSON 映射）
+(on "order.*" "" (lambda (args) #t))   ;; 通配符 → wildcard_receives
+
+;; 可选的显式部分声明：与 on 收集的 receives 按字段合并
+;; （收集器管 receives，这里管 lifecycle 等其它元数据）
+;; ——用 hash，不用 alist（alist 的 pair 无 JSON 映射）
 (define (interface_schema args)
   (hash "lifecycle" (hash "idle_ttl" "5m")))
 ```

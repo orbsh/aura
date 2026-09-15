@@ -161,19 +161,22 @@ Notes:
 [中文](#steel)
 
 ```scheme
-;; Multi-entry: the `on` function declares event listening (schema inline,
-;; no separate interface_schema)
-(on "add_to_cart"
-  (schema (key "user_id"))
+;; Multi-entry: the carrier-injected `on` builtin declares listeners
+;; (collected while the body runs). Args: event, key field (empty string =
+;; singleton), handler.
+(on "add_to_cart" "user_id"
   (lambda (args)
     (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
     (let* ((got (ctx_state_get "{\"field\": \"visits\"}"))
-           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"args\": {\"x\": 1}}")))
+           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
       (hash "visits" (hash-ref got "value")
             "echo" (hash-ref echoed "x")))))
 
-;; Hand-written metadata (optional) — use hash, not alist (pairs have no
-;; JSON mapping)
+(on "order.*" "" (lambda (args) #t))   ;; wildcard → wildcard_receives
+
+;; Optional explicit partial declaration: merged field-wise with the
+;; collector-derived receives (collector owns receives; this adds lifecycle)
+;; — use hash, not alist (pairs have no JSON mapping)
 (define (interface_schema args)
   (hash "lifecycle" (hash "idle_ttl" "5m")))
 ```

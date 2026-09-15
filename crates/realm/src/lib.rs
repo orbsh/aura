@@ -701,19 +701,10 @@ pub async fn introspect_schema(actor: &aura_actor::ActorType) -> Option<serde_js
         let language = language.clone();
         let source = source.clone();
         move || {
-            // Uniform contract: every carrier assembles `interface_schema`
-            // at load (python: implicit decorator-derived merged with an
-            // explicit partial declaration; steel/nushell/wasm: the script
-            // writes it). One call, one name, no language branch.
-            probe_runtime::carrier::execute(
-                &language,
-                probe_runtime::carrier::ExecRequest {
-                    source: &source,
-                    entry: Some("interface_schema"),
-                    args: &serde_json::Value::Null,
-                    host: None,
-                },
-            )
+            // Uniform contract: carrier::introspect dispatches per
+            // language; every carrier assembles/merges `interface_schema`
+            // behind this one call. No language branch in the host.
+            probe_runtime::carrier::introspect(&language, &source)
         }
     })
     .await;

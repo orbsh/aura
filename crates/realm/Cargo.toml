@@ -9,7 +9,7 @@ aura-actor = { path = "../actor" }
 aura-storage = { path = "../storage" }
 probe-runtime = { path = "../../../probe/crates/runtime" }
 probe-protocol = { path = "../../../probe/crates/protocol" }
-okm-core = { path = "../../../okm/okm-core", features = ["fjall"] }
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
 base64 = "0.22"
 ciborium = "0.2"
 tokio-tungstenite = "0.24"

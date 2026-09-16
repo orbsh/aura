@@ -19,7 +19,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use okm_core::table::Table;
-use okm_core::{KeyEncode, Row, RowEncode};
+use okm_core::{KeyEncode, Row, ObjEncode};
 use okm_core::storage::VirtualStorage as _;
 fn cbor_to_vec<T: serde::Serialize>(v: &T) -> anyhow::Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -38,10 +38,10 @@ pub struct EventNameKey {
 }
 
 /// Name payload + `by_name` text index.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(EventNameKey)]
-#[kv_index(by_name { fields(name) })]
-#[kv_ns(30)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EventNameKey)]
+#[ok_index(by_name { fields(name) })]
+#[ok_ns(30)]
 pub struct EventName {
     pub name: String,
 }
@@ -53,10 +53,10 @@ pub struct MqDataKey {
     pub seq: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(MqDataKey)]
-#[kv_partition(1)]
-#[kv_ns(31)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MqDataKey)]
+#[ok_partition(1)]
+#[ok_ns(31)]
 pub struct MqData {
     /// The emit's data value, CBOR-encoded (binary payload, no JSON).
     pub payload: Vec<u8>,
@@ -69,10 +69,10 @@ pub struct MqCursorKey {
     pub actor_id: u32,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(MqCursorKey)]
-#[kv_partition(2)]
-#[kv_ns(32)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MqCursorKey)]
+#[ok_partition(2)]
+#[ok_ns(32)]
 pub struct MqCursor {
     /// Seq of the last CONSUMED event (0 = nothing consumed yet).
     pub cursor: u64,
@@ -83,10 +83,10 @@ pub struct ActorNameKey {
     pub id: u32,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(ActorNameKey)]
-#[kv_index(by_name { fields(name) })]
-#[kv_ns(33)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ActorNameKey)]
+#[ok_index(by_name { fields(name) })]
+#[ok_ns(33)]
 pub struct ActorName {
     pub name: String,
 }

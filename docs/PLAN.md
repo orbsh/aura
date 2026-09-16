@@ -18,21 +18,19 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - event payloads key a fixed `id` field; event name maps to an okm ns
     - routing resolves through that ns's access methods: index scan → id → partition key (one-to-many delivery)
     - replaces `Realm::Route.partition_key_field` string extraction
-- [ ] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)**
+- [~] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)**
   - Problem: spawn-per-job — every message re-loads source, builds a fresh VM, runs the entry, drops it
     - script globals never survive between messages
     - idle_ttl eviction loses nothing → per-type TTL / retention-window semantics meaningless for script actors
-  - Target shape: the resident `Instance` owns a live VM session
-    - first message loads source + builds the VM; subsequent messages reuse it (globals, cached handles alive)
-    - `ctx_state_*` keeps write-through-to-store as the correctness backstop (durable truth always in the store)
-    - idle_ttl eviction destroys the VM with the instance (nothing to flush unless a script opts into snapshotting later)
-    - rebuild = re-instantiate VM + read fields on demand (same as activation today)
-  - Carrier API: a SESSION form beside the stateless `execute`
-    - `session(language, source, host)` builds the VM once; `session.call(entry, args)` re-enters per message; `drop` destroys
-    - python: interpreter namespace cached per instance
-    - steel: engine cached per instance
+  - DONE (2026-09-16): one-shot execution REMOVED — all carriers resident
+    - probe `carrier/session.rs`: `ResidentSession` trait (load/call) + `Sessions` registry; per-instance slot locks (registry lock never held across a call — `ctx_invoke` re-entry safe)
+    - steel: engine cached per instance; python: module (interpreter namespace) cached per instance; nushell: resident PTY REPL (reedline CPR answering, file-based result protocol) — replaces the one-shot subprocess path
+    - aura: `Realm` owns `Sessions`; `run_job` calls `with_session(instance_key)` — cold start loads, later calls reuse; sessions die with the realm (test isolation), hot replacement can evict selectively
+    - eviction = drop the session; rebuild = re-instantiate + reload source (same as activation)
+  - Remaining:
+    - eviction WIRING: `evict_idle` should also `sessions.evict(instance_key)` (currently the session survives idle eviction)
+    - interim shim: event delivery still falls back to the script's `execute` when the addressed handler name has no binding — remove when queues record real handler names
     - wasm: `Module` compiled once + resident `Store`/`Instance` (independent of the ctx-bridge frame path, which stays Phase 6.6)
-    - nushell: EXCLUDED (subprocess, one-shot by construction — part of the Phase 4.5 open question)
   - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics
     - aura decides WHEN a residency (and its VM) dies: realm-wide default TTL + per-type override + script-introspected value
     - eviction is instance-level (mailbox + residency set + partition serial semantics live in aura)

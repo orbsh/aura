@@ -78,3 +78,40 @@ on the event bus.
   partition) — the N-copy duplication of per-actor mailboxes disappears structurally.
 - "No queue component" clarified: no *external heavyweight* queue system; embedded
   persistent partitions are the natural form of passive event persistence.
+
+### 5. Storage substrate: LSM-tree, not a dedicated append-only store (2026-09-16)
+
+The queue's load profile — write-heavy appends, range scans, prefix deletes ordered by the
+watermark — is squarely in LSM territory:
+
+- Appends touch only the memtable; compaction digests them in the background. B-tree
+  engines (BoltDB/redb) pay per-write page addressing for exactly this pattern.
+- Watermark deletion is **prefix deletion, not random deletion**: the deleted range is
+  always the oldest contiguous segment of `[mq-data][ev][part]` (the watermark only moves
+  forward). High stale-ratio SSTables drop wholesale during compaction — the friendliest
+  possible case, no tombstone storm.
+- Sharing the engine with actor state buys crash recovery, ops surface, and — critically —
+  the option of emitting events and state mutations in one WriteBatch (atomic visibility of
+  event + state change; a dedicated append-only store cannot offer this).
+
+**LSM property to design around**: deletion is not immediate. Watermark compaction writes
+tombstones; physical space is reclaimed only after compaction runs. The reduce count
+(logical) reflects deletion instantly; physical disk usage lags. Not a new problem (state
+deletes behave the same), but the ops semantics must say so: `mq-data` physical size leads
+the watermark.
+
+**Key-ordering rule**: `[time]` as the key suffix — never a monotonic sequence number.
+Time-ordered keys make both skip-to-now and watermark deletion pure prefix semantics; a
+sequence suffix would break time-range deletion.
+
+**When a dedicated append-only store WOULD be warranted** (neither signal exists today):
+per-partition throughput hitting disk sequential-write limits (~millions of events/s/partition),
+or a semantic change to "immutable, replayable, machine-shared log" with consumer offsets
+independent of data lifetime. Aura's events are node-private, watermark-dying buffers —
+semantically a subscriber-bounded queue, not a log; a bespoke WAL adds a lifecycle system
+with zero payoff.
+
+**Partitioning note**: `mq-data` and `mq-cursor` get separate Fjall partitions — their
+compaction patterns must not pollute each other (data: appends + range deletes; cursor:
+high-frequency small point writes). The cursor partition lives in the same engine, not the
+meta instance — it is node-private consumer progress, not federated metadata.

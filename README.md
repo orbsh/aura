@@ -6,7 +6,7 @@ Compute-storage-unified modern distributed Actor engine: no SQL, no external cac
 
 - Single binary, zero runtime dependencies (no Docker, no etcd, no database)
 - Rust shell + Steel/Python/Wasm embedded (Polyglot Bridge, zero IPC)
-- Metadata consistency via Openraft; Actor state in Fjall (local) or SlateDB + S3 (cloud-native)
-- Single-node start, multi-machine with one `--raft-nodes` line
+- Metadata per-node (meta okm instance, control-plane single-writer, no consensus); Actor state in Fjall (local) or SlateDB + S3 (cloud-native)
+- Single-node start; federation via well-known protocol authentication, user data stays on its home node
 
 Agent components on top: Gravity (turn executor, Actor type), Probe (execution base / remote actuator), Prism (entry: WS gateway + CLI over WS).

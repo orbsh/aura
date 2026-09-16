@@ -12,8 +12,8 @@
 
 | 在 ctx 上 | 职责 |
 |:--|:--|
-| `ctx.state` | 本实例状态（KV，Fjall/SlateDB，不走 Raft） |
-| `ctx.metadata` | 受控全局元数据（Openraft 强一致） |
+| `ctx.state` | 本实例状态（KV，Fjall/SlateDB，不走网络路径） |
+| `ctx.metadata` | 受控元数据（meta okm 实例，控制平面单写 + 节点缓存；不做跨节点全局同步） |
 | `ctx.invoke()` | 唯一受控调用面——超时、审计、限流、可观测收口于此（§5.13） |
 
 不在 ctx 上的能力与其归属：
@@ -69,7 +69,7 @@
 
 - 事件名标记入口/出口语义（Fluxora 的模式）
 - Actor 不感知协议（HTTP/WS），只收发事件
-- 跨节点元数据事件经 Openraft 共识网络传递；Actor 状态事件走 SlateDB+S3 或本地 Fjall
+- 元数据不跨节点同步：每节点独立 meta 实例（控制平面单写）；Actor 状态事件走 SlateDB+S3 或本地 Fjall；联邦节点间走 well-known 协议认证身份
 
 ### 5.3 Actor 定义接口
 
@@ -81,7 +81,7 @@ set(<lang>, <script/wasm>)
 
 `set()` 定义的是类型，不是实例。Actor 实例由 Realm 根据 partition key 按需激活（详见 [§5.11](#511-actor-实例化与分片)）。
 
-**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在 **meta okm 实例**（与 Actor 状态的 data 实例分离，Phase 4 两实例模型；当前实现为 `actor/src/persist.rs` + `meta_engine`/`meta_dir` 配置），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3），不走 Raft。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
+**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在 **meta okm 实例**（与 Actor 状态的 data 实例分离，Phase 4 两实例模型；当前实现为 `actor/src/persist.rs` + `meta_engine`/`meta_dir` 配置），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
 
 ```
 meta instance, partition: "actor_defs"
@@ -246,7 +246,7 @@ result = await ctx.invoke("charge_processor", {"user_id": "42", "amount": 100})
 |------|------|------|
 | 进程内 Actor ↔ Actor | `ciborium::Value` | 内存 clone，零编解码 |
 | Actor → Fjall 持久化 | CBOR bytes | `ciborium::serialize()` 写入 LSM-Tree |
-| 跨节点 Openraft 元数据复制 | 小体积 CBOR | 仅注册/路由/配置（非 Actor 数据） |
+| 元数据（无跨节点复制） | — | 各节点 meta 实例独立，控制平面单写 |
 | Actor → Fluxora（HTTP/WS） | JSON | 外部系统消费 JSON |
 | Actor → Webhook | CBOR 或 JSON | 按配置选择 |
 
@@ -701,14 +701,14 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 | **命名空间** | namespace（默认 "default"） | 场域按 namespace 隔离，跨 namespace 的事件不投递 |
 | **顺序保证** | 因果一致性 | 如果 e1 因果先于 e2（e1 的处理导致 e2 的发射），则任何订阅者收到 e1 必在 e2 之前。无因果关系的并发事件可乱序 |
 
-因果一致是甜区：保证逻辑正确性（因先于果），不需要全序的共识开销。进程内事件天然因果有序（同一线程内的 emit 序列）；跨节点事件序号由 Openraft 元数据日志排定（只排先后、不复制事件体，实际获比因果更强的次序保证）；同节点并发 Actor 的事件用向量时钟标记 happened-before 关系。
+因果一致是甜区：保证逻辑正确性（因先于果），不需要全序的共识开销。进程内事件天然因果有序（同一线程内的 emit 序列）；同节点并发 Actor 的事件用向量时钟标记 happened-before 关系。元数据不跨节点复制（每节点独立），跨节点次序问题在单写入点模型下不存在。
 
 ### 5.8 传统 Actor 模型可借鉴的设计
 
 | 机制 | 来源 | Aura 对应 |
 |------|------|-----------|
 | **Supervision** | Erlang/OTP | Actor 崩溃时从 Fjall 恢复状态、重新加载脚本和入口函数。策略：one-for-one（独立重启）/ one-for-all（关联 Actor 一起重启，防止状态不一致） |
-| **Location Transparency** | Akka | emit/on 不暴露目标在本地还是远程。Openraft 网络在背后透明投递 |
+| **Location Transparency** | Akka | 刻意不采纳（联邦裁决）：目标地址含节点域是特性——跨域交互显式寻址，域内 emit/on 才是透明的 |
 | **Become/Unbecome** | Akka | `set(lang, script)` 是更激进的版本——运行时切换行为函数和语言。可实现状态机：收到事件后 `set("python", "active_handler.py")` 切换入口函数 |
 | **Stash** | Akka | Actor 刚唤醒、Fjall 状态还在恢复时，先 stash 事件，恢复完成后回放 |
 | **Dead Letters** | Akka/Erlang | emit 的事件如果没有匹配的接收 Actor，或目标 Actor 崩溃且无 supervisor 重启，进入 dead event log。用于调试和事件审计 |
@@ -726,7 +726,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 | **Actix（Rust）** | Rust Actor 框架 | 无事件总线（Actor 间直发）；无分布式；无嵌入式脚本/沙箱；无共识 |
 | **tellus（Rust）** | 经典近距离 Actor：状态机建模，`Message/State/Error` 三关联类型 | 无事件总线、无分布式、无嵌入式存储；但状态机建模的多处设计值得借鉴（见下） |
 
-没有现有框架同时做到：事件总线作为主通信原语 + 嵌入式多语言 + 嵌入式 KV（Scale-to-Zero）+ Raft 共识跨节点 + 无外部消息队列。
+没有现有框架同时做到：事件总线作为主通信原语 + 嵌入式多语言 + 嵌入式 KV（Scale-to-Zero）+ 无外部消息队列 + 无共识依赖的多机组网。
 
 ### 5.9.1 tellus 状态机建模的可借鉴之处
 
@@ -758,7 +758,7 @@ Aura 从 actor 保留下来的是**封装性**：state 按 partition key 隔离�
 
 **2. 替代消息队列——MQ 的三层拆解**
 
-传统架构中服务间通信靠 Kafka/NATS。传统 Actor 框架跨节点靠框架自带 RPC（Akka Remote、Erlang dist）。Aura 的跨节点元数据同步走 Openraft 共识日志；Actor 状态不跨节点复制（走 SlateDB+S3 或本地 Fjall）。不需要外部消息队列处理元数据同步。Fluxora 去掉 Kafka/NATS，由 Aura 场域替代。
+传统架构中服务间通信靠 Kafka/NATS。传统 Actor 框架跨节点靠框架自带 RPC（Akka Remote、Erlang dist）。Aura 的元数据不跨节点同步（每节点独立 meta 实例，控制平面单写）；Actor 状态不跨节点复制（走 SlateDB+S3 或本地 Fjall）。不需要外部消息队列。Fluxora 去掉 Kafka/NATS，由 Aura 场域替代。
 
 消息队列在 Aura 中**不是被替代，而是被拆解**——它的三个职能分别归入 Aura 已有的原生能力：
 
@@ -1116,14 +1116,14 @@ HTTP 响应和 Actor return 值走同一个 `resolve_call` 通道——call 的�
 
 消息队列（MQ）在 Aura 中**不是被替代，而是被拆解**——它的三个职能分别归入 Aura 已有的原生能力。
 
-#### 场域内：事件总线 + Raft（无 MQ）
+#### 场域内：事件总线（无 MQ）
 
 Aura 场域内部（Actor ↔ Actor）的事件通信已经完整内化了传统 MQ 的职责：
 
 | 传统 MQ 职能 | Aura 对应机制 |
 |:--|:--|
 | 服务解耦 | 场域事件总线 emit/on（§5.5） |
-| 跨节点消息 | 元数据走 Openraft 共识日志；Actor 状态走 SlateDB+S3 |
+| 跨节点消息 | 无全局消息面——元数据每节点独立，Actor 状态走 SlateDB+S3；联邦节点间经 well-known 协议认证交互 |
 | 事件持久化 | 每次 emit 落盘 Fjall WAL |
 | 事件重放 | Fjall 状态恢复 + stash 回放 |
 | 投递语义 | at-least-once + 幂等消费端（§5.7） |
@@ -1175,10 +1175,10 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 | 模式 | 存储引擎 | 分发层 | 真理源 | 归档职责 |
 |:--|:--|:--|:--|:--|
-| **Fjall（本地）** | Fjall → 本地 NVMe | 落湖备份 + Raft 元数据协调 | 本地 Fjall（落湖兜底） | **自管**：自行截断/上传 S3 归档 |
+| **Fjall（本地）** | Fjall → 本地 NVMe | 落湖备份（元数据单写，无共识） | 本地 Fjall（落湖兜底） | **自管**：自行截断/上传 S3 归档 |
 | **SlateDB + S3** | SlateDB → S3 | 无（S3 自身 HA） | S3 桶 | 天然（S3 即归档） |
 
-选择 Fjall + Raft 时，冷数据归档**不在 SlateDB 通道里**——Fjall 自管，分两步走：
+选择 Fjall（本地模式）时，冷数据归档**不在 SlateDB 通道里**——Fjall 自管，分两步走：
 
 **首版：直接截断**。数据超过阈值或达到保留期，直接删除本地 SSTable/段，不做外部归档。语法简单、无外部依赖，牺牲的是历史数据不可恢复。
 
@@ -1190,7 +1190,7 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 | 层 | 组件 | 负责 |
 |:--|:--|:--|
-| 场域内状态/事件 | Fjall 本地+落湖（或 SlateDB + S3）＋ Openraft 元数据 | 低延迟、随机读写、元数据强一致 |
+| 场域内状态/事件 | Fjall 本地+落湖（或 SlateDB + S3）＋ 独立 meta 实例 | 低延迟、随机读写、元数据单写可控 |
 | 边界事件/审计/归档 | S3（本模式由 Fjall 自管上传） | 无限容量、不可变日志、保留删除 |
 | 消费组元数据 | KV（Fjall 或 SlateDB） | offset 点查、重试进度 |
 

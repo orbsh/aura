@@ -21,8 +21,8 @@ bound and (b) subject to Host control or record.** Everything else is expressed 
 
 | Capability | Rationale |
 |:--|:--|
-| `ctx.state` | This instance's state; per-instance Fjall/SlateDB path, WAL-per-field. Not Raft. |
-| `ctx.metadata` | Controlled global metadata (registry, sharding, counters); every write goes through Openraft consensus. |
+| `ctx.state` | This instance's state; per-instance Fjall/SlateDB path, WAL-per-field. Never leaves the node's data plane. |
+| `ctx.metadata` | Controlled metadata (registry, sharding, node-local config) in the meta okm instance — control-plane single-writer, no consensus; no cross-node global sync (user data stays on its home node). |
 | `ctx.invoke()` | The single controlled call surface — timeout, audit, rate-limit, observability all terminate here (§5.13). Bypassing it (PyO3/httpx direct) is forbidden. Target resolution (HTTP / realm Actor / remote Probe) is registry-declared; CallSlot two-tier waiting is a runtime-level split invisible to the Actor. |
 
 ### Off ctx

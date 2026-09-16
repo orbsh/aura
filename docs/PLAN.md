@@ -91,6 +91,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - the engine ships NO in-process Rust actor — framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
   - Rust code becomes an actor through exactly one channel: compile to wasm and upload
   - concrete removals
+  - cross-node semantics resolved (ADR-0013): federation, not metadata consensus — metadata is per-node (meta okm, control-plane single writer), user data stays home, inter-node identity via well-known protocol auth; Location Transparency deliberately rejected
     - delete `ActorType::simple` (or confine it to `#[cfg(test)]` scaffolding)
     - rewrite the cli echo demo (`crates/cli/src/main.rs` — two `ActorType::simple` registrations) onto a steel script actor
     - migrate engine tests (`echo.rs` / `events.rs` / `callslot.rs` / `fjall_state.rs` / `namespaces.rs`) onto script actors (wasm/steel/python) as the acceptance path

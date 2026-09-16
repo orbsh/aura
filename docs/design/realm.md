@@ -345,7 +345,8 @@ impl Realm {
             }
         }
 
-        // 第二段：向每个队列广播一次
+        // 第二段：向每个队列持久化写入（4.5c step 2b：okm 队列分区，
+        // emit 即落盘；当前实现为 broadcast 的过渡形态，见 §5.7）
         for (route, partition) in targets {
             let queue = self.event_queues
                 .entry((route.event.clone(), partition))
@@ -697,9 +698,22 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 
 | 维度 | 选择 | 说明 |
 |------|------|------|
-| **可靠性** | at-least-once | 事件不丢，可能重复。消费端需幂等 |
+| **可靠性** | at-least-once | 事件持久化在 okm 队列分区，消费端游标推进——不丢，可能重复。消费端需幂等 |
 | **命名空间** | namespace（默认 "default"） | 场域按 namespace 隔离，跨 namespace 的事件不投递 |
 | **顺序保证** | 因果一致性 | 如果 e1 因果先于 e2（e1 的处理导致 e2 的发射），则任何订阅者收到 e1 必在 e2 之前。无因果关系的并发事件可乱序 |
+
+**持久队列（4.5c step 2b 裁决）**：事件投递的存储形态是 okm 内嵌持久分区，不是内存 broadcast——
+
+```
+[mq-data][event][part_id][time]      ← 事件被动落盘（emit 即持久，与 ctx.state 主动保存同引擎）
+[mq-cursor][event][part_id][actor]   ← 每订阅实例一个游标
+```
+
+- **Scale-to-zero 不丢触发**：实例被驱逐期间产生的事件留在队列里，重新激活后游标未动，积压照常送达（broadcast 模型下这些事件静默丢失——与「事件数据被动持久化」矛盾，已废弃）
+- **慢消费者积压可见**：积压是可计量的队列长度，不是 broadcast 的 Lagged 整段静默丢失；失效显式化优于静默
+- **跳到最新（skip-to-now）向下兼容**：积压过多时，消费端可按消息时间把游标直接推到最新——丢弃陈旧积压、立即处理新事件。兜底阀门，让「消费不及时」可以选择性放弃而不必逐条消化
+- **多订阅者零复制**：N 个 Actor 监听同一事件 = 一个队列分区 + N 个游标；per-actor mailbox 模型下同一事件存 N 份的冗余从结构上消失
+- **积压生命周期跟随实例/namespace**：永久退出的实例，其积压可按前缀扫描回收——不做全局无限堆积
 
 因果一致是甜区：保证逻辑正确性（因先于果），不需要全序的共识开销。进程内事件天然因果有序（同一线程内的 emit 序列）；同节点并发 Actor 的事件用向量时钟标记 happened-before 关系。元数据不跨节点复制（每节点独立），跨节点次序问题在单写入点模型下不存在。
 
@@ -712,7 +726,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 | **Become/Unbecome** | Akka | `set(lang, script)` 是更激进的版本——运行时切换行为函数和语言。可实现状态机：收到事件后 `set("python", "active_handler.py")` 切换入口函数 |
 | **Stash** | Akka | Actor 刚唤醒、Fjall 状态还在恢复时，先 stash 事件，恢复完成后回放 |
 | **Dead Letters** | Akka/Erlang | emit 的事件如果没有匹配的接收 Actor，或目标 Actor 崩溃且无 supervisor 重启，进入 dead event log。用于调试和事件审计 |
-| **Backpressure** | Reactive Streams | 事件队列（bounded broadcast channel，容量 = mailbox capacity）满了时，emit 方收到压力信号（阻塞/降级/丢弃）；单个订阅者跟不上时自己收到 Lagged 信号（丢弃计数可见） |
+| **Backpressure** | Reactive Streams | 持久队列下背压退化为积压——消费慢的订阅者在队列分区里积累可见的 backlog（可计量、可跳到最新），emit 方永不阻塞（写入即落盘）。broadcast 模型的「容量满即丢」语义已废弃 |
 | **Passivation / Virtual Actor** | Akka / Orleans | 空闲 Actor 从内存驱逐（Scale-to-Zero），按需激活。Aura 的实例化机制基于此（详见 [§5.11](#511-actor-实例化与分片)） |
 
 ### 5.9 与现有 Actor 框架的对比

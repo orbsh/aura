@@ -1,0 +1,53 @@
+# 0014 — 持久事件队列：okm 分区、游标消费、最小水位线保留
+
+> **语言：** [English](0014-persistent-event-queue.md)（主文档） · [中文](0014-persistent-event-queue.zh-CN.md)
+
+**Status:** Accepted（2026-09-16）
+
+## Context（背景）
+
+Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每个队列承载一个事件族，多个订阅者共享一个队列（一对多投递是结构性能力，不是扇出模拟）。过渡实现使用 `tokio::sync::broadcast`，它有三个性质与架构自身的裁决相矛盾：
+
+- **迟到订阅者一无所获**：实例在事件生命周期内被驱逐（scale-to-zero），就永远看不到这条事件。ctx_state 是 durable truth 的前提下，触发丢失是静默发生的。
+- **慢消费者收到 `Lagged`**：落后于 broadcast 环形缓冲会静默丢弃整段——与「失效显式化」的偏好正好相反。
+- **「不引入队列组件」被误读为「不做持久化」**：MQ 分解裁决禁止的是*外部重型*队列系统，不是事件数据的嵌入式持久化。事件是双轨设计中被动保存的一半（ctx.state = 主动保存）——emit 时即被动落盘，同一引擎。
+
+## Decision（裁决）
+
+### 1. 队列是 okm 持久分区
+
+```
+[mq-data][event][part_id][time]        ← 事件载荷，emit 时写入（被动保存）
+[mq-cursor][event][part_id][actor]{u64 cursor}
+```
+
+- Emit = 追加到 `[mq-data]`（持久，与 Actor 状态同一引擎）。
+- 消费 = 从订阅者游标开始 range scan，然后推进游标。
+- 订阅 = 在 *now* 位置注册游标（新订阅者不回放历史）。
+- 单实例内串行语义由 per-subscription cursor 保证，不由拥有队列保证。
+
+### 2. 保留 = 活跃订阅者的最小水位线
+
+一个 `[ev][part_id]` 队列只保留所有活跃订阅者游标仍需要的范围；最小游标之前的数据在写入路径 compaction 时删除。
+
+**水位线的分母来自路由注册表**（4.5b 持久化的 `@on` 元数据），绝不来自原始 cursor 键。已永久退出的 actor 的陈旧游标不得把水位线永远钉死。注销 actor 时同步删除其 cursor 行；它的积压随后跌破水位线、随普通 compaction 消失——不需要独立的回收器。
+
+### 3. 积压深度是 okm reduce 计数
+
+`[ev][part_id]` 的实时积压 = mq-data 前缀上的 `#[kv_reduce]` 计数（insert +1，水位线 compaction -1 unfold）。零扫描的运维面；skip-to-now 的决策直接读它。
+
+### 4. Skip-to-now 是兜底阀门
+
+面对过度积压的订阅者可以把游标按消息时间直接跳到最新消息，丢弃陈旧区间、从 now 恢复。向后兼容：用 reduce 计数做决策，成本是一次游标写入。
+
+## 诚实的语义代价
+
+队列是**缓冲，不是存储**。at-least-once 仅在「所有订阅者保持注册且在消费」期间成立；被永久注销且尚有未消费积压的订阅者，积压随之消失。这是刻意的分层：**ctx_state 是 durable truth；队列只保证「活着就能追上」，仅此而已。** 需要超越订阅者生命周期的送达语义，属于 `ctx.invoke()`（CallSlot 冷路径）或持久 job 记录的职责，不在事件总线上。
+
+## Consequences（后果）
+
+- Broadcast channel 降级为过渡形态；realm 事件路径在 4.5c step 2b 重写（队列读 = scan + 游标推进；订阅 = 注册游标于 now）。
+- Scale-to-zero 不再丢触发：驱逐期间积累的积压在重新激活后送达。
+- 慢消费者积累的是可见、可计量的积压（reduce 计数），不再是静默的 `Lagged` 丢失；skip-to-now 让「跟不上」成为可选择的策略。
+- 多订阅者扇出每个事件每队列只存一份（N 个 actor = N 个游标指向同一个分区）——per-actor mailbox 的 N 份复制从结构上消失。
+- 「不引入队列组件」澄清：不引入的是*外部重型*队列系统；嵌入式持久分区是事件被动保存的自然形态。

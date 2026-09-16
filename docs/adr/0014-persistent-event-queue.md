@@ -1,5 +1,7 @@
 # 0014 — Persistent event queue: okm partitions, cursor consumption, min-watermark retention
 
+> **Languages:** [English](0014-persistent-event-queue.md) (primary) · [中文](0014-persistent-event-queue.zh-CN.md)
+
 **Status:** Accepted (2026-09-16)
 
 ## Context

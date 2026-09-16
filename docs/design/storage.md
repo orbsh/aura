@@ -101,7 +101,7 @@ impl<T> AuraCollection<T> where T: Serialize + DeserializeOwned + EntityKeyGener
 - **联邦节点间走 well-known 协议认证**：节点互不共享存储、不共享共识日志；身份经 well-known 协议（公钥/证书）认证后按用户 namespace 隔离交互。
 - **用户数据跟随所属节点**：用户登录到另一节点时，其历史数据不在该节点——数据主权绑定所属节点，不做登录信息的全局同步。
 
-`Distribution` trait 保留为扩展点；若未来出现真正的第二个元数据写入者，才重新评估共识。
+共识不通过「出现第二个写入者」触发——联邦内部没有这个路径：多控制面部署是方向性倒退（推翻联邦而非扩展点）；`ctx.metadata` 保持只读面（只有控制平面能写），写入者永远单一；「全局唯一配置」在联邦语义下不存在——每节点独立是裁决而非缺陷。若未来整体转向逻辑单集群架构，那是推翻 ADR-0013 的新裁决，不是本架构内的扩展点。原 `Distribution` trait（`propose(cmd)` Raft 提案接口）已随本裁决删除。
 
 **Actor 完全不感知底层引擎**——`ctx.state.get("history")` 的调用方式不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
 
@@ -219,7 +219,7 @@ ctx.metadata.get("actor_shards")       // 查询 Actor 分片映射
 | 任务 | 状态 | 说明 |
 |:--|:--|:--|
 | `AuraStorage` trait + FjallEngine / SlateEngine | ✅ 已落地 | okm 两实例绑定，引擎可选 |
-| Distribution trait / RaftDist | ❌ 不实现 | openraft 暂停，无回归条件 |
+| Distribution trait / RaftDist | ❌ 已删除 | ADR-0013：联邦架构内没有通向共识的路径 |
 | 配置加载（aura.kdl 两实例） | ✅ 已落地 | knus 解析，未知引擎启动报错 |
 | Actor 层适配 | 0 | ctx.state 接口不变 |
 

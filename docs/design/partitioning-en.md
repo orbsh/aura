@@ -113,8 +113,14 @@ lifecycle of partition state is decoupled from instance residency**:
 - **The shard map lives in the meta instance** (slatedb) under a
   single-writer model: exactly one logical writer (the control plane)
   writes the shard map / actor registry; nodes read through caches — no
-  multi-writer consensus; openraft returns only when a real second
-  metadata writer appears
+  multi-writer consensus. Federation contains no path to consensus: a
+  multi-control-plane deployment is a directional retreat (it overturns
+  the federation, not an extension point); `ctx.metadata` stays
+  read-only to keep the writer count at one; and a "globally unique
+  config" does not exist under federation semantics — per-node
+  independence is the ruling, not a defect. Moving to a logical
+  single-cluster architecture wholesale would be a new ruling overturning
+  ADR-0013, not an extension point within this one
 - **Routing invariant**: the partition-key → shard mapping is stable, and
   **requests follow the data** — every turn of a session routes to the
   machine hosting its partition; history never "goes missing", it just is

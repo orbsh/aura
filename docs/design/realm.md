@@ -802,7 +802,7 @@ emit("remove_from_cart", {"user_id": "A", "item_id": "X"})
 
 - 同一 partition key 的事件始终路由到同一 Actor 实例，保证该实体的状态一致性
 - 不同 partition key 的事件路由到不同实例，并行处理
-- 跨节点时，partition key 经一致性哈希映射到集群中的某个节点
+- 跨节点：联邦语义（ADR-0013）——partition key 的作用域是节点内部，用户数据跟随所属节点，无全局放置问题
 
 **实例生命周期**（Virtual Actor 模式，与 Orleans 一致）：
 
@@ -1152,7 +1152,7 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 ```
 突发流量 → mailbox 满 → 背压信号
-  → 触发分片扩容（partition key 一致性哈希 → 新节点）
+  → 节点内扩容由存储引擎承接（数据跟随所属节点，无全局重分片——联邦裁决 ADR-0013）
   → 吸收突发，而非暂存
 ```
 

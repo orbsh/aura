@@ -58,7 +58,7 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 
 - 追加只碰 memtable；compaction 在后台消化。B 树引擎（BoltDB/redb）恰好为这种模式付出每写一次的页寻址代价。
 - 水位线删除是**前缀删除，不是随机删除**：被删区间永远是 `[mq-data][ev][part]` 下最旧的连续段（水位线只前进）。高 stale 比例的 SSTable 在 compaction 时整体丢弃——最友好情形，无墓碑风暴。
-- 与 Actor 状态同引擎换来崩溃恢复、统一运维面，以及关键的一条：emit 事件与状态变更可进同一个 WriteBatch（事件 + 状态变更原子可见——专门的 append-only 存储给不了这个）。
+- 与 Actor 状态同引擎换来崩溃恢复与统一运维面。注意 batch 的原子域是单个分区——事件 + 状态的原子同写不是这里的设计目标（事件是触发信号，ctx_state 才是真理；见诚实语义代价一节）。
 
 **需要设计正视的 LSM 特性**：删除不是即时的。水位线 compaction 写 tombstone；物理空间在 compaction 跑完后才回收。reduce 计数（逻辑值）即时反映删除；物理磁盘占用滞后。不是新问题（状态删除行为相同），但运维语义必须说清：`mq-data` 的物理体积领先于水位线。
 
@@ -66,4 +66,4 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 
 **什么时候才需要专门的 append-only 存储**（两个信号今天都不存在）：单分区吞吐压到磁盘顺序写极限（~百万事件/秒/分区），或语义变为「不可变、可重放、跨机器共享日志」且消费位移独立于数据生命周期。aura 的事件是节点私有、随水位线消亡的缓冲——语义上是订阅者有界的队列，不是 log；自建 WAL 只会多出一个要维护的生命周期系统，收益为零。
 
-**分区注意**：`mq-data` 与 `mq-cursor` 用独立的 Fjall **partition**（不是 keyspace）——两者的 compaction 模式不得互相污染（data：追加 + 范围删；cursor：高频小点写）。分区拆分按 namespace 走（`kv_ns → partition handle`，引擎惰性打开并缓存；partition 名由 ns 名 hash/转义派生），隔离需求由此满足，无需 per-ns keyspace。**keyspace 保持每引擎实例一个**：§Decision 1 的原子可见性收益（事件追加 + 状态变更进同一个 WriteBatch）要求 `mq-data` ns 与状态 ns 共享同一个 keyspace——per-ns keyspace 会砍掉这个能力。这是叠在 okm 引擎无关 ns 语义之下的 Fjall 特定优化（kv_ns 在其它引擎是纯键前缀契约：slatedb/redb 没有 partition 概念，自动退化为纯前缀）；okm 的 ns 抽象层对 partition handle 保持无感。cursor partition 在同一引擎，不放 meta 实例——它是节点私有的消费进度，不是联邦元数据。
+**分区注意**：分区归属**按类型声明**——row 上的 `#[kv_partition(N)]` 生成 `PARTITION_ID: Option<u8>`；`Some(N)` 在 ns 头之前前缀一个 1 字节 `[N]` 段，`None`（默认）**完全没有段**（对 99% 无分区需求的表零键编码成本）。Fjall 把该类型的句柄路由到自己的分区（惰性、缓存、名字由 id hash 派生）——compaction 模式互不污染。**`commit_batch` 的原子域是单个分区**：跨分区写入无原子性保证，这是裁决而非引擎限制——分区的语义就是负载隔离，需要原子同写的数据本就该在同一分区。无分区语义的引擎忽略物理隔离；键编码（含 part 段）处处一致，okm 的 ns 抽象层对 partition handle 保持无感（kv_ns 仍是键前缀契约；partition 是独立正交的维度）。

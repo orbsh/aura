@@ -90,9 +90,9 @@ watermark — is squarely in LSM territory:
   always the oldest contiguous segment of `[mq-data][ev][part]` (the watermark only moves
   forward). High stale-ratio SSTables drop wholesale during compaction — the friendliest
   possible case, no tombstone storm.
-- Sharing the engine with actor state buys crash recovery, ops surface, and — critically —
-  the option of emitting events and state mutations in one WriteBatch (atomic visibility of
-  event + state change; a dedicated append-only store cannot offer this).
+- Sharing the engine with actor state buys crash recovery and a unified ops surface. Note
+  the atomic domain of a batch is one partition — event + state co-atomicity is not a design
+  goal here (events are triggers, ctx_state is the truth; see the honest-cost section).
 
 **LSM property to design around**: deletion is not immediate. Watermark compaction writes
 tombstones; physical space is reclaimed only after compaction runs. The reduce count
@@ -111,14 +111,14 @@ independent of data lifetime. Aura's events are node-private, watermark-dying bu
 semantically a subscriber-bounded queue, not a log; a bespoke WAL adds a lifecycle system
 with zero payoff.
 
-**Partitioning note**: `mq-data` and `mq-cursor` get separate Fjall **partitions** (not
-keyspaces) — their compaction patterns must not pollute each other (data: appends + range
-deletes; cursor: high-frequency small point writes). The partition split is per-namespace
-(`kv_ns → partition handle`, opened lazily and cached by the engine; partition names
-hashed/escaped from ns names), which satisfies the isolation without per-ns keyspaces.
-**Keyspaces stay one-per-engine-instance**: the atomic-visibility benefit of §Decision 1
-(event append + state mutation in one WriteBatch) requires the `mq-data` ns and the state
-ns to share one keyspace — per-ns keyspaces would cut that. This is a Fjall-specific
-optimization layered under okm's engine-agnostic ns semantics (a kv_ns is a key-prefix
-contract everywhere else: slatedb/redb have no partition concept and degrade to pure
-prefixes); the okm ns abstraction layer remains unaware of partition handles.
+**Partitioning note**: partition membership is declared **per type** — `#[kv_partition(N)]`
+on the row generates `PARTITION_ID: Option<u8>`; `Some(N)` prepends a 1-byte `[N]` segment
+before the ns header, `None` (the default) adds **no segment at all** (zero key-encoding cost
+for the 99% of tables without partition needs). Fjall routes the type's handle to its own
+partition (lazy, cached, names hashed from the id) — compaction patterns never pollute each
+other. The **atomic domain of `commit_batch` is a single partition**: cross-partition writes
+carry no atomicity guarantee, by ruling rather than by engine limitation — partition semantics
+IS workload isolation, and data needing atomic co-write belongs in one partition. Engines
+without partition semantics ignore the physical split; the key encoding (part segment included)
+is identical everywhere, and the okm ns abstraction stays unaware of partition handles
+(kv_ns remains a key-prefix contract; partition is a separate, independent dimension).

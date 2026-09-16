@@ -98,6 +98,15 @@ impl Realm {
         self.call_specs
             .entry(actor.name.clone())
             .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
+        // One declaration surface per type: routes assemble from the
+        // type's own `receives` as a side effect of registration.
+        for decl in &actor.receives {
+            if decl.wildcard {
+                self.router.on_wildcard(&decl.event, &actor.name);
+            } else {
+                self.router.on(decl.event.clone(), &actor.name, &decl.key_field);
+            }
+        }
         self.types.insert(actor.name.clone(), actor);
     }
 

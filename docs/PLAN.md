@@ -77,9 +77,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework
   - Work items
     - [ ] wasm carrier completion: pointer marshalling (Phase 4 `link` payloads), ctx bridge host imports on wasm, `interface_schema` introspection (Rust-exported fn returning JSON, same contract as python/steel)
-    - [ ] metadata declaration unified on the type: per-type idle_ttl landed, but receives/emits are still declared imperatively on `realm.router` post-registration
-      - move onto `ActorType` (`.on(event, key_field)` / `.emits([...])` builders; script types adopt from `interface_schema` introspection at register)
-      - `register_type` assembles routes as a side effect; hot-swap updates them — one declaration surface per type
+    - [x] metadata declaration unified on the type: `ActorType.receives` (ReceiveDecl: event + key_field + wildcard) with `.on(event, key_field)` / `.on_wildcard(pattern)` builders; introspection writes onto the type at register; `register_type` assembles routes as a side effect — one declaration surface per type (emits: none, per ADR-0012). Hot-swap route updates still pending (needs a set() versioning path)
     - [x] remove the Rust-closure actor form (`ActorType::simple`) from the public API — deleted; cli demo + all engine tests migrated to script actors (steel; nushell for the slow handler). Body::Rust remains in the enum with no public constructor (framework-internal future use)
       - rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path
     - [ ] NUSHELL OPEN QUESTION (needs discussion, not silently resolved)

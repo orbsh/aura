@@ -99,17 +99,17 @@ impl Engine {
                     actor.idle_ttl = Some(ttl);
                 }
             }
+            // Introspected declarations land ON THE TYPE (one declaration
+            // surface); register_type assembles routes as a side effect.
             if let Some(receives) = schema.get("receives").and_then(|r| r.as_object()) {
-                let mut realm = self.realm.lock().await;
                 for (event, spec) in receives {
                     let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                    realm.router.on(event.clone(), &actor.name, key_field);
+                    actor = actor.on(event.clone(), key_field);
                 }
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {
-                let mut realm = self.realm.lock().await;
                 for pattern in wildcards.iter().filter_map(|p| p.as_str()) {
-                    realm.router.on_wildcard(pattern, &actor.name);
+                    actor = actor.on_wildcard(pattern.clone());
                 }
             }
         }

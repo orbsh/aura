@@ -55,6 +55,20 @@ pub struct ActorType {
     /// the first job of the new residency is delivered.
     #[allow(clippy::type_complexity)]
     pub on_wake: Option<Arc<Handler>>,
+    /// Event subscriptions declared on the type (Phase 4.5: one declaration
+    /// surface per type). Filled three ways: `.on()` / `.on_wildcard()`
+    /// builders (Rust-side declaration), introspection at register (script
+    /// types), or both merged. `register_type` assembles routes from this.
+    pub receives: Vec<ReceiveDecl>,
+}
+
+/// One event subscription: an event name (or wildcard pattern) + the
+/// partition key field it binds (empty = singleton consumer).
+#[derive(Clone, Debug)]
+pub struct ReceiveDecl {
+    pub event: String,
+    pub key_field: String,
+    pub wildcard: bool,
 }
 
 pub type Handler = dyn Fn(Ctx, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
@@ -78,7 +92,29 @@ impl ActorType {
             idle_ttl: None,
             on_sleep: None,
             on_wake: None,
+            receives: Vec::new(),
         }
+    }
+
+    /// Declare an event subscription on this type (exact event + partition
+    /// key field; empty key = singleton consumer).
+    pub fn on(mut self, event: impl Into<String>, key_field: impl Into<String>) -> Self {
+        self.receives.push(ReceiveDecl {
+            event: event.into(),
+            key_field: key_field.into(),
+            wildcard: false,
+        });
+        self
+    }
+
+    /// Declare a wildcard (prefix) subscription — singleton consumer.
+    pub fn on_wildcard(mut self, pattern: impl Into<String>) -> Self {
+        self.receives.push(ReceiveDecl {
+            event: pattern.into(),
+            key_field: String::new(),
+            wildcard: true,
+        });
+        self
     }
 
     /// Declare a per-type idle TTL (residency policy). See the field doc.

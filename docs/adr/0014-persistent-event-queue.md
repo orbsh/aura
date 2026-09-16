@@ -112,13 +112,18 @@ semantically a subscriber-bounded queue, not a log; a bespoke WAL adds a lifecyc
 with zero payoff.
 
 **Partitioning note**: partition membership is declared **per type** — `#[kv_partition(N)]`
-on the row generates `PARTITION_ID: Option<u8>`; `Some(N)` prepends a 1-byte `[N]` segment
-before the ns header, `None` (the default) adds **no segment at all** (zero key-encoding cost
-for the 99% of tables without partition needs). Fjall routes the type's handle to its own
-partition (lazy, cached, names hashed from the id) — compaction patterns never pollute each
-other. The **atomic domain of `commit_batch` is a single partition**: cross-partition writes
-carry no atomicity guarantee, by ruling rather than by engine limitation — partition semantics
-IS workload isolation, and data needing atomic co-write belongs in one partition. Engines
-without partition semantics ignore the physical split; the key encoding (part segment included)
-is identical everywhere, and the okm ns abstraction stays unaware of partition handles
-(kv_ns remains a key-prefix contract; partition is a separate, independent dimension).
+on the row generates `PARTITION_ID: Option<u8>`; `Some(N)` prepends a 2-byte **escape
+segment `[0xFF][N]`** before the ns header, `None` (the default) adds **no segment at all**
+(zero key-encoding cost for the 99% of tables without partition needs). The 0xFF first byte
+is a reserved escape: legal ns headers (big-endian u16, first byte constrained to 0x00-0xFE
+by the ns dictionary) never start with it, so partitioned and unpartitioned keys are
+**structurally disjoint** — no numbering discipline needed between the two dictionaries
+(a bare 1-byte `[N]` segment was rejected precisely because a plain table's `ns_hi` could
+collide with it). Fjall routes the type's handle to its own partition (lazy, cached, names
+hashed from the id) — compaction patterns never pollute each other. The **atomic domain of
+`commit_batch` is a single partition**: cross-partition writes carry no atomicity guarantee,
+by ruling rather than by engine limitation — partition semantics IS workload isolation, and
+data needing atomic co-write belongs in one partition. Engines without partition semantics
+ignore the physical split; the key encoding (escape segment included) is identical
+everywhere, and the okm ns abstraction stays unaware of partition handles (kv_ns remains a
+key-prefix contract; partition is a separate, independent dimension).

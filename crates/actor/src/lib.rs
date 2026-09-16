@@ -65,17 +65,6 @@ pub type SleepHook =
     dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
 
 impl ActorType {
-    /// Define a Rust-closure type with no lifecycle hooks.
-    pub fn simple(name: impl Into<String>, handler: Arc<Handler>) -> Self {
-        Self {
-            name: name.into(),
-            body: Body::Rust(handler),
-            idle_ttl: None,
-            on_sleep: None,
-            on_wake: None,
-        }
-    }
-
     /// Define a script type executed by a probe carrier.
     pub fn script(
         name: impl Into<String>,

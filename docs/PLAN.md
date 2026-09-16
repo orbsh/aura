@@ -80,14 +80,14 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [ ] metadata declaration unified on the type: per-type idle_ttl landed, but receives/emits are still declared imperatively on `realm.router` post-registration
       - move onto `ActorType` (`.on(event, key_field)` / `.emits([...])` builders; script types adopt from `interface_schema` introspection at register)
       - `register_type` assembles routes as a side effect; hot-swap updates them — one declaration surface per type
-    - [ ] remove the Rust-closure actor form (`ActorType::simple`) from the public API
+    - [x] remove the Rust-closure actor form (`ActorType::simple`) from the public API — deleted; cli demo + all engine tests migrated to script actors (steel; nushell for the slow handler). Body::Rust remains in the enum with no public constructor (framework-internal future use)
       - rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path
     - [ ] NUSHELL OPEN QUESTION (needs discussion, not silently resolved)
       - nushell actors are subprocess-carried with no ctx bridge (explicit error) — as platform actors they are second-class (no state, no invoke)
       - language-selection.md assigns nu the system-interaction quadrant via probe
       - options: nu stays probe-only (drop nu as aura actor language) / nu gains a bridge story (stdin/stdout frame protocol, bidirectional CGI) / accept second-class nu actors
       - affects whether the nushell carrier stays in aura's feature set
-- [ ] **Phase 4.5a — PRIORITY CLEANUP: remove the Rust-closure actor form (`ActorType::simple`) from the public API, immediately after Phase 4.5 lands its replacement**
+- [x] **Phase 4.5a — PRIORITY CLEANUP: remove the Rust-closure actor form (`ActorType::simple`) from the public API, immediately after Phase 4.5 lands its replacement**
   - the engine ships NO in-process Rust actor — framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
   - Rust code becomes an actor through exactly one channel: compile to wasm and upload
   - concrete removals

@@ -2,25 +2,23 @@
 //! event name IS the reference), partition key from event data, wildcard
 //! singleton routing, emits whitelist as the Realm boundary, dead events.
 
-use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
+use aura_actor::{ActorType, InstanceId};
 use aura_engine::Engine;
 use aura_realm::Realm;
-use std::sync::Arc;
+
+// Steel counter (4.5a): count events + record the last payload per event
+// name. Field names as bare strings; payloads as values.
+const COUNTER: &str = r#"
+(define (execute args)
+  (let* ((got (ctx_state_get "events"))
+         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
+    (ctx_state_set (hash "field" "events" "value" (+ n 1)))
+    (ctx_state_set (hash "field" (string-append "last:" (hash-ref args "event")) "value" args))
+    n))
+"#;
 
 fn counter_of(name: &'static str) -> ActorType {
-    ActorType::simple(
-        name,
-        Arc::new(|ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-            Box::pin(async move {
-                // Record the event payload under the event name; the test
-                // reads it back after a yield.
-                let n = ctx.state.get("events")?.and_then(|v| v.as_i64()).unwrap_or(0);
-                ctx.state.set("events", serde_json::json!(n + 1))?;
-                ctx.state.set(&format!("last:{}", args["event"].as_str().unwrap_or("?")), args)?;
-                Ok(serde_json::Value::Null)
-            })
-        }),
-    )
+    ActorType::script(name, "steel", COUNTER, Some("execute".into()))
 }
 
 #[tokio::test]
@@ -42,7 +40,7 @@ async fn exact_route_partition_key_from_event_data() {
     })).await.unwrap();
 
     // Fire-and-forget: yield until handlers drain.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let read = |k: &str| {
         let realm = engine.realm.try_lock().unwrap();
@@ -71,7 +69,7 @@ async fn wildcard_route_goes_to_singleton() {
     // "order" alone does not match the "order." prefix (wiki: no dot = no match).
     Realm::emit(&engine.realm, None, "order", serde_json::json!({"event": "order"})).await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let realm = engine.realm.try_lock().unwrap();
     let events = realm.store.get(
@@ -101,7 +99,7 @@ async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
     assert!(Realm::emit(&engine.realm, Some("cart"), "ghost_event", serde_json::json!({
         "event": "ghost_event"
     })).await.is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let realm = engine.realm.try_lock().unwrap();
     assert_eq!(realm.dead_events.len(), 1);
     assert_eq!(realm.dead_events.snapshot()[0].0, "ghost_event");
@@ -132,7 +130,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
         "event": "order.created", "user_id": "alice"
     })).await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let realm = engine.realm.try_lock().unwrap();
     // Exact: keyed instance got it.
@@ -151,14 +149,12 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
 #[tokio::test]
 async fn invoke_path_unaffected() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    const ECHO: &str = r#"
+(define (execute args) args)
+"#;
     engine.register(
-        ActorType::simple(
-            "echo",
-            Arc::new(|_ctx: Ctx, args| -> BoxFuture<'static, anyhow::Result<serde_json::Value>> {
-                Box::pin(async move { Ok(args) })
-            }),
-        )
-    ).await;
+        ActorType::script("echo", "steel", ECHO, Some("execute".into()))
+    ).await.unwrap();
     let out = engine
         .invoke(InstanceId { actor_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
         .await
@@ -187,7 +183,7 @@ async fn one_event_multiple_subscriber_types() {
         "event": "order.created", "user_id": "alice"
     })).await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let realm = engine.realm.try_lock().unwrap();
     // Both subscriber types received the same event, independently.

@@ -55,6 +55,7 @@ pub struct MqDataKey {
 
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(MqDataKey)]
+#[kv_partition(1)]
 #[kv_ns(31)]
 pub struct MqData {
     /// The emit's data value, CBOR-encoded (binary payload, no JSON).
@@ -70,6 +71,7 @@ pub struct MqCursorKey {
 
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(MqCursorKey)]
+#[kv_partition(2)]
 #[kv_ns(32)]
 pub struct MqCursor {
     /// Seq of the last CONSUMED event (0 = nothing consumed yet).

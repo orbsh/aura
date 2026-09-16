@@ -4,6 +4,7 @@
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
 pub mod event;
+pub mod mq;
 pub mod namespace;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
@@ -60,11 +61,6 @@ pub struct Realm {
     pub idle_ttl: Duration,
     /// Event namespace: routing table + emits whitelist (Phase 3).
     pub router: event::EventRouter,
-    /// Event queues (Phase 4.5c step 2): one broadcast channel per
-    /// (event, partition) — an event belongs to no actor; every subscriber
-    /// instance holds its own Receiver (per-subscription cursor), so
-    /// one-to-many delivery is structural and serial-per-instance survives.
-    event_queues: HashMap<(String, String), tokio::sync::broadcast::Sender<aura_actor::QueuedJob>>,
     /// Resident script sessions (Phase 2.6): per-instance VM/PTY, owned by
     /// the realm — sessions die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
@@ -103,7 +99,6 @@ impl Realm {
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
-            event_queues: HashMap::new(),
             dead_events: event::DeadEvents::default(),
         }
     }
@@ -253,14 +248,12 @@ impl Realm {
                 }
             }
             // Subscribe to the event queues this type's @on declarations
-            // bind (Phase 4.5c step 2): a private Receiver per queue — the
-            // per-subscription cursor. Key-less routes bind the singleton
-            // queue; keyed routes bind the partition this instance owns.
+            // bind (Phase 4.5c step 2b): persistent partitions over the
+            // store, one per (event, partition); the subscriber holds a
+            // named cursor. Key-less routes bind the singleton partition.
+            let mut subs: Vec<(String, String)> = Vec::new();
             if let Some(actor) = self.types.get(&id.actor_type) {
                 for route in self.router.routes_of(&id.actor_type) {
-                    // The instance key IS the partition value for keyed
-                    // routes (emit derives the key from the route's key
-                    // field); key-less routes bind the singleton queue.
                     let partition = if route.partition_key_field.is_empty() {
                         "__singleton__".to_string()
                     } else {
@@ -270,35 +263,46 @@ impl Realm {
                     // instance key only when the route derives the key from
                     // the same field emit used — which it does by
                     // construction (emit set key = data[field]).
-                    let qid = (route.event.clone(), partition);
-                    if let Some(tx) = self.event_queues.get(&qid) {
-                        inst.subscriptions.push((qid.clone(), tx.subscribe()));
-                    } else {
-                        let (tx, rx) = tokio::sync::broadcast::channel(self.mailbox_capacity);
-                        self.event_queues.insert(qid.clone(), tx.clone());
-                        inst.subscriptions.push((qid.clone(), rx));
-                    }
+                    subs.push((route.event.clone(), partition));
                 }
             }
-            let subs = std::mem::take(&mut inst.subscriptions);
             self.instances.insert(key.clone(), inst);
             // Spawn the instance's subscription consumer: drains every
-            // bound queue serially (one job at a time, in queue order) —
-            // the serial-per-instance guarantee lives in this loop.
+            // bound partition serially (backlog scan → run → advance
+            // cursor → repeat; idle = short park). The serial-per-instance
+            // guarantee lives in this loop; re-activation replays the
+            // unconsumed backlog (scale-to-zero keeps triggers alive).
             let consumer_realm = self_arc.clone();
             let consumer_id = id.clone();
+            let actor_key = id.key.clone();
             tokio::spawn(async move {
-                for (qid, mut rx) in subs {
+                for (event, part) in subs {
+                    // Cursor name = the actor type + instance key: two
+                    // types on one event hold independent cursors.
+                    let actor = format!("{}/{}", consumer_id.actor_type, actor_key);
                     loop {
-                        match rx.recv().await {
-                            Ok(job) => {
-                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                eprintln!("queue {qid:?}: subscriber lagged, {n} events dropped");
-                                continue;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        // Fetch the backlog under a short lock; run jobs
+                        // OUTSIDE the realm lock.
+                        let batch = {
+                            let realm = consumer_realm.lock().await;
+                            let mut vs = mq::StoreAsVirtual(realm.store.clone());
+                            let after = mq::cursor(&mut vs, &event, &part, &actor)
+                                .unwrap_or(0);
+                            mq::backlog(&mut vs, &event, &part, after).unwrap_or_default()
+                        };
+                        if batch.is_empty() {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
+                        }
+                        for (seq, payload) in batch {
+                            let job = aura_actor::QueuedJob {
+                                handler: event.clone(),
+                                args: payload,
+                            };
+                            Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
+                            let realm = consumer_realm.lock().await;
+                            let mut vs = mq::StoreAsVirtual(realm.store.clone());
+                            let _ = mq::advance(&mut vs, &event, &part, &actor, seq);
                         }
                     }
                 }
@@ -689,26 +693,16 @@ impl Realm {
         }
         for (route, partition) in targets {
             let mut realm = self_arc.lock().await;
-            let capacity = realm.mailbox_capacity;
-            // Queue id uses the route's declared event (exact name or the
-            // wildcard pattern): the subscriber binds the same declaration,
-            // so pattern listeners and exact listeners see independent
-            // queues even when both match one emit.
-            let queue = realm
-                .event_queues
-                .entry((route.event.clone(), partition))
-                .or_insert_with(|| tokio::sync::broadcast::channel(capacity).0);
-            // No live subscriber = nothing will ever drain this message →
-            // dead-event ring (a subscriber arrived and left is its own
-            // signal; a not-yet-activated subscriber was just activated).
-            if queue.receiver_count() == 0 {
+            // Persistent queues (step 2b): events are passively persisted
+            // on emit — an evicted/not-yet-active subscriber's backlog is
+            // delivered on re-activation. The dead ring only sees events
+            // with NO matching route (checked above): a matched route with
+            // no live instance is a backlog write, not a loss.
+            let event_name = route.event.clone();
+            let mut store = mq::StoreAsVirtual(realm.store.clone());
+            if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
+                eprintln!("mq append failed for {event_name}/{partition}: {e}");
                 realm.dead_events.push(&event, data.clone());
-                continue;
-            } else {
-                let _ = queue.send(aura_actor::QueuedJob {
-                    handler: event.to_string(),
-                    args: data.clone(),
-                });
             }
         }
         Ok(())

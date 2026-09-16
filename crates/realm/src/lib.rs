@@ -567,6 +567,11 @@ impl Realm {
                     }
                 }
             }
+            // The resident session dies WITH the instance: the VM/PTY
+            // holds no durable truth (ctx_state_* wrote through to the
+            // store), so eviction is a plain drop. The next activation
+            // cold-starts a fresh session and reloads the source.
+            self.sessions.evict(&format!("{}/{}", key.0, key.1));
             evicted.push(inst.id);
         }
         evicted

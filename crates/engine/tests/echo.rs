@@ -390,6 +390,45 @@ async fn script_state_survives_eviction() {
     assert_eq!(out, serde_json::json!({"count": 2}));
 }
 
+// Residency is EPHEMERAL: idle eviction drops the VM with the instance
+// (Phase 2.6 wiring). In-session memory state (module globals) restarts;
+// store state (ctx_state_*) survives — durable truth is only the store.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn idle_eviction_drops_the_resident_session() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(aura_actor::ActorType::script(
+            "py-resident",
+            "python",
+            r#"
+memory = 0
+
+def bump(args):
+    global memory
+    memory = memory + 1
+    return {"memory": memory}
+"#,
+            Some("bump".into()),
+        ))
+        .await;
+
+    let target = InstanceId { actor_type: "py-resident".into(), key: "r1".into() };
+    let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
+    let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
+    assert_eq!(out, serde_json::json!({"memory": 2}), "same session accumulates");
+
+    {
+        let mut realm = engine.realm.try_lock().unwrap();
+        realm.idle_ttl = Duration::from_secs(0);
+        let evicted = realm.evict_idle(engine.realm.clone()).await;
+        assert_eq!(evicted.len(), 1);
+    }
+
+    let out = engine.invoke(target, "bump", serde_json::json!(null)).await.unwrap();
+    assert_eq!(out, serde_json::json!({"memory": 1}), "evicted session restarted fresh");
+}
+
 
 // Script-declared TTL: `interface_schema()` introspection seeds
 // `ActorType.idle_ttl` at registration (host ← script; the script never

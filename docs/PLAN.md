@@ -28,7 +28,6 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - aura: `Realm` owns `Sessions`; `run_job` calls `with_session(instance_key)` — cold start loads, later calls reuse; sessions die with the realm (test isolation), hot replacement can evict selectively
     - eviction = drop the session; rebuild = re-instantiate + reload source (same as activation)
   - Remaining:
-    - eviction WIRING: `evict_idle` should also `sessions.evict(instance_key)` (currently the session survives idle eviction)
     - interim shim: event delivery still falls back to the script's `execute` when the addressed handler name has no binding — remove when queues record real handler names
     - wasm: `Module` compiled once + resident `Store`/`Instance` (independent of the ctx-bridge frame path, which stays Phase 6.6)
   - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics

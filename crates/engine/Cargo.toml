@@ -13,6 +13,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+probe-protocol = { path = "../../../probe/crates/protocol" }
+probe-config = { path = "../../../probe/crates/config" }
+probe-runtime = { path = "../../../probe/crates/runtime" }
 tempfile = "3"
 
 [features]

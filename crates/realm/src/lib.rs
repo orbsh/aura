@@ -69,6 +69,13 @@ pub struct Realm {
     /// the realm — sessions die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
     pub sessions: probe_runtime::carrier::session::Sessions,
+    /// Live probe outbound connections by node alias (Phase 3). Each value
+    /// is the writer half of the probe's WS connection; the reader task
+    /// (serve_probes) correlates Result frames back through pending_remote.
+    pub probes: HashMap<String, tokio::sync::mpsc::UnboundedSender<probe_protocol::Frame>>,
+    /// In-flight remote calls awaiting the probe's Result frame.
+    pub pending_remote:
+        HashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>,
     /// Static call declarations per actor type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -91,6 +98,8 @@ impl Realm {
             idle_ttl: Duration::from_secs(30),
             router: event::EventRouter::default(),
             sessions: probe_runtime::carrier::session::Sessions::new(),
+            probes: HashMap::new(),
+            pending_remote: HashMap::new(),
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
@@ -315,8 +324,42 @@ impl Realm {
         let body = actor.body.clone();
         let ctx = Self::ctx_for(self_arc.clone(), realm.store.clone(), id);
         let sessions = realm.sessions.clone();
+        let probes = realm.probes.clone();
         drop(realm);
         let result = match body {
+            aura_actor::Body::RemoteProbe { node_alias, language, source } => {
+                // Remote probe execution (Phase 3): find the probe's live
+                // outbound connection, send Frame::Call (inline payload),
+                // await the correlated reply. The probe's resident
+                // sessions own the VM; no ctx bridge crosses the wire yet
+                // (host functions over WS arrive with the frame path).
+                let Some(conn) = probes.get(&node_alias) else {
+                    let _ = job
+                        .reply
+                        .send(Err(anyhow::anyhow!("probe '{node_alias}' not connected")));
+                    return;
+                };
+                let conn = conn.clone();
+                let call_id = format!("rp-{}", next_seq(&self_arc).await);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self_arc.lock().await.pending_remote.insert(call_id.clone(), tx);
+                let call = probe_protocol::ToolCall {
+                    call_id: call_id.clone(),
+                    tool: job.handler.clone(),
+                    language,
+                    args: job.args,
+                    code: probe_protocol::CodePayload::Inline { bytes: source.into_bytes() },
+                };
+                let result = match conn.send(probe_protocol::Frame::Call(call)) {
+                    Ok(()) => match rx.await {
+                        Ok(Ok(v)) => Ok(v),
+                        Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
+                        Err(_) => Err(anyhow::anyhow!("probe '{node_alias}' dropped the call")),
+                    },
+                    Err(_) => Err(anyhow::anyhow!("probe '{node_alias}' connection closed")),
+                };
+                result
+            }
             aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
             aura_actor::Body::Script { language, source, entry: _ } => {
                 // Resident sessions (Phase 2.6): one VM/PTY per actor
@@ -759,3 +802,11 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
     }
 }
 
+
+
+/// Next remote-call correlation id (realm-owned counter, taken under lock).
+async fn next_seq(self_arc: &SharedRealm) -> u64 {
+    let mut realm = self_arc.lock().await;
+    realm.call_seq += 1;
+    realm.call_seq
+}

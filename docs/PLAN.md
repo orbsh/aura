@@ -30,6 +30,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - Remaining:
     - interim shim: event delivery still falls back to the script's `execute` when the addressed handler name has no binding — remove when queues record real handler names
     - wasm: `Module` compiled once + resident `Store`/`Instance` (independent of the ctx-bridge frame path, which stays Phase 6.6)
+  - Phase 3 wire (2026-09-16): `Body::RemoteProbe` — realm holds probe connections by node alias (`probes` + `pending_remote`); `run_job` sends Frame::Call over the wire and awaits the correlated reply; engine `probes.rs` gateway accepts probe dial-ins, registers by alias, correlates Result frames. E2E: real probe dials the gateway, invoke round-trips through the probe's resident session.
   - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics
     - aura decides WHEN a residency (and its VM) dies: realm-wide default TTL + per-type override + script-introspected value
     - eviction is instance-level (mailbox + residency set + partition serial semantics live in aura)

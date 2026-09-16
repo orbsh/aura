@@ -33,6 +33,15 @@ pub enum Body {
         source: String,
         entry: Option<String>,
     },
+    /// Remote probe actor (Phase 3): the body lives on a probe node that
+    /// dialed into THIS control plane. `node_alias` addresses the probe's
+    /// outbound connection; `language` + `source` are delivered per call
+    /// (inline payload). The probe executes in its resident sessions.
+    RemoteProbe {
+        node_alias: String,
+        language: String,
+        source: String,
+    },
 }
 
 #[derive(Clone)]

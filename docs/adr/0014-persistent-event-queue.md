@@ -111,7 +111,14 @@ independent of data lifetime. Aura's events are node-private, watermark-dying bu
 semantically a subscriber-bounded queue, not a log; a bespoke WAL adds a lifecycle system
 with zero payoff.
 
-**Partitioning note**: `mq-data` and `mq-cursor` get separate Fjall partitions — their
-compaction patterns must not pollute each other (data: appends + range deletes; cursor:
-high-frequency small point writes). The cursor partition lives in the same engine, not the
-meta instance — it is node-private consumer progress, not federated metadata.
+**Partitioning note**: `mq-data` and `mq-cursor` get separate Fjall **partitions** (not
+keyspaces) — their compaction patterns must not pollute each other (data: appends + range
+deletes; cursor: high-frequency small point writes). The partition split is per-namespace
+(`kv_ns → partition handle`, opened lazily and cached by the engine; partition names
+hashed/escaped from ns names), which satisfies the isolation without per-ns keyspaces.
+**Keyspaces stay one-per-engine-instance**: the atomic-visibility benefit of §Decision 1
+(event append + state mutation in one WriteBatch) requires the `mq-data` ns and the state
+ns to share one keyspace — per-ns keyspaces would cut that. This is a Fjall-specific
+optimization layered under okm's engine-agnostic ns semantics (a kv_ns is a key-prefix
+contract everywhere else: slatedb/redb have no partition concept and degrade to pure
+prefixes); the okm ns abstraction layer remains unaware of partition handles.

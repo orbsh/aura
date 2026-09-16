@@ -65,6 +65,10 @@ pub struct Realm {
     /// instance holds its own Receiver (per-subscription cursor), so
     /// one-to-many delivery is structural and serial-per-instance survives.
     event_queues: HashMap<(String, String), tokio::sync::broadcast::Sender<aura_actor::QueuedJob>>,
+    /// Resident script sessions (Phase 2.6): per-instance VM/PTY, owned by
+    /// the realm — sessions die with the realm (test isolation) and hot
+    /// type replacement can evict selectively.
+    pub sessions: probe_runtime::carrier::session::Sessions,
     /// Static call declarations per actor type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -86,6 +90,7 @@ impl Realm {
             store,
             idle_ttl: Duration::from_secs(30),
             router: event::EventRouter::default(),
+            sessions: probe_runtime::carrier::session::Sessions::new(),
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
@@ -309,15 +314,17 @@ impl Realm {
         };
         let body = actor.body.clone();
         let ctx = Self::ctx_for(self_arc.clone(), realm.store.clone(), id);
+        let sessions = realm.sessions.clone();
         drop(realm);
         let result = match body {
             aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
             aura_actor::Body::Script { language, source, entry: _ } => {
-                // Phase 2.5 ctx bridge: host functions exposed to the script.
-                // The script runs inside spawn_blocking, so host fns may
-                // block on the async ctx (state I/O, invoke round-trip).
-                // Nushell runs as a subprocess and cannot call back — pass
-                // no bridge there; the carrier errors if one is required.
+                // Resident sessions (Phase 2.6): one VM/PTY per actor
+                // instance, loaded once, called per event. Cross-call
+                // state lives in the session (module globals / $env);
+                // eviction drops it. spawn_blocking so host fns may block
+                // on the async ctx. Nushell (PTY REPL) cannot call back —
+                // no bridge there.
                 let pure_nushell = language == "nushell";
                 let host = if pure_nushell {
                     None
@@ -326,18 +333,14 @@ impl Realm {
                         functions: Self::host_bridge_for(&ctx),
                     })
                 };
+                let instance_key = format!("{}/{}", id.actor_type, id.key);
                 tokio::task::spawn_blocking(move || {
-                    probe_runtime::carrier::execute(
+                    sessions.with_session(
+                        &instance_key,
                         &language,
-                        probe_runtime::carrier::ExecRequest {
-                            source: &source,
-                            // The job's handler name addresses the function:
-                            // the event name for event delivery, the
-                            // caller-declared name for direct invocation.
-                            entry: Some(&job.handler),
-                            args: &job.args,
-                            host: host.as_ref(),
-                        },
+                        &source,
+                        host.as_ref(),
+                        |s| s.call(&job.handler, &job.args),
                     )
                 })
                 .await
@@ -750,3 +753,4 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
         _ => None,
     }
 }
+

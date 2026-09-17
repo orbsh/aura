@@ -21,6 +21,58 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use okm_core::table::Table;
 use okm_core::{KeyEncode, Row, ObjEncode};
 use okm_core::storage::VirtualStorage as _;
+/// serde_json::Value -> okm DynamicValue (the dynamic-segment currency).
+/// Numbers widen to i64/f64; the dynamic reader narrows on consumption.
+fn json_to_dyn(v: &serde_json::Value) -> okm_core::obj_dynamic::DynamicValue {
+    use okm_core::obj_dynamic::DynamicValue;
+    match v {
+        serde_json::Value::Null => DynamicValue::Null,
+        serde_json::Value::Bool(b) => DynamicValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                DynamicValue::Int(i)
+            } else {
+                DynamicValue::F64(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => DynamicValue::Str(s.clone()),
+        serde_json::Value::Array(items) => {
+            DynamicValue::Array(items.iter().map(json_to_dyn).collect())
+        }
+        serde_json::Value::Object(map) => {
+            // Nested JSON object → nested map is not yet a DynamicValue
+            // variant; flatten one level under "key" names is lossy —
+            // keep nested objects as Bytes(JSON) until the Obj variant
+            // ships (ADR-0012 reserved).
+            let mut buf = Vec::new();
+            ciborium::into_writer(v, &mut buf).ok();
+            DynamicValue::Bytes(buf)
+        }
+    }
+}
+
+fn dyn_to_json(v: &okm_core::obj_dynamic::DynamicValue) -> serde_json::Value {
+    use okm_core::obj_dynamic::DynamicValue;
+    match v {
+        DynamicValue::Null => serde_json::Value::Null,
+        DynamicValue::Bool(b) => serde_json::Value::Bool(*b),
+        DynamicValue::Int(i) => serde_json::Value::Number((*i).into()),
+        DynamicValue::UInt(u) => serde_json::Value::Number((*u).into()),
+        DynamicValue::F64(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        DynamicValue::Str(s) => serde_json::Value::String(s.clone()),
+        DynamicValue::Bytes(b) => {
+            // Nested objects were stored as CBOR bytes.
+            ciborium::de::from_reader(&b[..]).unwrap_or(serde_json::Value::Null)
+        }
+        DynamicValue::Array(items) => {
+            serde_json::Value::Array(items.iter().map(dyn_to_json).collect())
+        }
+    }
+}
+
+
 fn cbor_to_vec<T: serde::Serialize>(v: &T) -> anyhow::Result<Vec<u8>> {
     let mut buf = Vec::new();
     ciborium::into_writer(v, &mut buf)?;
@@ -57,10 +109,7 @@ pub struct MqDataKey {
 #[ok_ref(MqDataKey)]
 #[ok_partition(1)]
 #[ok_ns(31)]
-pub struct MqData {
-    /// The emit's data value, CBOR-encoded (binary payload, no JSON).
-    pub payload: Vec<u8>,
-}
+pub struct MqData {}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MqCursorKey {
@@ -195,6 +244,7 @@ pub fn append(
         // Range scan the partition's primary-key segment: keys sort by seq
         // (BE suffix), so the head is the max over the scan.
         let mut prefix = Vec::new();
+        prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
         prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
         prefix.push(okm_core::index::PRIMARY_SLOT);
         prefix.extend_from_slice(&event_id.to_be_bytes());
@@ -212,10 +262,25 @@ pub fn append(
         }
         max_seq + 1
     };
-    t.put(
-        &MqDataKey { event_id, part_id, seq },
-        &MqData { payload: cbor_to_vec(payload)? },
-    );
+    t.put(&MqDataKey { event_id, part_id, seq }, &MqData {});
+    // Payload → dynamic segment: top-level JSON fields become named
+    // dynamic fields (dictionary-allocated); nested objects stay as
+    // CBOR bytes until the Obj variant ships.
+    if let serde_json::Value::Object(map) = payload {
+        let mut obj = std::collections::BTreeMap::new();
+        for (k, v) in map {
+            obj.insert(k.clone(), json_to_dyn(v));
+        }
+        t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
+    } else {
+        // Non-object top level: keep whole-payload-as-bytes.
+        let mut obj = std::collections::BTreeMap::new();
+        obj.insert(
+            "_payload".to_string(),
+            okm_core::obj_dynamic::DynamicValue::Bytes(cbor_to_vec(payload)?),
+        );
+        t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
+    }
     Ok(seq)
 }
 
@@ -277,6 +342,7 @@ pub fn backlog(
     let part_id = part_hash(part);
     let mut t = Table::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
+    prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
     prefix.push(okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
@@ -291,7 +357,26 @@ pub fn backlog(
         let seq = u64::from_be_bytes(b);
         if seq > after_seq {
             if let Some(row) = t.get(&MqDataKey { event_id, part_id, seq }) {
-                out.push((seq, ciborium::de::from_reader(&row.payload[..])?));
+                // Reconstruct from the dynamic segment (name-keyed).
+                let v = match t.get_object(&MqDataKey { event_id, part_id, seq }) {
+                    Some(obj) if !obj.contains_key("_payload") => {
+                        let mut m = serde_json::Map::new();
+                        for (k, dv) in &obj {
+                            m.insert(k.clone(), dyn_to_json(dv));
+                        }
+                        serde_json::Value::Object(m)
+                    }
+                    // Whole-payload-as-bytes form (non-object top level).
+                    Some(obj) => match obj.get("_payload") {
+                        Some(okm_core::obj_dynamic::DynamicValue::Bytes(b)) => {
+                            ciborium::de::from_reader(&b[..])
+                                .unwrap_or(serde_json::Value::Null)
+                        }
+                        _ => serde_json::Value::Null,
+                    },
+                    None => serde_json::Value::Null,
+                };
+                out.push((seq, v));
             }
         }
     }

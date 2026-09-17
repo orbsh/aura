@@ -18,8 +18,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use okm_core::table::Table;
-use okm_core::{KeyEncode, Row, ObjEncode};
+use okm_core::document::Collection;
+use okm_core::{KeyEncode, Document, DocumentEncode};
 use okm_core::storage::VirtualStorage as _;
 /// serde_json::Value -> okm DynamicValue (the dynamic-segment currency).
 /// Numbers widen to i64/f64; the dynamic reader narrows on consumption.
@@ -88,7 +88,7 @@ pub struct EventNameKey {
 }
 
 /// Name payload + `by_name` text index.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(EventNameKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_ns(30)]
@@ -103,7 +103,7 @@ pub struct MqDataKey {
     pub seq: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MqDataKey)]
 #[ok_partition(1)]
 #[ok_ns(31)]
@@ -116,7 +116,7 @@ pub struct MqCursorKey {
     pub actor_id: u32,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MqCursorKey)]
 #[ok_partition(2)]
 #[ok_ns(32)]
@@ -130,7 +130,7 @@ pub struct ActorNameKey {
     pub id: u32,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(ActorNameKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_ns(33)]
@@ -182,7 +182,7 @@ impl okm_core::storage::VirtualStorage for StoreAsVirtual {
 // ---------------------------------------------------------------------------
 
 fn resolve_event_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u32> {
-    let mut t = Table::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
     // Exact match through the text index: prefix scan by name, then
     // verify (no delimiter in the index bytes).
     for hit in t.scan::<__OkmIndex_EventName_by_name>(name.as_bytes()) {
@@ -206,7 +206,7 @@ fn resolve_event_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u3
 }
 
 fn resolve_actor_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u32> {
-    let mut t = Table::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_ActorName_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
@@ -236,14 +236,14 @@ pub fn append(
 ) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_hash(part);
-    let mut t = Table::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
     let seq = {
         let mut max_seq = 0u64;
         // Range scan the partition's primary-key segment: keys sort by seq
         // (BE suffix), so the head is the max over the scan.
         let mut prefix = Vec::new();
-        prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
-        prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
+        prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
+        prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
         prefix.push(okm_core::index::PRIMARY_SLOT);
         prefix.extend_from_slice(&event_id.to_be_bytes());
         prefix.extend_from_slice(&part_id.to_be_bytes());
@@ -276,7 +276,7 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
-    t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
+    t.put_document(&MqDataKey { event_id, part_id, seq }, &obj);
     Ok(seq)
 }
 
@@ -298,7 +298,7 @@ fn part_hash(part: &str) -> u64 {
 pub fn cursor(store: &mut StoreAsVirtual, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
-    let mut t = Table::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
         part_id: part_hash(part),
@@ -318,7 +318,7 @@ pub fn advance(
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
-    let mut t = Table::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
         &MqCursorKey { event_id, part_id: part_hash(part), actor_id },
         &MqCursor { cursor: seq },
@@ -336,10 +336,10 @@ pub fn backlog(
 ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_hash(part);
-    let mut t = Table::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
+    prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
     prefix.push(okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
@@ -354,7 +354,7 @@ pub fn backlog(
         if seq > after_seq {
             if let Some(row) = t.get(&MqDataKey { event_id, part_id, seq }) {
                 // Reconstruct from the dynamic segment (name-keyed).
-                let v = match t.get_object(&MqDataKey { event_id, part_id, seq }) {
+                let v = match t.get_document(&MqDataKey { event_id, part_id, seq }) {
                     Some(obj) if !obj.contains_key("_root") => {
                         let mut m = serde_json::Map::new();
                         for (k, dv) in &obj {
@@ -388,7 +388,7 @@ pub fn skip_to_now(
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_hash(part);
     let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
+    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
     prefix.push(okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
@@ -422,10 +422,10 @@ pub fn delete_before(
     part_id: u64,
     min_seq: u64,
 ) -> anyhow::Result<usize> {
-    let mut t = Table::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
+    prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
     prefix.push(okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
@@ -452,10 +452,10 @@ pub fn cursor_rows(
     event_id: u32,
     part_id: u64,
 ) -> anyhow::Result<Vec<(u32, u64)>> {
-    let t = Table::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
     let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqCursor as Row>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqCursor as Row>::NS_PREFIX);
+    prefix.extend_from_slice(<MqCursor as Document>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
     prefix.push(okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
@@ -485,7 +485,7 @@ pub fn actor_id_of(store: &mut StoreAsVirtual, actor: &str) -> anyhow::Result<u3
 
 /// The registered name for an actor id (None = never registered).
 pub fn actor_name_of(store: &mut StoreAsVirtual, actor_id: u32) -> anyhow::Result<Option<String>> {
-    let t = Table::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
+    let t = Collection::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
     Ok(t.get(&ActorNameKey { id: actor_id }).map(|a| a.name))
 }
 
@@ -496,7 +496,7 @@ pub fn part_hash_of(part: &str) -> u64 {
 
 /// The registered id for an event name (None = never emitted/registered).
 pub fn event_id_of(store: &mut StoreAsVirtual, event: &str) -> anyhow::Result<Option<u32>> {
-    let t = Table::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
+    let t = Collection::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == event {

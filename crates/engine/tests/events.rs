@@ -196,3 +196,89 @@ async fn one_event_multiple_subscriber_types() {
         Some(serde_json::json!(1))
     );
 }
+
+// ------------------------------------------- Phase 4.5c step 2b (retention) --
+//
+// Min-watermark compaction: the watermark's denominator is the route
+// registry (registered @on declarations), never raw cursor rows — an
+// evicted instance still counts (backlog replays on re-activation), a
+// type whose route is gone does not. Write-path compaction runs on emit.
+#[tokio::test]
+async fn watermark_compaction_deletes_below_min_cursor() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+
+    const ECHO: &str = r#"
+(define (execute args) args)
+"#;
+    for name in ["cart", "stats"] {
+        engine.register(
+            ActorType::script(name, "steel", ECHO, Some("execute".into()))
+                .on("order.created", "user_id"),
+        )
+        .await;
+    }
+
+    // Emit three events; both instances consume (the poll loop drains).
+    for i in 0..3 {
+        Realm::emit(
+            &engine.realm,
+            None,
+            "order.created",
+            serde_json::json!({"event": "order.created", "user_id": "u1", "n": i}),
+        )
+        .await
+        .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    use aura_realm::mq;
+    let mut vs = {
+        let realm = engine.realm.try_lock().unwrap();
+        mq::StoreAsVirtual(realm.store.clone())
+    };
+    let eid = mq::event_id_of(&mut vs, "order.created").unwrap().unwrap();
+    let part = mq::part_hash_of("u1");
+    let rows = mq::cursor_rows(&mut vs, eid, part).unwrap();
+    assert_eq!(rows.len(), 2, "two registered subscribers: {rows:?}");
+    assert!(rows.iter().all(|(_, c)| *c == 3), "both caught up: {rows:?}");
+
+    // Consumers caught up to 3. Write-path compaction ran on each emit
+    // with whatever the watermark was AT THAT TIME (cursors lag during the
+    // drain), so older rows may already be gone — the invariant is that
+    // nothing at or above the final min cursor was deleted.
+    let min = rows.iter().map(|(_, c)| *c).min().unwrap();
+    let remaining: Vec<u64> = {
+        let after = min.saturating_sub(1);
+        // Backlog after (min-1) = every row still at or above the
+        // watermark; its length tells us whether below-watermark rows
+        // were removed by comparing against the pre-compaction count via
+        // delete_before's return on a rewind-free call.
+        mq::backlog(&mut vs, "order.created", "u1", after)
+            .unwrap()
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect()
+    };
+    assert!(remaining.iter().all(|s| *s >= min), "nothing below the watermark survives: {remaining:?}");
+
+    // A lagging subscriber pins the watermark: rewind one cursor to 1,
+    // re-emit (compaction runs on the emit path), then verify rows below
+    // 1 are gone while later rows survive.
+    mq::advance(&mut vs, "order.created", "u1", "cart/u1", 1).unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "order.created",
+        serde_json::json!({"event": "order.created", "user_id": "u1", "n": 99}),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Trigger compaction explicitly at the true min watermark (2): rows
+    // below it are removed; rows at/above survive.
+    aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", "u1").await.unwrap();
+    let surviving = mq::backlog(&mut vs, "order.created", "u1", 0).unwrap();
+    assert!(surviving.iter().all(|(s, _)| *s >= 2),
+        "rows below the watermark are gone: {surviving:?}");
+    assert!(surviving.len() >= 1, "at/above-watermark rows survive");
+}

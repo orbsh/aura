@@ -27,7 +27,3 @@ fn mq_roundtrip() {
     assert_eq!(bl[0].1, serde_json::json!({}));
     let _ = seq3;
 }
-
-// Non-object payloads are unreachable via the emit chain (object top is
-// guaranteed upstream) — no rejection test: append maps a hypothetical
-// non-object to an empty payload rather than wrapping or erroring.

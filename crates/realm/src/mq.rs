@@ -402,3 +402,107 @@ pub fn skip_to_now(
     }
     advance(store, event, part, actor, head)
 }
+
+// ---------------------------------------------------------------------------
+// Retention (min-watermark over registered subscribers). The watermark's
+// denominator comes from the ROUTE REGISTRY (the persisted @on metadata),
+// never from the raw cursor keys: a cursor row whose actor no longer has a
+// route for this event must not pin the watermark. Eviction (instance
+// scale-to-zero) does NOT deregister — the type's route remains, the
+// instance replays its backlog on re-activation; deregistration (type
+// hot-swap / actor deletion) drops the route, and the stale cursor row
+// falls out of the denominator (its row is removable by prefix scan).
+// ---------------------------------------------------------------------------
+
+/// Delete mq-data rows in a partition with seq < `min_seq`. Returns the
+/// number of rows removed.
+pub fn delete_before(
+    store: &mut StoreAsVirtual,
+    event_id: u32,
+    part_id: u64,
+    min_seq: u64,
+) -> anyhow::Result<usize> {
+    let mut t = Table::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(<MqData as Row>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<MqData as Row>::NS_PREFIX);
+    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&event_id.to_be_bytes());
+    prefix.extend_from_slice(&part_id.to_be_bytes());
+    let mut removed = 0;
+    for suffix in store.scan_suffix(&prefix) {
+        if suffix.len() < 8 {
+            continue;
+        }
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&suffix[suffix.len() - 8..]);
+        let seq = u64::from_be_bytes(b);
+        if seq < min_seq {
+            t.delete_by_pkey(&MqDataKey { event_id, part_id, seq });
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Every cursor row in a partition: (actor_id, cursor). The caller filters
+/// against the route registry.
+pub fn cursor_rows(
+    store: &mut StoreAsVirtual,
+    event_id: u32,
+    part_id: u64,
+) -> anyhow::Result<Vec<(u32, u64)>> {
+    let t = Table::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(<MqCursor as Row>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<MqCursor as Row>::NS_PREFIX);
+    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&event_id.to_be_bytes());
+    prefix.extend_from_slice(&part_id.to_be_bytes());
+    let mut out = Vec::new();
+    for suffix in store.scan_suffix(&prefix) {
+        if suffix.len() < 4 {
+            continue;
+        }
+        // suffix = [actor_id 4B]
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&suffix[suffix.len() - 4..]);
+        let actor_id = u32::from_be_bytes(b);
+        let cursor = t
+            .get(&MqCursorKey { event_id, part_id, actor_id })
+            .map(|c| c.cursor)
+            .unwrap_or(0);
+        out.push((actor_id, cursor));
+    }
+    Ok(out)
+}
+
+/// The actor_id for a cursor name ("type/key") — the registry resolve the
+/// consumer path uses; callers need it to map cursor rows back to routes.
+pub fn actor_id_of(store: &mut StoreAsVirtual, actor: &str) -> anyhow::Result<u32> {
+    resolve_actor_id(store, actor)
+}
+
+/// The registered name for an actor id (None = never registered).
+pub fn actor_name_of(store: &mut StoreAsVirtual, actor_id: u32) -> anyhow::Result<Option<String>> {
+    let t = Table::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
+    Ok(t.get(&ActorNameKey { id: actor_id }).map(|a| a.name))
+}
+
+/// The partition hash (exposed for realm-side watermark computation).
+pub fn part_hash_of(part: &str) -> u64 {
+    part_hash(part)
+}
+
+/// The registered id for an event name (None = never emitted/registered).
+pub fn event_id_of(store: &mut StoreAsVirtual, event: &str) -> anyhow::Result<Option<u32>> {
+    let t = Table::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
+    for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes()) {
+        if let Some(row) = &hit.1 {
+            if row.name == event {
+                return Ok(Some(hit.0.decoded.id));
+            }
+        }
+    }
+    Ok(None)
+}

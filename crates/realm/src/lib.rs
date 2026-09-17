@@ -703,9 +703,87 @@ impl Realm {
             if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
                 eprintln!("mq append failed for {event_name}/{partition}: {e}");
                 realm.dead_events.push(&event, data.clone());
+                continue;
+            }
+            // Retention (step 2b follow-up): min-watermark over REGISTERED
+            // subscribers — the route registry is the denominator (evicted
+            // instances still count: their backlog replays; a type whose
+            // @on for this event is gone does not). Cursor rows whose actor
+            // name has no matching registered (type, key) instance fall
+            // out; compaction deletes mq-data below the watermark. Runs on
+            // the emit path (write-path compaction per the ruling); the
+            // scan cost is bounded by the subscriber count.
+            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &partition, &mut store).await {
+                eprintln!("mq compaction failed for {event_name}/{partition}: {e}");
             }
         }
         Ok(())
+    }
+
+
+    /// Min-watermark compaction for one queue partition (Phase 4.5c step 2b
+    /// follow-up). Watermark = min cursor over subscribers REGISTERED for
+    /// this event: for each route (actor type), every instance key that the
+    /// cursor rows mention AND whose type still holds this route counts.
+    /// Cursor rows for actors with no matching route are skipped (and are
+    /// the reason the denominator never comes from raw cursor keys).
+    /// No cursor rows at all = nobody ever consumed = no compaction (the
+    /// backlog must survive for the first activation).
+    async fn compact_queue_locked(
+        realm: &mut Realm,
+        event: &str,
+        partition: &str,
+        store: &mut mq::StoreAsVirtual,
+    ) -> anyhow::Result<()> {
+        let event_id = match mq::event_id_of(store, event)? {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let part_id = mq::part_hash_of(partition);
+        let rows = mq::cursor_rows(store, event_id, part_id)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        // Registered subscriber check: the cursor name ("type/key") must
+        // belong to a type whose routes include this event.
+        let mut min_seq: Option<u64> = None;
+        for (actor_id, cursor) in &rows {
+            let Some(name) = mq::actor_name_of(store, *actor_id)? else {
+                continue;
+            };
+            let Some((type_name, _key)) = name.split_once('/') else {
+                continue;
+            };
+            let registered = realm
+                .router
+                .routes_of(type_name)
+                .iter()
+                .any(|r| r.event == event);
+            if registered {
+                min_seq = Some(match min_seq {
+                    Some(m) => m.min(*cursor),
+                    None => *cursor,
+                });
+            }
+        }
+        if let Some(min_seq) = min_seq {
+            if min_seq > 0 {
+                let _ = mq::delete_before(store, event_id, part_id, min_seq)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Test/ops wrapper: run min-watermark compaction for one partition
+    /// (locks the realm internally).
+    pub async fn compact_queue_for_test(
+        self_arc: &SharedRealm,
+        event: &str,
+        partition: &str,
+    ) -> anyhow::Result<()> {
+        let mut realm = self_arc.lock().await;
+        let mut store = mq::StoreAsVirtual(realm.store.clone());
+        Self::compact_queue_locked(&mut realm, event, partition, &mut store).await
     }
 
     /// Periodic eviction tick, spawned once per engine. Holds a Weak
@@ -804,3 +882,4 @@ async fn next_seq(self_arc: &SharedRealm) -> u64 {
     realm.call_seq += 1;
     realm.call_seq
 }
+

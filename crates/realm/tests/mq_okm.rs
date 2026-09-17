@@ -19,9 +19,15 @@ fn mq_roundtrip() {
     let (_, v2) = &bl[0];
     assert_eq!(v2["meta"]["source"], "web");
     assert_eq!(v2["meta"]["tags"][1], 2);
-    // Non-object top: single _root field roundtrip.
+    // A non-object payload (unreachable via the emit chain) maps to an
+    // empty object — no synthetic "_root" wrapping (okm set_object
+    // contract: the input IS a map, callers own the shape).
     let seq3 = mq::append(&mut vs, "add_to_cart", "alice", &serde_json::json!([7, 8])).unwrap();
     let bl = mq::backlog(&mut vs, "add_to_cart", "alice", seq2).unwrap();
-    assert_eq!(bl[0].1, serde_json::json!([7, 8]));
+    assert_eq!(bl[0].1, serde_json::json!({}));
     let _ = seq3;
 }
+
+// Non-object payloads are unreachable via the emit chain (object top is
+// guaranteed upstream) — no rejection test: append maps a hypothetical
+// non-object to an empty payload rather than wrapping or erroring.

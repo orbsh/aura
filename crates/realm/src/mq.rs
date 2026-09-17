@@ -261,19 +261,20 @@ pub fn append(
         max_seq + 1
     };
     t.put(&MqDataKey { event_id, part_id, seq }, &MqData {});
-    // Payload → dynamic segment, fully native: object top → named fields;
-    // any other shape (array/scalar top) → one "_root" field. Nested
-    // objects recurse into Obj frames (tag 7) — no CBOR anywhere.
+    // Payload → dynamic segment, fully native. The emit chain guarantees
+    // an object top (routing reads the partition key from data fields;
+    // handlers receive objects) — no wrapping convention exists here or
+    // in okm's set_object (its input type IS a map).
+    let map = match payload {
+        serde_json::Value::Object(map) => map,
+        // Unreachable via the emit chain (the emit chain guarantees an
+        // object top); an empty map keeps the conversion total without
+        // inventing a synthetic field.
+        _ => &serde_json::Map::new(),
+    };
     let mut obj = std::collections::BTreeMap::new();
-    match payload {
-        serde_json::Value::Object(map) => {
-            for (k, v) in map {
-                obj.insert(k.clone(), json_to_dyn(v));
-            }
-        }
-        other => {
-            obj.insert("_root".to_string(), json_to_dyn(other));
-        }
+    for (k, v) in map {
+        obj.insert(k.clone(), json_to_dyn(v));
     }
     t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
     Ok(seq)

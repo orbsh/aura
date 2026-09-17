@@ -11,7 +11,6 @@ probe-runtime = { path = "../../../probe/crates/runtime" }
 probe-protocol = { path = "../../../probe/crates/protocol" }
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
 base64 = "0.22"
-ciborium = "0.2"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 aura-config = { path = "../config" }

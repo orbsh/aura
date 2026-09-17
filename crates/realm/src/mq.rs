@@ -39,15 +39,11 @@ fn json_to_dyn(v: &serde_json::Value) -> okm_core::obj_dynamic::DynamicValue {
         serde_json::Value::Array(items) => {
             DynamicValue::Array(items.iter().map(json_to_dyn).collect())
         }
-        serde_json::Value::Object(map) => {
-            // Nested JSON object → nested map is not yet a DynamicValue
-            // variant; flatten one level under "key" names is lossy —
-            // keep nested objects as Bytes(JSON) until the Obj variant
-            // ships (ADR-0012 reserved).
-            let mut buf = Vec::new();
-            ciborium::into_writer(v, &mut buf).ok();
-            DynamicValue::Bytes(buf)
-        }
+        serde_json::Value::Object(map) => DynamicValue::Obj(
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_dyn(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -63,20 +59,22 @@ fn dyn_to_json(v: &okm_core::obj_dynamic::DynamicValue) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         DynamicValue::Str(s) => serde_json::Value::String(s.clone()),
         DynamicValue::Bytes(b) => {
-            // Nested objects were stored as CBOR bytes.
-            ciborium::de::from_reader(&b[..]).unwrap_or(serde_json::Value::Null)
+            // Opaque bytes: try UTF-8 text, else base64 (JSON has no binary).
+            std::str::from_utf8(b)
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .unwrap_or_else(|_| {
+                    serde_json::Value::String(BASE64.encode(b))
+                })
         }
         DynamicValue::Array(items) => {
             serde_json::Value::Array(items.iter().map(dyn_to_json).collect())
         }
+        DynamicValue::Obj(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), dyn_to_json(v)))
+                .collect(),
+        ),
     }
-}
-
-
-fn cbor_to_vec<T: serde::Serialize>(v: &T) -> anyhow::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    ciborium::into_writer(v, &mut buf)?;
-    Ok(buf)
 }
 
 
@@ -263,24 +261,21 @@ pub fn append(
         max_seq + 1
     };
     t.put(&MqDataKey { event_id, part_id, seq }, &MqData {});
-    // Payload → dynamic segment: top-level JSON fields become named
-    // dynamic fields (dictionary-allocated); nested objects stay as
-    // CBOR bytes until the Obj variant ships.
-    if let serde_json::Value::Object(map) = payload {
-        let mut obj = std::collections::BTreeMap::new();
-        for (k, v) in map {
-            obj.insert(k.clone(), json_to_dyn(v));
+    // Payload → dynamic segment, fully native: object top → named fields;
+    // any other shape (array/scalar top) → one "_root" field. Nested
+    // objects recurse into Obj frames (tag 7) — no CBOR anywhere.
+    let mut obj = std::collections::BTreeMap::new();
+    match payload {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                obj.insert(k.clone(), json_to_dyn(v));
+            }
         }
-        t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
-    } else {
-        // Non-object top level: keep whole-payload-as-bytes.
-        let mut obj = std::collections::BTreeMap::new();
-        obj.insert(
-            "_payload".to_string(),
-            okm_core::obj_dynamic::DynamicValue::Bytes(cbor_to_vec(payload)?),
-        );
-        t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
+        other => {
+            obj.insert("_root".to_string(), json_to_dyn(other));
+        }
     }
+    t.set_object(&MqDataKey { event_id, part_id, seq }, &obj);
     Ok(seq)
 }
 
@@ -359,20 +354,17 @@ pub fn backlog(
             if let Some(row) = t.get(&MqDataKey { event_id, part_id, seq }) {
                 // Reconstruct from the dynamic segment (name-keyed).
                 let v = match t.get_object(&MqDataKey { event_id, part_id, seq }) {
-                    Some(obj) if !obj.contains_key("_payload") => {
+                    Some(obj) if !obj.contains_key("_root") => {
                         let mut m = serde_json::Map::new();
                         for (k, dv) in &obj {
                             m.insert(k.clone(), dyn_to_json(dv));
                         }
                         serde_json::Value::Object(m)
                     }
-                    // Whole-payload-as-bytes form (non-object top level).
-                    Some(obj) => match obj.get("_payload") {
-                        Some(okm_core::obj_dynamic::DynamicValue::Bytes(b)) => {
-                            ciborium::de::from_reader(&b[..])
-                                .unwrap_or(serde_json::Value::Null)
-                        }
-                        _ => serde_json::Value::Null,
+                    // Non-object top level came in as a single _root field.
+                    Some(obj) => match obj.get("_root") {
+                        Some(dv) => dyn_to_json(dv),
+                        None => serde_json::Value::Null,
                     },
                     None => serde_json::Value::Null,
                 };

@@ -28,7 +28,12 @@ async fn remote_probe_roundtrip() {
             language: "steel".into(),
             source: r#"
 (define (double args)
-  (hash "doubled" (* 2 (hash-ref args "n"))))
+  (ctx_state_set (hash "field" "visits" "value" 1))
+  (let* ((prev (ctx_state_get "visits"))
+         (echoed (ctx_invoke (hash "type" "echo" "key" "e1" "handler" "execute" "args" (hash "x" 1)))))
+    (hash "doubled" (* 2 (hash-ref args "n"))
+          "visited" (hash-ref prev "present")
+          "echo" (hash-ref echoed "x"))))
 "#
             .into(),
         },
@@ -37,6 +42,17 @@ async fn remote_probe_roundtrip() {
         on_wake: None,
         receives: vec![],
     })
+    .await;
+
+    // Local target for ctx_invoke from the probe script.
+    engine.register(
+        ActorType::script(
+            "echo",
+            "steel",
+            r#"(define (execute args) args)"#,
+            Some("execute".into()),
+        )
+    )
     .await;
 
     // Probe side: dial in (runs until the test ends).
@@ -60,7 +76,19 @@ async fn remote_probe_roundtrip() {
         )
         .await
         .unwrap();
-    assert_eq!(out, serde_json::json!({"doubled": 8}));
+    assert_eq!(
+        out,
+        serde_json::json!({"doubled": 8, "visited": true, "echo": 1}),
+        "ctx state + invoke resolved over the wire"
+    );
+
+    // State written by the probe landed on the remote instance's own fields.
+    let realm = engine.realm.try_lock().unwrap();
+    let visits = realm.store.get(
+        &InstanceId { actor_type: "remote-counter".into(), key: "k".into() },
+        "visits",
+    ).unwrap();
+    assert_eq!(visits, Some(serde_json::json!(1)));
 
     probe.abort();
 }

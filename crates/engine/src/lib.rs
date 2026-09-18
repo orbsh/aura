@@ -220,3 +220,4 @@ fn parse_ttl(v: &serde_json::Value) -> Option<std::time::Duration> {
 }
 
 pub mod probes;
+pub mod host_wire;

@@ -4,7 +4,7 @@
 
 use aura_realm::SharedRealm;
 use futures_util::{SinkExt, StreamExt};
-use probe_protocol::Frame;
+use probe_protocol::{Frame, HostFrame};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Accept loop: one task per engine; each connection gets a writer task
@@ -47,10 +47,11 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
         .await?;
 
     // Writer channel: realm calls push frames; this task owns the sink.
+    // A clone stays with the reader so it can answer host calls.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
     {
         let mut r = realm.lock().await;
-        if let Some(old) = r.probes.insert(node_alias.clone(), tx) {
+        if let Some(old) = r.probes.insert(node_alias.clone(), tx.clone()) {
             // Re-registration (reconnect): the old writer channel dies with
             // this insert — its reader task exits on send failure.
             let _ = old;
@@ -73,12 +74,33 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
         match serde_json::from_str::<Frame>(&text)? {
             Frame::Result(result) => {
                 let mut r = realm.lock().await;
-                if let Some(tx) = r.pending_remote.remove(&result.call_id) {
-                    let _ = tx.send(result.outcome);
+                if let Some(pending) = r.pending_remote.remove(&result.call_id) {
+                    let _ = pending.reply.send(result.outcome);
                 }
                 // Unknown call_id: the caller timed out and was removed —
                 // drop the late result (the pending_calls scan owns
                 // timeout semantics; a late answer is not re-delivered).
+            }
+            Frame::Host(HostFrame::Call(call)) => {
+                // Ctx bridge over the wire: resolve against the instance
+                // the enclosing remote call was routed to (looked up from
+                // pending_remote by the call_id the probe carries), then
+                // reply on this connection's writer.
+                let instance = {
+                    let r = realm.lock().await;
+                    r.pending_remote.get(&call.call_id).map(|p| p.instance.clone())
+                };
+                let outcome = match instance {
+                    Some(inst) => {
+                        crate::host_wire::resolve_host_call(&realm, &inst, &call.op).await
+                    }
+                    None => Err("unknown call_id: the enclosing remote call is not in flight".into()),
+                };
+                tx.send(Frame::Host(HostFrame::Result(probe_protocol::HostResult {
+                    host_call_id: call.host_call_id,
+                    outcome,
+                })))
+                .ok();
             }
             other => anyhow::bail!("unexpected frame from probe: {other:?}"),
         }

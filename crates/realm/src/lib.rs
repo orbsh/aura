@@ -69,9 +69,11 @@ pub struct Realm {
     /// is the writer half of the probe's WS connection; the reader task
     /// (serve_probes) correlates Result frames back through pending_remote.
     pub probes: HashMap<String, tokio::sync::mpsc::UnboundedSender<probe_protocol::Frame>>,
-    /// In-flight remote calls awaiting the probe's Result frame.
+    /// In-flight remote calls awaiting the probe's Result frame. The
+    /// instance id scopes the ctx-bridge host calls the probe makes while
+    /// executing this call (state fields are the instance's own).
     pub pending_remote:
-        HashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>,
+        HashMap<String, RemotePending>,
     /// Static call declarations per actor type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -346,7 +348,10 @@ impl Realm {
                 let conn = conn.clone();
                 let call_id = format!("rp-{}", next_seq(&self_arc).await);
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                self_arc.lock().await.pending_remote.insert(call_id.clone(), tx);
+                self_arc.lock().await.pending_remote.insert(
+                    call_id.clone(),
+                    RemotePending { reply: tx, instance: id.clone() },
+                );
                 let call = probe_protocol::ToolCall {
                     call_id: call_id.clone(),
                     tool: job.handler.clone(),
@@ -875,6 +880,13 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 }
 
 
+
+/// One in-flight remote call: the reply path plus the instance whose ctx
+/// the probe's host calls resolve against.
+pub struct RemotePending {
+    pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    pub instance: InstanceId,
+}
 
 /// Next remote-call correlation id (realm-owned counter, taken under lock).
 async fn next_seq(self_arc: &SharedRealm) -> u64 {

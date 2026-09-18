@@ -244,7 +244,7 @@ pub fn append(
         let mut prefix = Vec::new();
         prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
         prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-        prefix.push(okm_core::index::PRIMARY_SLOT);
+        prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
         prefix.extend_from_slice(&event_id.to_be_bytes());
         prefix.extend_from_slice(&part_id.to_be_bytes());
         for suffix in store.scan_suffix(&prefix) {
@@ -340,7 +340,7 @@ pub fn backlog(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
     let mut out = Vec::new();
@@ -389,7 +389,7 @@ pub fn skip_to_now(
     let part_id = part_hash(part);
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
     let mut head = 0u64;
@@ -426,7 +426,7 @@ pub fn delete_before(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
     let mut removed = 0;
@@ -456,7 +456,7 @@ pub fn cursor_rows(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqCursor as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
-    prefix.push(okm_core::index::PRIMARY_SLOT);
+    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&part_id.to_be_bytes());
     let mut out = Vec::new();

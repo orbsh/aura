@@ -105,8 +105,5 @@ fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {
             carriers: vec!["steel".into()],
             ..Default::default()
         },
-        // No KV executor: this test's contract is the call path; KV over the
-        // wire has its own acceptance test (kv_round_trip.rs).
-        kv_executors: vec![],
     }
 }

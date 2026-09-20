@@ -47,11 +47,6 @@ fn json_field_value(arg: &serde_json::Value) -> anyhow::Result<(String, serde_js
 /// Shared realm handle: the dispatcher closes over this.
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 
-/// Deadline for one KV round trip (a remote executor refusing silently must
-/// become a failure value, not a hang). Same magnitude as the default hot
-/// call: one frame is one WAL commit on the probe's side.
-pub const KV_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(30);
-
 pub struct Realm {
     /// Registered actor types by name.
     types: HashMap<String, ActorType>,
@@ -79,12 +74,6 @@ pub struct Realm {
     /// executing this call (state fields are the instance's own).
     pub pending_remote:
         HashMap<String, RemotePending>,
-    /// In-flight KV round trips awaiting the probe's answer, keyed by the
-    /// wire's `kv_id`. The answer is the executor's raw OpResponse bytes;
-    /// a `Frame::KvRefused` resolves the SAME entry with the stated reason —
-    /// a refusal is an answer, never a dropped frame (dropping it would
-    /// leave the sender waiting on a reply nobody sends).
-    pub kv_pending: HashMap<String, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>,
     /// Static call declarations per actor type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -109,7 +98,6 @@ impl Realm {
             sessions: probe_runtime::carrier::session::Sessions::new(),
             probes: HashMap::new(),
             pending_remote: HashMap::new(),
-            kv_pending: HashMap::new(),
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
@@ -600,75 +588,6 @@ impl Realm {
             });
         }
         Ok(reply_rx)
-    }
-
-    /// One KV op frame to a probe's executor, waiting on the correlated
-    /// answer (ADR-0010 — the sender side of the storage actor). The frame
-    /// is raw okm-wire bytes and the realm parses nothing: the executor's
-    /// answer comes back byte-for-byte, and a REFUSAL (`Frame::KvRefused`)
-    /// comes back as its stated reason instead of a silent empty payload.
-    pub async fn kv_round_trip(
-        self_arc: &SharedRealm,
-        node_alias: &str,
-        executor: &str,
-        frame: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
-        Self::kv_round_trip_within(self_arc, node_alias, executor, frame, KV_ROUND_TRIP_TIMEOUT)
-            .await
-    }
-
-    /// `kv_round_trip` with an explicit deadline — the local round-trip
-    /// deadline is the caller's policy (the probe guarantees only that every
-    /// frame gets an answer or a refusal, never silence).
-    pub async fn kv_round_trip_within(
-        self_arc: &SharedRealm,
-        node_alias: &str,
-        executor: &str,
-        frame: Vec<u8>,
-        deadline: Duration,
-    ) -> Result<Vec<u8>, String> {
-        let (kv_id, rx) = {
-            let mut realm = self_arc.lock().await;
-            realm.kv_submit_locked(node_alias, executor, frame)?
-        };
-        match tokio::time::timeout(deadline, rx).await {
-            Ok(Ok(outcome)) => outcome,
-            // Sender dropped: the connection (and its reader) died first.
-            Ok(Err(_)) => Err(format!("probe '{node_alias}' dropped the KV reply")),
-            Err(_) => {
-                // Withdraw the correlation so a late answer is discarded
-                // rather than delivered to a caller that already gave up.
-                self_arc.lock().await.kv_pending.remove(&kv_id);
-                Err(format!(
-                    "kv round trip timed out after {deadline:?}: executor `{executor}`"
-                ))
-            }
-        }
-    }
-
-    /// The in-lock half of a KV round trip (callers that already hold the
-    /// guard use this): register the correlation, push the frame, hand back
-    /// the reply path. Never awaits — the probe writer channel is unbounded.
-    fn kv_submit_locked(
-        &mut self,
-        node_alias: &str,
-        executor: &str,
-        frame: Vec<u8>,
-    ) -> Result<(String, tokio::sync::oneshot::Receiver<Result<Vec<u8>, String>>), String> {
-        let Some(conn) = self.probes.get(node_alias) else {
-            return Err(format!("probe '{node_alias}' not connected"));
-        };
-        self.call_seq += 1;
-        let kv_id = format!("kv-{}", self.call_seq);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        conn.send(probe_protocol::Frame::Kv(probe_protocol::KvFrame {
-            executor: executor.to_string(),
-            kv_id: kv_id.clone(),
-            frame,
-        }))
-        .map_err(|_| format!("probe '{node_alias}' connection closed"))?;
-        self.kv_pending.insert(kv_id.clone(), tx);
-        Ok((kv_id, rx))
     }
 
     /// Evict instances idle longer than `idle_ttl`: run on_sleep, drop the

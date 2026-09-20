@@ -81,6 +81,24 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
                 // drop the late result (the pending_calls scan owns
                 // timeout semantics; a late answer is not re-delivered).
             }
+            Frame::Kv(kv) => {
+                // KV executor reply (Phase 4.5): resolve the pending
+                // request. Unknown kv_id = caller timed out — drop.
+                let mut r = realm.lock().await;
+                if let Some(pending) = r.kv_pending.remove(&kv.kv_id) {
+                    let _ = pending.send(Ok(kv.frame));
+                }
+            }
+            Frame::KvRefused { executor, kv_id, reason } => {
+                // A refusal is the executor's answer, not a dropped frame:
+                // resolve the pending request with its stated cause (the
+                // frame names both the executor and why it did not run).
+                // Unknown kv_id = caller timed out — drop.
+                let mut r = realm.lock().await;
+                if let Some(pending) = r.kv_pending.remove(&kv_id) {
+                    let _ = pending.send(Err(format!("kv executor `{executor}` refused: {reason}")));
+                }
+            }
             Frame::Host(HostFrame::Call(call)) => {
                 // Ctx bridge over the wire: resolve against the instance
                 // the enclosing remote call was routed to (looked up from

@@ -96,11 +96,17 @@ async fn remote_probe_roundtrip() {
 fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {
     probe_config::ProbeConfig {
         control_plane_url: format!("ws://127.0.0.1:{port}"),
+        // The deployed remote-actuator form is the wrapped one; this test
+        // exercises the call path, not the sandbox (steel runs in-process).
+        sandbox: true,
         credential_env: "PROBE_E2E_CREDENTIAL".into(),
         capabilities: probe_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
             ..Default::default()
         },
+        // No KV executor: this test's contract is the call path; KV over the
+        // wire has its own acceptance test (kv_round_trip.rs).
+        kv_executors: vec![],
     }
 }

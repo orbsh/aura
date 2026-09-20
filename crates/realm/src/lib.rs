@@ -364,9 +364,15 @@ impl Realm {
                     call_id.clone(),
                     RemotePending { reply: tx, instance: id.clone() },
                 );
+                // Residency identity = this actor INSTANCE (type/key), not the handler:
+                // two instances of one remote type must never share the probe's
+                // resident runtime, and every handler of one instance must.
+                // `entry` is the handler the call addresses in the delivered code.
+                let session = format!("{}/{}", id.actor_type, id.key);
                 let call = probe_protocol::ToolCall {
                     call_id: call_id.clone(),
-                    tool: job.handler.clone(),
+                    session,
+                    entry: job.handler.clone(),
                     language,
                     args: job.args,
                     code: probe_protocol::CodePayload::Inline { bytes: source.into_bytes() },

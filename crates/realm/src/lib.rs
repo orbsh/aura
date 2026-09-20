@@ -392,6 +392,7 @@ impl Realm {
                         &language,
                         &source,
                         host.as_ref(),
+                        &probe_runtime::sandbox::SandboxPolicy::None,
                         |s| s.call(&job.handler, &job.args),
                     )
                 })

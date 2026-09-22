@@ -5,6 +5,7 @@
 
 pub mod event;
 pub mod mq;
+pub mod meta;
 pub mod value;
 pub mod state;
 pub mod namespace;

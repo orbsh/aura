@@ -13,10 +13,11 @@ pub struct Engine {
     /// Per-user namespace map (Phase 3.6): structural isolation — a
     /// NamespacedRealm handle cannot reach another namespace.
     pub namespaces: Arc<aura_realm::namespace::Namespaces>,
-    /// The meta okm plane (Phase 4 two-instance model): actor definitions
-    /// and their introspected metadata persist here, independent of actor
-    /// state on the data plane.
-    pub meta_store: aura_actor::SharedStore,
+    /// The meta okm instance (Phase 4 two-instance model): actor
+    /// definitions and their introspected metadata persist here — a
+    /// SEPARATE okm engine (own directory), documents per ADR-0018's
+    /// no-JSON ruling (realm::meta).
+    pub meta_store: aura_realm::mq::MqStore,
 }
 
 impl Engine {
@@ -27,7 +28,7 @@ impl Engine {
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
         let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
         let meta_store =
-            Self::open_engine(&config.meta_engine, config.meta_dir.clone(), &config.node_id)?;
+            Self::open_meta_plane(&config.meta_engine, config.meta_dir.clone(), &config.node_id)?;
         let realm: SharedRealm =
             Arc::new(tokio::sync::Mutex::new(Realm::with_mq(mq.clone())));
         Realm::spawn_evictor(&realm);
@@ -40,10 +41,46 @@ impl Engine {
         // Boot reload (Phase 4.5b): persisted script actors re-register from
         // the meta store — definitions outlive the process.
         let engine = Self { realm, namespaces, meta_store: meta_store.clone() };
-        for def in aura_actor::persist::load_all(&meta_store)? {
+        for def in aura_realm::meta::load_all(&meta_store)? {
             engine.register(def.to_type()).await?;
         }
         Ok(engine)
+    }
+
+    /// The meta plane as its own okm instance (ADR-0018 no-exceptions
+    /// ruling): a separate directory and engine choice, documents only.
+    /// Engine matrix: fjall (durable, the production default) or the okm
+    /// TestStore (memory shape, tests) — the config's engine enum maps
+    /// onto okm's engine matrix.
+    fn open_meta_plane(
+        engine: &aura_config::Engine,
+        dir: Option<std::path::PathBuf>,
+        node_id: &str,
+    ) -> anyhow::Result<aura_realm::mq::MqStore> {
+        match engine {
+            aura_config::Engine::Fjall => {
+                #[cfg(feature = "fjall")]
+                {
+                    let path = dir.unwrap_or_else(|| {
+                        std::env::temp_dir().join(format!("aura-meta-{node_id}"))
+                    });
+                    let db = fjall::Database::create_or_recover(fjall::Config::new(&path))
+                        .map_err(|e| anyhow::anyhow!("fjall meta open {path:?}: {e}"))?;
+                    let store = okm_core::FjallStore::from_db(db, "aura_meta")
+                        .map_err(|e| anyhow::anyhow!("fjall meta keyspace {path:?}: {e}"))?;
+                    Ok(aura_realm::mq::MqStore::fjall(store))
+                }
+                #[cfg(not(feature = "fjall"))]
+                {
+                    let _ = (engine, dir, node_id);
+                    anyhow::bail!("meta engine=fjall requires building with the `fjall` feature")
+                }
+            }
+            aura_config::Engine::Memory => {
+                // Tests: okm's own in-memory engine (TestStore slatedb arm).
+                Ok(aura_realm::mq::MqStore::mem())
+            }
+        }
     }
 
     /// The data plane as ONE okm engine (ADR-0018 steps 1+2): the
@@ -78,31 +115,7 @@ impl Engine {
         }
     }
 
-    fn open_engine(
-        engine: &aura_config::Engine,
-        dir: Option<std::path::PathBuf>,
-        node_id: &str,
-    ) -> anyhow::Result<aura_actor::SharedStore> {
-        match engine {
-            aura_config::Engine::Memory => Ok(Arc::new(aura_storage::InMemoryStore::default())),
-            aura_config::Engine::Fjall => {
-                #[cfg(feature = "fjall")]
-                {
-                    let path = dir
-                        .unwrap_or_else(|| std::env::temp_dir().join(format!("aura-{node_id}")));
-                    Ok(Arc::new(aura_storage::fjall_store::FjallStateStore::open(&path)
-                        .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?))
-                }
-                #[cfg(not(feature = "fjall"))]
-                {
-                    let _ = (engine, dir, node_id);
-                    anyhow::bail!("engine=fjall requires building with the `fjall` feature")
-                }
-            }
-        }
-    }
 }
-
 impl Engine {
 
     /// Override the idle TTL (realm-wide default; per-type TTL overrides
@@ -151,7 +164,7 @@ impl Engine {
         // Phase 4.5b: persist script-actor definitions + introspected TTL
         // to the meta store — definitions outlive the process.
         if let Some(def) = aura_actor::persist::PersistedActor::from_type(&actor) {
-            aura_actor::persist::persist(&self.meta_store, &def)?;
+            aura_realm::meta::persist(&self.meta_store, &def)?;
         }
         self.realm.lock().await.register_type(actor);
         Ok(())

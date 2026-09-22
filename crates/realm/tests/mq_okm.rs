@@ -1,10 +1,11 @@
 use aura_realm::mq;
-use aura_storage::InMemoryStore;
 
 #[test]
 fn mq_roundtrip() {
-    let store: aura_actor::SharedStore = std::sync::Arc::new(InMemoryStore::default());
-    let mut vs = mq::StoreAsVirtual(store.clone());
+    // ADR-0018 step 1: the mq tables bind to a BYTE engine (bytes in,
+    // bytes out) — no JSON state store, no base64 bridge. The in-memory
+    // byte stand-in keeps the test honest without an engine feature.
+    let mut vs = mq::MqStore::mem();
     let seq1 = mq::append(&mut vs, "add_to_cart", "alice", &serde_json::json!({"item": "book"})).unwrap();
     let seq2 = mq::append(&mut vs, "add_to_cart", "alice", &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}})).unwrap();
     assert_eq!((seq1, seq2), (1, 2));

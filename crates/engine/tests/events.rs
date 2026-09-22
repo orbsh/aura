@@ -234,7 +234,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     use aura_realm::mq;
     let mut vs = {
         let realm = engine.realm.try_lock().unwrap();
-        mq::StoreAsVirtual(realm.store.clone())
+        realm.mq.clone()
     };
     let eid = mq::event_id_of(&mut vs, "order.created").unwrap().unwrap();
     let part = mq::part_hash_of("u1");

@@ -25,15 +25,18 @@ impl Engine {
     /// matrix: an engine chosen without its feature compiled in fails at
     /// boot, never silently falls back).
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
-        let store = Self::open_engine(&config.engine, config.data_dir.clone(), &config.node_id)?;
+        let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
         let meta_store =
             Self::open_engine(&config.meta_engine, config.meta_dir.clone(), &config.node_id)?;
-        let realm: SharedRealm = Arc::new(tokio::sync::Mutex::new(Realm::new(store.clone())));
+        let realm: SharedRealm =
+            Arc::new(tokio::sync::Mutex::new(Realm::with_mq(mq.clone())));
         Realm::spawn_evictor(&realm);
-        // Namespaces share the engine's store through PrefixStore (okm
-        // nesting style: the wrapper prepends its prefix, the engine stays
-        // untouched and key-format-agnostic).
-        let namespaces = Arc::new(aura_realm::namespace::Namespaces::new(store.clone()));
+        // Namespaces share the SAME okm engine (one fjall keyspace); each
+        // namespace derives a prefix-bound handle at realm construction —
+        // state documents AND mq tables ride it (ADR-0018 steps 1+2).
+        let namespaces = Arc::new(aura_realm::namespace::Namespaces::with_mq(
+            mq.clone(),
+        ));
         // Boot reload (Phase 4.5b): persisted script actors re-register from
         // the meta store — definitions outlive the process.
         let engine = Self { realm, namespaces, meta_store: meta_store.clone() };
@@ -41,6 +44,38 @@ impl Engine {
             engine.register(def.to_type()).await?;
         }
         Ok(engine)
+    }
+
+    /// The data plane as ONE okm engine (ADR-0018 steps 1+2): the
+    /// "aura_mq" okm keyspace carries BOTH the mq tables and the actor
+    /// state documents — one engine, one keyspace, ns-isolated tables.
+    /// Fjall opens its own database (single directory). The meta plane
+    /// keeps the separate JSON SharedStore (PersistedActor records).
+    fn open_planes(
+        engine: &aura_config::Engine,
+        dir: Option<std::path::PathBuf>,
+        node_id: &str,
+    ) -> anyhow::Result<aura_realm::mq::MqStore> {
+        match engine {
+            aura_config::Engine::Memory => Ok(aura_realm::mq::MqStore::mem()),
+            aura_config::Engine::Fjall => {
+                #[cfg(feature = "fjall")]
+                {
+                    let path = dir
+                        .unwrap_or_else(|| std::env::temp_dir().join(format!("aura-{node_id}")));
+                    let db = fjall::Database::create_or_recover(fjall::Config::new(&path))
+                        .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?;
+                    let mq_store = okm_core::FjallStore::from_db(db, "aura_mq")
+                        .map_err(|e| anyhow::anyhow!("fjall mq keyspace {path:?}: {e}"))?;
+                    Ok(aura_realm::mq::MqStore::fjall(mq_store))
+                }
+                #[cfg(not(feature = "fjall"))]
+                {
+                    let _ = (engine, dir, node_id);
+                    anyhow::bail!("engine=fjall requires building with the `fjall` feature")
+                }
+            }
+        }
     }
 
     fn open_engine(

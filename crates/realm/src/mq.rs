@@ -1,6 +1,6 @@
 //! Persistent event queues (Phase 4.5c step 2b) as okm tables — per the
 //! PLAN ruling and ADR-0002/0005/0006 discipline. Tables in one okm model
-//! over the realm's own store (the `StoreAsVirtual` bridge):
+//! over the realm's own store (the `MqStore` bridge):
 //!
 //! - `EventName` — open-ended event-name vocabulary: proxy id key, name
 //!   payload, `by_name` text index (names are runtime data, not ns; the
@@ -16,67 +16,10 @@
 //! the partition head. Min-watermark retention compaction and reduce-based
 //! depth counts are follow-ups (PLAN), not implemented here.
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use okm_core::document::Collection;
 use okm_core::{KeyEncode, Document, DocumentEncode};
 use okm_core::storage::VirtualStorage as _;
-/// serde_json::Value -> okm DynamicValue (the dynamic-segment currency).
-/// Numbers widen to i64/f64; the dynamic reader narrows on consumption.
-fn json_to_dyn(v: &serde_json::Value) -> okm_core::obj_dynamic::DynamicValue {
-    use okm_core::obj_dynamic::DynamicValue;
-    match v {
-        serde_json::Value::Null => DynamicValue::Null,
-        serde_json::Value::Bool(b) => DynamicValue::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                DynamicValue::Int(i)
-            } else {
-                DynamicValue::F64(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => DynamicValue::Str(s.clone()),
-        serde_json::Value::Array(items) => {
-            DynamicValue::Array(items.iter().map(json_to_dyn).collect())
-        }
-        serde_json::Value::Object(map) => DynamicValue::Obj(
-            map.iter()
-                .map(|(k, v)| (k.clone(), json_to_dyn(v)))
-                .collect(),
-        ),
-    }
-}
-
-fn dyn_to_json(v: &okm_core::obj_dynamic::DynamicValue) -> serde_json::Value {
-    use okm_core::obj_dynamic::DynamicValue;
-    match v {
-        DynamicValue::Null => serde_json::Value::Null,
-        DynamicValue::Bool(b) => serde_json::Value::Bool(*b),
-        DynamicValue::Int(i) => serde_json::Value::Number((*i).into()),
-        DynamicValue::UInt(u) => serde_json::Value::Number((*u).into()),
-        DynamicValue::F64(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        DynamicValue::Str(s) => serde_json::Value::String(s.clone()),
-        DynamicValue::Bytes(b) => {
-            // Opaque bytes: try UTF-8 text, else base64 (JSON has no binary).
-            std::str::from_utf8(b)
-                .map(|s| serde_json::Value::String(s.to_string()))
-                .unwrap_or_else(|_| {
-                    serde_json::Value::String(BASE64.encode(b))
-                })
-        }
-        DynamicValue::Array(items) => {
-            serde_json::Value::Array(items.iter().map(dyn_to_json).collect())
-        }
-        DynamicValue::Obj(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), dyn_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
+use crate::value::{json_to_dyn, dyn_to_json};
 
 // ---------------------------------------------------------------------------
 // Tables
@@ -139,39 +82,124 @@ pub struct ActorName {
 }
 
 // ---------------------------------------------------------------------------
-// Store bridge: realm's StateStore raw ops as okm VirtualStorage. Raw-key
-// ops map 1:1 (values ride base64 inside the JSON store values — the
-// StateStore's value type is serde_json::Value; okm wants raw bytes).
-// The mq tables ride the SAME engine instance as actor state.
+// MqStore: the byte engine the mq tables bind to. One handle = optional
+// namespace prefix + a shared ByteStore (the okm FjallStore keyspace, or
+// the in-memory byte stand-in for tests). Values are NATIVE BYTES — the
+// base64-in-JSON bridge (`StoreAsVirtual`) is gone (ADR-0018: storage
+// values are native, never serialized text; JSON is the API's currency,
+// never the store's). The prefix segment is bound at construction:
+// namespace escape is not expressible (okm nesting rule, aura Phase 3.6).
 // ---------------------------------------------------------------------------
 
+/// The engine behind an MqStore. okm picks an engine per assembly site;
+/// aura's two assembly points are the fjall keyspace (production) and
+/// the in-memory stand-in (tests). An enum, not a trait object: okm's
+/// VirtualStorage is not object-safe (&mut self + scan returning owned
+/// values is fine, but clones must share the keyspace — enum arms keep
+/// the real handle semantics).
 #[derive(Clone)]
-pub struct StoreAsVirtual(pub aura_actor::SharedStore);
+pub enum MqEngine {
+    /// okm's fjall adapter (production): its own keyspace on the engine's
+    /// fjall database.
+    Fjall(okm_core::FjallStore),
+    /// okm's test engine (TestStore): the REAL engine matrix — slatedb
+    /// in-memory by default, fjall temp-dir when only the fjall feature
+    /// is on. No aura-side stand-in: the test engine belongs to okm.
+    Test(okm_core::TestStore),
+}
 
-impl okm_core::storage::VirtualStorage for StoreAsVirtual {
+impl okm_core::storage::VirtualStorage for MqEngine {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        let _ = self
-            .0
-            .set_raw(key, serde_json::Value::String(BASE64.encode(&value)));
+        match self {
+            Self::Fjall(s) => s.put(key, value),
+            Self::Test(s) => s.put(key, value),
+        }
     }
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0
-            .get_raw(key)
-            .ok()
-            .flatten()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .and_then(|s| BASE64.decode(s).ok())
+        match self {
+            Self::Fjall(s) => s.get(key),
+            Self::Test(s) => s.get(key),
+        }
     }
     fn del(&mut self, key: &[u8]) {
-        let _ = self.0.del_raw(key);
+        match self {
+            Self::Fjall(s) => s.del(key),
+            Self::Test(s) => s.del(key),
+        }
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.0
-            .scan_keys(prefix)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|k| k[prefix.len()..].to_vec())
-            .collect()
+        match self {
+            Self::Fjall(s) => s.scan_suffix(prefix),
+            Self::Test(s) => s.scan_suffix(prefix),
+        }
+    }
+}
+
+impl okm_core::storage::SharedVirtualStorage for MqEngine {
+    fn shared_handle(&self) -> Self {
+        self.clone()
+    }
+}
+
+/// The mq store: an okm engine handle + an optional namespace prefix,
+/// itself an okm VirtualStorage (the tables see a clean key space; the
+/// prefix is bound at construction — namespace escape is not expressible,
+/// the okm nesting rule / aura Phase 3.6). Values are NATIVE BYTES — the
+/// base64-in-JSON bridge (`StoreAsVirtual`) is gone (ADR-0018: storage
+/// values are native, never serialized text; JSON is the API's currency,
+/// never the store's).
+#[derive(Clone)]
+pub struct MqStore {
+    prefix: Vec<u8>,
+    inner: std::sync::Arc<std::sync::Mutex<MqEngine>>,
+}
+
+impl MqStore {
+    /// The mq engine, unqualified (system realm). Fjall: the engine's own
+    /// database + keyspace name (okm `FjallStore::open/from_db`).
+    pub fn fjall(store: okm_core::FjallStore) -> Self {
+        Self::with_engine(MqEngine::Fjall(store))
+    }
+    /// okm's test engine (tests; real engines, no aura-side double).
+    pub fn mem() -> Self {
+        Self::with_engine(MqEngine::Test(okm_core::TestStore::default()))
+    }
+    fn with_engine(engine: MqEngine) -> Self {
+        Self { prefix: Vec::new(), inner: std::sync::Arc::new(std::sync::Mutex::new(engine)) }
+    }
+    /// A namespace-qualified handle: every key enters as
+    /// `[prefix][inner key]`; the inner engine stays untouched.
+    /// `PrefixStore`-style 2-byte length discipline for the segment.
+    pub fn namespaced(inner: &Self, namespace: &str) -> Self {
+        let mut prefix = (namespace.len() as u16).to_be_bytes().to_vec();
+        prefix.extend_from_slice(namespace.as_bytes());
+        let mut p = prefix.clone();
+        p.extend_from_slice(&inner.prefix);
+        Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
+    }
+    fn qualified(&self, key: &[u8]) -> Vec<u8> {
+        let mut k = self.prefix.clone();
+        k.extend_from_slice(key);
+        k
+    }
+}
+
+impl okm_core::storage::VirtualStorage for MqStore {
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.lock().unwrap().put(self.qualified(&key), value);
+    }
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().get(&self.qualified(key))
+    }
+    fn del(&mut self, key: &[u8]) {
+        self.inner.lock().unwrap().del(&self.qualified(key));
+    }
+    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+        // okm's suffix contract: the engine scans the QUALIFIED prefix
+        // and returns keys minus it — the namespace segment never leaks
+        // to the caller, and no second strip happens here.
+        let full = self.qualified(prefix);
+        self.inner.lock().unwrap().scan_suffix(&full)
     }
 }
 
@@ -181,8 +209,8 @@ impl okm_core::storage::VirtualStorage for StoreAsVirtual {
 // regime); miss = append with the next id.
 // ---------------------------------------------------------------------------
 
-fn resolve_event_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
+fn resolve_event_id(store: &mut MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     // Exact match through the text index: prefix scan by name, then
     // verify (no delimiter in the index bytes).
     for hit in t.scan::<__OkmIndex_EventName_by_name>(name.as_bytes()) {
@@ -205,8 +233,8 @@ fn resolve_event_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u3
     Ok(id)
 }
 
-fn resolve_actor_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
+fn resolve_actor_id(store: &mut MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_ActorName_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
@@ -225,18 +253,27 @@ fn resolve_actor_id(store: &mut StoreAsVirtual, name: &str) -> anyhow::Result<u3
     Ok(id)
 }
 
+/// The type-id resolve the state table shares (same `ActorName`
+/// registry: actor types and instances live in one identity space).
+pub(crate) fn resolve_actor_type_id(
+    store: &MqStore,
+    name: &str,
+) -> anyhow::Result<u32> {
+    resolve_actor_id(&mut store.clone(), name)
+}
+
 /// Append one event to a partition; returns the assigned seq (the
 /// partition's max seq + 1 — a full-scan head derivation on the mq-data
 /// prefix; watermark compaction will revisit this).
 pub fn append(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event: &str,
     part: &str,
     payload: &serde_json::Value,
 ) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_hash(part);
-    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let seq = {
         let mut max_seq = 0u64;
         // Range scan the partition's primary-key segment: keys sort by seq
@@ -295,10 +332,10 @@ fn part_hash(part: &str) -> u64 {
 }
 
 /// The subscriber's cursor (0 = nothing consumed).
-pub fn cursor(store: &mut StoreAsVirtual, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
+pub fn cursor(store: &mut MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
-    let mut t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
         part_id: part_hash(part),
@@ -310,7 +347,7 @@ pub fn cursor(store: &mut StoreAsVirtual, event: &str, part: &str, actor: &str) 
 
 /// Advance the cursor after consuming.
 pub fn advance(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event: &str,
     part: &str,
     actor: &str,
@@ -318,7 +355,7 @@ pub fn advance(
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
-    let mut t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
         &MqCursorKey { event_id, part_id: part_hash(part), actor_id },
         &MqCursor { cursor: seq },
@@ -329,14 +366,14 @@ pub fn advance(
 /// The subscriber's backlog: (seq, payload) strictly after `after_seq`,
 /// oldest first. Empty = caught up.
 pub fn backlog(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event: &str,
     part: &str,
     after_seq: u64,
 ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_hash(part);
-    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
@@ -352,7 +389,7 @@ pub fn backlog(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq > after_seq {
-            if let Some(row) = t.get(&MqDataKey { event_id, part_id, seq }) {
+            if t.get(&MqDataKey { event_id, part_id, seq }).is_some() {
                 // Reconstruct from the dynamic segment (name-keyed).
                 let v = match t.get_document(&MqDataKey { event_id, part_id, seq }) {
                     Some(obj) if !obj.contains_key("_root") => {
@@ -380,7 +417,7 @@ pub fn backlog(
 /// skip-to-now: jump the cursor to the partition head, discarding the
 /// stale backlog (the relief valve per the ruling).
 pub fn skip_to_now(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event: &str,
     part: &str,
     actor: &str,
@@ -417,12 +454,12 @@ pub fn skip_to_now(
 /// Delete mq-data rows in a partition with seq < `min_seq`. Returns the
 /// number of rows removed.
 pub fn delete_before(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event_id: u32,
     part_id: u64,
     min_seq: u64,
 ) -> anyhow::Result<usize> {
-    let mut t = Collection::<StoreAsVirtual, MqDataKey, MqData>::new(store.clone());
+    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
@@ -448,11 +485,11 @@ pub fn delete_before(
 /// Every cursor row in a partition: (actor_id, cursor). The caller filters
 /// against the route registry.
 pub fn cursor_rows(
-    store: &mut StoreAsVirtual,
+    store: &mut MqStore,
     event_id: u32,
     part_id: u64,
 ) -> anyhow::Result<Vec<(u32, u64)>> {
-    let t = Collection::<StoreAsVirtual, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqCursor as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
@@ -479,13 +516,13 @@ pub fn cursor_rows(
 
 /// The actor_id for a cursor name ("type/key") — the registry resolve the
 /// consumer path uses; callers need it to map cursor rows back to routes.
-pub fn actor_id_of(store: &mut StoreAsVirtual, actor: &str) -> anyhow::Result<u32> {
+pub fn actor_id_of(store: &mut MqStore, actor: &str) -> anyhow::Result<u32> {
     resolve_actor_id(store, actor)
 }
 
 /// The registered name for an actor id (None = never registered).
-pub fn actor_name_of(store: &mut StoreAsVirtual, actor_id: u32) -> anyhow::Result<Option<String>> {
-    let t = Collection::<StoreAsVirtual, ActorNameKey, ActorName>::new(store.clone());
+pub fn actor_name_of(store: &mut MqStore, actor_id: u32) -> anyhow::Result<Option<String>> {
+    let t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
     Ok(t.get(&ActorNameKey { id: actor_id }).map(|a| a.name))
 }
 
@@ -495,8 +532,8 @@ pub fn part_hash_of(part: &str) -> u64 {
 }
 
 /// The registered id for an event name (None = never emitted/registered).
-pub fn event_id_of(store: &mut StoreAsVirtual, event: &str) -> anyhow::Result<Option<u32>> {
-    let t = Collection::<StoreAsVirtual, EventNameKey, EventName>::new(store.clone());
+pub fn event_id_of(store: &mut MqStore, event: &str) -> anyhow::Result<Option<u32>> {
+    let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == event {

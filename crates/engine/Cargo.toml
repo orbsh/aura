@@ -26,4 +26,14 @@ steel = ["aura-realm/steel"]
 python = ["aura-realm/python"]
 wasmtime = ["aura-realm/wasmtime"]
 nushell = ["aura-realm/nushell"]
-fjall = ["aura-storage/fjall"]
+fjall = ["aura-storage/fjall", "aura-realm/fjall", "dep:okm-core", "dep:fjall"]
+
+[dependencies.okm-core]
+git = "https://github.com/orbsh/okm"
+branch = "main"
+features = ["fjall"]
+optional = true
+
+[dependencies.fjall]
+version = "3.1.10"
+optional = true

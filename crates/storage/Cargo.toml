@@ -11,7 +11,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 fjall = { version = "3.1.10", optional = true }
 tempfile = { version = "3", optional = true }
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", optional = true }
 
 [features]
 default = []
-fjall = ["dep:fjall", "dep:tempfile"]
+fjall = ["dep:fjall", "dep:tempfile", "dep:okm-core"]

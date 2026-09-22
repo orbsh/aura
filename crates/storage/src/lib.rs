@@ -124,6 +124,13 @@ pub mod fjall_store {
         pub fn persist(&self) -> fjall::Result<()> {
             self.db.persist(fjall::PersistMode::SyncData)
         }
+
+        /// The underlying fjall database: the engine assembly site hangs
+        /// the mq keyspace (okm `FjallStore`) off the SAME database — two
+        /// handles, one directory (ADR-0018 step 1).
+        pub fn database(&self) -> fjall::Database {
+            self.db.clone()
+        }
     }
 
     impl StateStore for FjallStateStore {

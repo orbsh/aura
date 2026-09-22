@@ -89,12 +89,21 @@ impl StateStore for PrefixStore {
 /// over the shared engine.
 pub struct Namespaces {
     map: tokio::sync::Mutex<HashMap<String, crate::SharedRealm>>,
-    store: SharedStore,
+    /// The shared okm engine every namespace's realm prefixes into
+    /// (ADR-0018 steps 1+2: mq tables AND state documents ride byte-
+    /// native tables, never a JSON store).
+    mq: crate::mq::MqStore,
 }
 
 impl Namespaces {
     pub fn new(store: SharedStore) -> Self {
-        Self { map: tokio::sync::Mutex::new(HashMap::new()), store }
+        let _ = store;
+        Self::with_mq(crate::mq::MqStore::mem())
+    }
+
+    /// Full constructor: the shared okm engine (one fjall keyspace).
+    pub fn with_mq(mq: crate::mq::MqStore) -> Self {
+        Self { map: tokio::sync::Mutex::new(HashMap::new()), mq }
     }
 
     /// Get-or-create the namespace's realm (lazy; cheap).
@@ -103,9 +112,11 @@ impl Namespaces {
         let realm = map
             .entry(namespace.to_string())
             .or_insert_with(|| {
-                let store: SharedStore =
-                    Arc::new(PrefixStore::new(namespace, self.store.clone()));
-                Arc::new(tokio::sync::Mutex::new(crate::Realm::new(store)))
+                // State + mq both ride the namespace-prefixed okm engine
+                // (ADR-0018 step 2): the prefix bound at construction is
+                // the isolation boundary; no JSON PrefixStore layer.
+                let mq = crate::mq::MqStore::namespaced(&self.mq, namespace);
+                Arc::new(tokio::sync::Mutex::new(crate::Realm::with_mq(mq)))
             });
         NamespacedRealm { namespace: namespace.to_string(), realm: realm.clone() }
     }

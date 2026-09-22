@@ -5,6 +5,8 @@
 
 pub mod event;
 pub mod mq;
+pub mod value;
+pub mod state;
 pub mod namespace;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
@@ -56,6 +58,10 @@ pub struct Realm {
     mailbox_capacity: usize,
     /// Instance state store (in-memory now; Fjall in Phase 4).
     pub store: SharedStore,
+    /// The mq byte engine (ADR-0018 step 1): the event-queue tables bind
+    /// to a byte store — the okm `FjallStore` keyspace on fjall, the
+    /// in-memory byte stand-in otherwise. NEVER the JSON state store.
+    pub mq: mq::MqStore,
     /// Idle TTL: an instance with no job for this long is evicted
     /// (scale-to-zero). State survives via the store; hooks run around it.
     pub idle_ttl: Duration,
@@ -87,12 +93,28 @@ pub struct Realm {
 }
 
 impl Realm {
+    /// Back-compat constructor during the ADR-0018 migration: the
+    /// passed-in JSON store is no longer the state engine (state rides
+    /// the document model over the mq engine); callers should move to
+    /// `with_mq`.
     pub fn new(store: SharedStore) -> Self {
+        let _ = store;
+        Self::with_mq(mq::MqStore::mem())
+    }
+
+    /// Full constructor (ADR-0018 step 2): actor state IS a document
+    /// store over the same okm engine the mq tables ride — one engine,
+    /// two tables namespaces (mq ns 30-33, state ns 34), JSON only at
+    /// the ctx seam. The engine's meta plane keeps its own SharedStore
+    /// (PersistedActor records — JSON there is a API-currency record,
+    /// not a storage value; its migration is a separate concern).
+    pub fn with_mq(mq_store: mq::MqStore) -> Self {
         Self {
             types: HashMap::new(),
             instances: HashMap::new(),
             mailbox_capacity: 64,
-            store,
+            mq: mq_store.clone(),
+            store: std::sync::Arc::new(state::StateDocumentStore::new(mq_store)),
             idle_ttl: Duration::from_secs(30),
             router: event::EventRouter::default(),
             sessions: probe_runtime::carrier::session::Sessions::new(),
@@ -287,7 +309,7 @@ impl Realm {
                         // OUTSIDE the realm lock.
                         let batch = {
                             let realm = consumer_realm.lock().await;
-                            let mut vs = mq::StoreAsVirtual(realm.store.clone());
+                            let mut vs = realm.mq.clone();
                             let after = mq::cursor(&mut vs, &event, &part, &actor)
                                 .unwrap_or(0);
                             mq::backlog(&mut vs, &event, &part, after).unwrap_or_default()
@@ -303,7 +325,7 @@ impl Realm {
                             };
                             Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
                             let realm = consumer_realm.lock().await;
-                            let mut vs = mq::StoreAsVirtual(realm.store.clone());
+                            let mut vs = realm.mq.clone();
                             let _ = mq::advance(&mut vs, &event, &part, &actor, seq);
                         }
                     }
@@ -711,7 +733,7 @@ impl Realm {
             // with NO matching route (checked above): a matched route with
             // no live instance is a backlog write, not a loss.
             let event_name = route.event.clone();
-            let mut store = mq::StoreAsVirtual(realm.store.clone());
+            let mut store = realm.mq.clone();
             if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
                 eprintln!("mq append failed for {event_name}/{partition}: {e}");
                 realm.dead_events.push(&event, data.clone());
@@ -745,7 +767,7 @@ impl Realm {
         realm: &mut Realm,
         event: &str,
         partition: &str,
-        store: &mut mq::StoreAsVirtual,
+        store: &mut mq::MqStore,
     ) -> anyhow::Result<()> {
         let event_id = match mq::event_id_of(store, event)? {
             Some(id) => id,
@@ -794,7 +816,7 @@ impl Realm {
         partition: &str,
     ) -> anyhow::Result<()> {
         let mut realm = self_arc.lock().await;
-        let mut store = mq::StoreAsVirtual(realm.store.clone());
+        let mut store = realm.mq.clone();
         Self::compact_queue_locked(&mut realm, event, partition, &mut store).await
     }
 
@@ -833,7 +855,10 @@ async fn dispatch_call(
 
 impl Default for Realm {
     fn default() -> Self {
-        Self::new(Arc::new(aura_storage::InMemoryStore::default()))
+        // State + mq both ride the okm TestStore through the document
+        // model (ADR-0018): there is no JSON state store left to default
+        // to — and none is needed.
+        Self::with_mq(crate::mq::MqStore::mem())
     }
 }
 

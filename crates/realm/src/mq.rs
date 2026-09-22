@@ -133,6 +133,12 @@ impl okm_core::storage::VirtualStorage for MqEngine {
             Self::Test(s) => s.scan_suffix(prefix),
         }
     }
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        match self {
+            Self::Fjall(s) => s.scan_range(begin, end),
+            Self::Test(s) => s.scan_range(begin, end),
+        }
+    }
 }
 
 impl okm_core::storage::SharedVirtualStorage for MqEngine {
@@ -200,6 +206,19 @@ impl okm_core::storage::VirtualStorage for MqStore {
         // to the caller, and no second strip happens here.
         let full = self.qualified(prefix);
         self.inner.lock().unwrap().scan_suffix(&full)
+    }
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        // Qualified window over the inner engine; the returned keys are
+        // sliced back into the caller's namespace-local space.
+        let full_begin = self.qualified(begin);
+        let full_end = end.map(|e| self.qualified(e));
+        self.inner
+            .lock()
+            .unwrap()
+            .scan_range(&full_begin, full_end.as_deref())
+            .into_iter()
+            .map(|k| k[self.prefix.len()..].to_vec())
+            .collect()
     }
 }
 

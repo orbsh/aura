@@ -135,7 +135,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [~] step 5 — docs: actor-api.md bilingual rewritten to multi-entry model (lifecycle + event-queue semantics + @on examples per language) — landed; realm.md session-queue section + wiki §6.2/§mailbox updated (wiki aura-architecture §5 bullet + §6.2 lifecycle, stateless-agent-architecture probe adapter wording)
   - Docs status: realm.md §on-decorator matches the ruling; actor-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture probe-adapter wording updated to event-queue semantics (2026-09-15)
 
-- [ ] Phase 4.8 — Timers: timer-wheel delayed emit + durable one-shot timers (ADR-0016): runtime `register_timer` / `cancel_timer`; actor-facing `ctx.timer.register / cancel` (ADR-0011 amended: blocking/self-scheduling stays rejected, delivery scheduling passes the criterion); declarative `lifecycle.cron` in `interface_schema` (introspected like idle_ttl, translated to durable timers); reserved `__on_timer` delivery path; wheel scan on the evictor tick (delivery counts as activity; re-arm explicit; durable timers restore on activation); ctx-bridge host fns move to dot-namespaced introspectable groups (`ctx.store.*`, `ctx.timer.*`).
+- [x] Phase 4.8 — Timers (ADR-0016, docs/adr/0016-timers-timer-wheel-cron.md en+zh; ADR-0011 amended — blocking/self-scheduling stays rejected, delivery scheduling passes the criterion): timer wheel scanned by the evictor tick; due entries deliver as ordinary `__on_timer` mailbox jobs (同目标到期合并一次唤醒); delivery counts as activity, re-arm explicit (投递不隐式自我重排); memory tier (dies with eviction) + durable tier (StateStore reserved namespace, restored via on_wake); declarative `lifecycle.cron` in `interface_schema` (注册时内省翻译为持久定时器，运行时从不解释 cron 表达式，错过策略 = skip-and-jump-to-next) + imperative `ctx.timer.register/cancel`; ctx-bridge host fns move to dot-namespaced introspectable groups (`ctx.store.*`, `ctx.timer.*`); gravity 按 channel 一实例（ADR-0016 ruling）。
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Actor hosting: Gravity as Actor type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.
@@ -159,3 +159,45 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-22，自 HANDOFF 简报合并）
+
+背景：krystallizer 的会话存储原语统一为 channel 日志（人的聊天与 LLM 对话共用一个
+容器），agent 上下文是它自己的投影（checkpoint + coverage 增量 + 未读）；消息键用
+gravity 打的时间戳（不是 seq）；压缩是启发式策略引擎（缓存时钟 / 50% 预算 /
+max-gap 分界），参数化 + 决策日志，回归调参推迟；多人模式独立成 ADR（成员身份两层、
+kind=profile 画像、插话策略）；aura 侧补 timer wheel + cron 原语，gravity 按
+channel 一实例。
+
+### aura（本仓）——已完成
+
+- [x] ADR-0016 timers 批次（ADR 文件 + ADR-0011 修订 + 本 PLAN 4.8 勾选）：已提交。
+- [x] ADR-0018 两步存储方案（Value representation 条目，见 Phase 6.6）：已提交。
+  实现要点与偏差（无 aura 侧 ByteStore 抽象、测试直接用 okm TestStore、
+  SHA-256 key 方案被否改为 registry + MAX reduce、pkey 必须带 type 段、
+  `set` 全字段 RMW）已记于该条目。
+- 消费侧同步：okm ADR-0024（reduce 钩子接收解码后的 key）落地后，aura 已
+  `cargo update` okm-core 并补 `scan_range` 转发；`MaxInstanceId` 等待 okm
+  ADR-0023 预置组合子落地后收缩为 `MaxKeep` 声明（镜像字段随之退役）。
+
+### krystallizer（~/world/krystallizer）——已暂存未提交
+
+- [ ] ADR-0008 unified channel log + ADR-0009 multi-party participation（en+zh）；
+      ADR-0001/0002/0006 dated Update；PLAN Phase 2 重写 + 2.5/2.6/2.7。
+      提交建议（一个提交）：`docs(adr): 0008 unified channel log + 0009
+      multi-party participation; amends 0001/0002/0006; PLAN phases 2.x`
+
+### 遗留待办（未动）
+
+- [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
+      函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
+- [ ] cold call over the wire：probe 不必改，缺的是 aura 侧 `resolve_call`
+      重进入路径 + gravity 的持久化。
+- [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
+      + 密钥握手 + 节点登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
+- [ ] meta plane（`PersistedActor`）仍 JSON over 旧 SharedStore——单独关注；
+      aura-storage 的 `InMemoryStore`/`FjallStateStore` 现仅余 meta plane 消费者。
+- 规则留存位置：okm ADR-0018（EN+中文）＋ `okm-project-conventions` 技能（细则在
+  `references/storage-value-model.md`）＋ `aura-dev` 技能；两仓 PLAN 有对应条目。
+- 明确不做（本会话记录）：内部时间 epoch（okm）、补偿性 cron 连跑、无标签回归
+  调参、session 第二容器、channel 域画像。

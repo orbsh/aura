@@ -212,7 +212,6 @@ mod tests {
             name: name.into(),
             language: "steel".into(),
             source: "(define (execute args) args)".into(),
-            entry: Some("execute".into()),
             idle_ttl_secs: Some(300),
             schema: Some(serde_json::json!({"lifecycle": {"idle_ttl": "300s"}})),
         }
@@ -237,13 +236,11 @@ mod tests {
         );
         // Option sentinels survive the round trip.
         let mut v3 = sample("cart");
-        v3.entry = None;
         v3.idle_ttl_secs = None;
         v3.schema = None;
         persist(&meta, &v3).unwrap();
         let all = load_all(&meta).unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].entry, None);
         assert_eq!(all[0].idle_ttl_secs, None);
         assert_eq!(all[0].schema, None);
         // A second type gets its own document and its own id.

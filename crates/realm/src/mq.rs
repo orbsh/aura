@@ -702,6 +702,23 @@ pub fn part_hash_of(part: &str) -> u64 {
     part_hash(part)
 }
 
+/// Every registered event name matching a wildcard PREFIX (the pattern's
+/// concrete instantiations the registry has seen). Prefix scan over the
+/// by_name index + row verify.
+pub fn events_matching(store: &mut MqStore, prefix: &str) -> anyhow::Result<Vec<String>> {
+    let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
+    let mut out = Vec::new();
+    for hit in t.scan::<__OkmIndex_EventName_by_name>(prefix.as_bytes()) {
+        if let Some(row) = &hit.1 {
+            if row.name.starts_with(prefix) {
+                out.push(row.name.clone());
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// The registered id for an event name (None = never emitted/registered).
 pub fn event_id_of(store: &mut MqStore, event: &str) -> anyhow::Result<Option<u32>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());

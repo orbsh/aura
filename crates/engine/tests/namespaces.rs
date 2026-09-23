@@ -14,7 +14,7 @@ const COUNTER: &str = r#"
     (hash "count" (+ n 1))))
 "#;
 const LISTENER: &str = r#"
-(define (execute args)
+(define (order.created args)
   (let* ((got (ctx_state_get "seen"))
          (n (if (hash-ref got "present") (hash-ref got "value") 0)))
     (ctx_state_set (hash "field" "seen" "value" (+ n 1)))

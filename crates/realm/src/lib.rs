@@ -318,7 +318,7 @@ impl Realm {
             // bind (Phase 4.5c step 2b): persistent partitions over the
             // store, one per (event, partition); the subscriber holds a
             // named cursor. Key-less routes bind the singleton partition.
-            let mut subs: Vec<(String, String)> = Vec::new();
+            let mut subs: Vec<(String, String, bool)> = Vec::new();
             if let Some(actor) = self.types.get(&id.actor_type) {
                 for route in self.router.routes_of(&id.actor_type) {
                     let partition = if route.partition_key_field.is_empty() {
@@ -329,8 +329,12 @@ impl Realm {
                     // NOTE: for keyed routes the partition value equals the
                     // instance key only when the route derives the key from
                     // the same field emit used — which it does by
-                    // construction (emit set key = data[field]).
-                    subs.push((route.event.clone(), partition));
+                    // construction (emit set key = data[field]). The third
+                    // element marks a wildcard subscription: route.event is
+                    // a PATTERN, expanded to concrete names at consume time
+                    // (queues are keyed by concrete names — emit writes
+                    // there).
+                    subs.push((route.event.clone(), partition, route.event.ends_with('*')));
                 }
             }
             self.instances.insert(key.clone(), inst);
@@ -343,33 +347,54 @@ impl Realm {
             let consumer_id = id.clone();
             let actor_key = id.key.clone();
             tokio::spawn(async move {
-                for (event, part) in subs {
+                for (event, part, is_wildcard) in subs {
                     // Cursor name = the actor type + instance key: two
                     // types on one event hold independent cursors.
                     let actor = format!("{}/{}", consumer_id.actor_type, actor_key);
+                    // Concrete queue names: an exact subscription is one
+                    // name; a wildcard subscription expands to every
+                    // registered event matching its prefix (re-expanded
+                    // each pass — new concrete names join automatically).
+                    let mut names: Vec<String> = Vec::new();
                     loop {
-                        // Fetch the backlog under a short lock; run jobs
-                        // OUTSIDE the realm lock.
-                        let batch = {
-                            let realm = consumer_realm.lock().await;
-                            let mut vs = realm.mq.clone();
-                            let after = mq::cursor(&mut vs, &event, &part, &actor)
-                                .unwrap_or(0);
-                            mq::backlog(&mut vs, &event, &part, after).unwrap_or_default()
-                        };
-                        if batch.is_empty() {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                            continue;
-                        }
-                        for (seq, payload) in batch {
-                            let job = aura_actor::QueuedJob {
-                                handler: event.clone(),
-                                args: payload,
+                        if is_wildcard {
+                            let prefix = event.trim_end_matches('*').to_string();
+                            let found = {
+                                let realm = consumer_realm.lock().await;
+                                let mut vs = realm.mq.clone();
+                                mq::events_matching(&mut vs, &prefix).unwrap_or_default()
                             };
-                            Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
-                            let realm = consumer_realm.lock().await;
-                            let mut vs = realm.mq.clone();
-                            let _ = mq::advance(&mut vs, &event, &part, &actor, seq);
+                            if found != names {
+                                names = found;
+                            }
+                        } else if names.is_empty() {
+                            names = vec![event.clone()];
+                        }
+                        let mut progressed = false;
+                        for concrete in &names {
+                            // Fetch the backlog under a short lock; run jobs
+                            // OUTSIDE the realm lock.
+                            let batch = {
+                                let realm = consumer_realm.lock().await;
+                                let mut vs = realm.mq.clone();
+                                let after = mq::cursor(&mut vs, concrete, &part, &actor)
+                                    .unwrap_or(0);
+                                mq::backlog(&mut vs, concrete, &part, after).unwrap_or_default()
+                            };
+                            for (seq, payload) in batch {
+                                let job = aura_actor::QueuedJob {
+                                    handler: concrete.clone(),
+                                    args: payload,
+                                };
+                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
+                                let realm = consumer_realm.lock().await;
+                                let mut vs = realm.mq.clone();
+                                let _ = mq::advance(&mut vs, concrete, &part, &actor, seq);
+                                progressed = true;
+                            }
+                        }
+                        if !progressed {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
                         }
                     }
                 }
@@ -832,7 +857,10 @@ impl Realm {
                     r.instance(self_arc.clone(), &target).await?;
                 }
             }
-            if queued.insert((route.event.clone(), partition.clone())) {
+            // Queue identity is the CONCRETE event name — for a wildcard
+            // route that is the emitted name (route.event is the pattern);
+            // one row per concrete event per partition, N cursors fan out.
+            if queued.insert((event.to_string(), partition.clone())) {
                 targets.push((route, partition));
             }
         }
@@ -843,7 +871,7 @@ impl Realm {
             // delivered on re-activation. The dead ring only sees events
             // with NO matching route (checked above): a matched route with
             // no live instance is a backlog write, not a loss.
-            let event_name = route.event.clone();
+            let event_name = event.to_string();
             let mut store = realm.mq.clone();
             if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
                 eprintln!("mq append failed for {event_name}/{partition}: {e}");

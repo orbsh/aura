@@ -7,7 +7,7 @@
 
 分区的最小单位不是表、不是 namespace，而是 **Actor 实例**。`InstanceId = (actor_type, key)`，其中 `key` 就是 partition key（如 session_id、user_id、order_id）。归属规则：
 
-- **同 key 串行**：同一 partition key 的所有消息进同一个实例的 mailbox，单消费者逐条处理——状态一致性不靠锁，靠信箱串行
+- **同 key 串行**：同一 partition key 的所有消息进同一个实例的 queue，单消费者逐条处理——状态一致性不靠锁，靠队列串行
 - **异 key 并行**：不同 key 的实例完全独立，互不阻塞
 - **通配订阅例外**：`on_wildcard` 的 Actor 绑定单例 `__singleton__`，不参与分区（监听全局事件的观察者天然无状态分片意义）
 
@@ -26,7 +26,7 @@ pub struct InstanceId {
 
 ```
 ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声明
-  ├─ Instance ("cart", "alice")   ← 具体实例：自己的 mailbox、自己的状态
+  ├─ Instance ("cart", "alice")   ← 具体实例：自己的 queue、自己的状态
   ├─ Instance ("cart", "bob")
   └─ Instance ("cart", "carol")   ← 同类型不同 key，互相独立、可并行
 ```
@@ -38,6 +38,17 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 
 本质是**类与实例的关系**：actor_type 是部署和代码分发的单位（热更新按类型换定义），实例是串行化和状态归属的单位（按 `(type, key)` 寻址、分片、恢复）。
 
+### 2.1 分区设计原则：什么身份选什么键
+
+选 partition key 的判据是**实例的恒等归属**，不是请求的携带字段：
+
+- **身份恒等于归属 → 用身份做键。** 用户级数据（购物车、session）按 user_id 分区：实例身份本身就编码了用户，handler 读 `ctx.self_id.key` 即得身份——这是构造级保证（实例只属于自己的 key），比调用方挂载更强（无需防伪造）。
+- **归属大于身份 → 用归属做键，身份走参数。** 群聊按 channel_id 分区：一个实例服务多个用户，user_id 不是实例的恒等属性。消息**自带 channel_id**（客户端知道发往哪个 channel，无需引擎侧查表），发送者身份作为请求参数携带（handler 内做成员校验、发言归因）。此时把 user_id 挂上 ctx 逻辑冲突——ctx 是 per-instance 的，挂上即意味着「本实例的 user」，而群聊实例没有「本实例的 user」。也不需要中间路由 actor 先按 user_id 查 channel 再转发：那会多一跳、多一份状态，且路由表沦为成员关系的第二真相源。
+- **跨分区的反向索引（user ↔ channels、user ↔ orders）→ 投影 Actor**：per-user 的 actor 订阅事件流维护自己的索引，与投影聚合同构，不进投递热路径。
+
+一句话：**分区键回答「这条消息该由谁串行处理」，请求参数回答「这次请求是谁发起的」**——两个问题各自独立作答，不互相挂载。
+
+
 ## 3. 单节点内的键布局：三层二进制段
 
 一个实例的状态落盘为定宽二进制段拼接（okm 键纪律，无文本分隔符）：
@@ -46,7 +57,7 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 [ns 2B BE][slot 1B][字段编码…][pkey]
 ```
 
-- **ns（2 字节）**：okm 层的表/边表 namespace，data 和 meta 两个 okm 实例各自独立编址，互不冲突（两实例模型：普通数据与元数据是两套 okm，引擎各自可选 fjall|slate，单机模式下都跑 fjall 但在不同目录）
+- **ns（2 字节）**：okm 层的表/边表 namespace，单一 okm 实例内统一编址（ADR-0025 后 actor 定义与数据同实例：ActorDef ns 41 与 mq/state 并列）
 - **slot（1 字节）**：实例内访问方法判别（0 = 主条目），同一张表的全部索引条目共享 ns 段
 - **实例状态字段**：Actor 的 ctx_state 每个字段是一个独立 KV 条目，字段名直接编进键尾（`ctx_state_get/set/delete` 即对这段键空间的点读写）
 
@@ -62,10 +73,10 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 
 ## 5. 集群层：分片映射与路由不变性（Phase 5，未实施）
 
-- **shard map 放 meta 实例**（slatedb），单写入点模型：只有一个逻辑写入者（控制平面）写 shard map/Actor 注册表，节点缓存读取——不引入多写共识——联邦内部没有通向共识的路径：多控制面部署是方向性倒退，ctx.metadata 保持只读面使写入者永远单一；整体转向逻辑单集群是推翻 ADR-0013 的新裁决，不是本架构内的扩展点
+- **shard map 住本节点存储**（ADR-0025 后即数据面 okm 实例），单写入点模型：只有一个逻辑写入者（控制平面）写 shard map/Actor 注册表，节点缓存读取——不引入多写共识——联邦内部没有通向共识的路径：多控制面部署是方向性倒退，内部元数据保持控制平面只写面使写入者永远单一；整体转向逻辑单集群是推翻 ADR-0013 的新裁决，不是本架构内的扩展点
 - **路由不变性**：partition key → shard 的映射稳定，**请求跟着数据走**——session 的每个 turn 都路由到持有该分区的机器；历史数据不会"丢失"，只是不被错误路由的请求看到
 - **结构性代价，明确接受**：节点故障时该节点的分区冻结直到恢复/迁移，零副本写放大。需要高可用的分片由 FDB/TiKV 承载（wiki 裁决：不自建强一致复制）——分区方案与复制方案解耦，默认路径零复制
-- Actor 定义热更新走 meta 实例：写新定义 → 各节点激活时重读
+- Actor 定义热更新走本节点存储：写新定义 → 各节点激活时重读
 
 ## 附：evictor 的复杂度取舍
 

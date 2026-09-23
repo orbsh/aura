@@ -8,10 +8,10 @@
 ```
 上传（set）     独立生命周期，可以永远不执行
   └─ Host 自省一次（调 interface_schema()，或从 @on 装饰器推导）
-  └─ 元数据（receives/wildcard_receives/lifecycle）提取后持久化到 meta store
+  └─ 元数据（receives/wildcard_receives/lifecycle）提取后持久化（ActorDef 表，数据面 okm 实例——ADR-0025）
   └─ receives 派生投递路由（事件 → 类型 + key 字段）
 执行            每条消息：加载脚本（最新版本）→ 按事件名寻址 handler → 执行
-  └─ 永不调用 interface_schema —— schema 已是 meta store 里的静态记录
+  └─ 永不调用 interface_schema —— schema 已是 ActorDef 表里的静态记录
 版本变更        新 set 重新自省一次、更新持久化元数据与路由；此前旧元数据治理
 ```
 
@@ -30,7 +30,7 @@ def remove(args): ...
 def audit(args): ...
 ```
 
-**投递语义：事件队列，不是 Actor mailbox**。事件不属于任何 Actor——`emit("add_to_cart", data)` 把事件写入 `add_to_cart` 事件的队列；`@on` 声明了 `key` 的队列按 `(event, partition)` 分区（key 字段值取自事件数据），没声明 key 的队列按 event 单队列。一个队列可以有**多个订阅者**（多个 Actor 类型监听同一事件——一对多是结构性的，不是 fan-out 模拟）。Actor 实例按自己的 `@on` 声明订阅队列，per-subscription cursor 保证同一实例串行消费，实例不拥有队列。
+**投递语义：事件队列，不是实例内的 queue**。事件不属于任何 Actor——`emit("add_to_cart", data)` 把事件写入 `add_to_cart` 事件的队列；`@on` 声明了 `key` 的队列按 `(event, partition)` 分区（key 字段值取自事件数据），没声明 key 的队列按 event 单队列。一个队列可以有**多个订阅者**（多个 Actor 类型监听同一事件——一对多是结构性的，不是 fan-out 模拟）。Actor 实例按自己的 `@on` 声明订阅队列，per-subscription cursor 保证同一实例串行消费，实例不拥有队列。
 
 **emits 不声明、不收集、不校验（ADR-0012）**：事件的接收者集合是运行时事实——无订阅者的 emit 落入 dead-event ring，那是可观测的审计面。源码级 emit 收集推迟到有真实消费端再做（Windmill 判据：解析要驱动一个只有解析才能做对的动作时才解析）。
 

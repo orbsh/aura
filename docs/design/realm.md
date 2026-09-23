@@ -13,7 +13,6 @@
 | 在 ctx 上 | 职责 |
 |:--|:--|
 | `ctx.state` | 本实例状态（KV，Fjall/SlateDB，不走网络路径） |
-| `ctx.metadata` | 受控元数据（meta okm 实例，控制平面单写 + 节点缓存；不做跨节点全局同步） |
 | `ctx.invoke()` | 唯一受控调用面——超时、审计、限流、可观测收口于此（§5.13） |
 
 不在 ctx 上的能力与其归属：
@@ -69,7 +68,7 @@
 
 - 事件名标记入口/出口语义（Fluxora 的模式）
 - Actor 不感知协议（HTTP/WS），只收发事件
-- 元数据不跨节点同步：每节点独立 meta 实例（控制平面单写）；Actor 状态事件走 SlateDB+S3 或本地 Fjall；联邦节点间走 well-known 协议认证身份
+- 引擎内部元数据不跨节点同步：每节点独立（控制平面单写，ADR-0025 后住数据面 okm 实例）；Actor 状态事件走 SlateDB+S3 或本地 Fjall；联邦节点间走 well-known 协议认证身份
 
 ### 5.3 Actor 定义接口
 
@@ -81,7 +80,7 @@ set(<lang>, <script/wasm>)
 
 `set()` 定义的是类型，不是实例。Actor 实例由 Realm 根据 partition key 按需激活（详见 [§5.11](#511-actor-实例化与分片)）。
 
-**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在 **meta okm 实例**（与 Actor 状态的 data 实例分离，Phase 4 两实例模型；当前实现为 `actor/src/persist.rs` + `meta_engine`/`meta_dir` 配置），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
+**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在数据面 okm 实例的 **ActorDef 表**（ns 41，与 mq/state 并列——ADR-0025 方案 A；实现为 `actor/src/persist.rs`），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
 
 ```
 meta instance, partition: "actor_defs"
@@ -89,11 +88,11 @@ meta instance, partition: "actor_defs"
   value: CBOR { lang, script_bytes, version, content_hash, committed_at, committed_by }
 ```
 
-**去重**：`set()` 提交前先计算 `script_bytes` 的哈希（content_hash），与 meta 实例中最新版本的 `content_hash` 比较——相同则忽略，不写入新版本。避免 CI 重复部署或无意义的热重载。
+**去重**：`set()` 提交前先计算 `script_bytes` 的哈希（content_hash），与 ActorDef 表中最新版本的 `content_hash` 比较——相同则忽略，不写入新版本。避免 CI 重复部署或无意义的热重载。
 
-**三条生命周期线分离**（Phase 4.5b 裁决）：上传（`set`）是独立生命周期——上传时 Host 自省 `interface_schema()` 一次，元数据（receives/emits/lifecycle）与定义一并持久化；执行永不调用 `interface_schema`——消息处理只加载脚本（最新版本）调 handler，元数据从 meta store 读取；版本变更（新 `set`）重新自省一次、更新持久化元数据，此前旧元数据治理。已实现：`PersistedActor` 记录 + `engine.register` 持久化 + boot 重载（见 PLAN Phase 4.5b）。
+**三条生命周期线分离**（Phase 4.5b 裁决）：上传（`set`）是独立生命周期——上传时 Host 自省 `interface_schema()` 一次，元数据（receives/emits/lifecycle）与定义一并持久化；执行永不调用 `interface_schema`——消息处理只加载脚本（最新版本）调 handler，元数据从 ActorDef 表读取；版本变更（新 `set`）重新自省一次、更新持久化元数据，此前旧元数据治理。已实现：`PersistedActor` 记录 + `engine.register` 持久化 + boot 重载（见 PLAN Phase 4.5b）。
 
-`on()` handler 在 Actor 实例激活时从 meta 实例读取最新版本的脚本，加载到对应 VM 执行。实例驱逐后，下次激活重新从 meta 实例读取。
+`on()` handler 在 Actor 实例激活时从 ActorDef 表读取最新版本的脚本，加载到对应 VM 执行。实例驱逐后，下次激活重新读取。
 
 ### 5.4 interface_schema()
 
@@ -246,7 +245,7 @@ result = await ctx.invoke("charge_processor", {"user_id": "42", "amount": 100})
 |------|------|------|
 | 进程内 Actor ↔ Actor | `ciborium::Value` | 内存 clone，零编解码 |
 | Actor → Fjall 持久化 | CBOR bytes | `ciborium::serialize()` 写入 LSM-Tree |
-| 元数据（无跨节点复制） | — | 各节点 meta 实例独立，控制平面单写 |
+| 引擎内部元数据（无跨节点复制） | — | 各节点独立，控制平面单写 |
 | Actor → Fluxora（HTTP/WS） | JSON | 外部系统消费 JSON |
 | Actor → Webhook | CBOR 或 JSON | 按配置选择 |
 
@@ -309,7 +308,7 @@ struct WildcardRoute {
 
 ```rust
 impl Realm {
-    // emit 的投递目标不是实例 mailbox，而是 (声明事件, partition) 队列。
+    // emit 的投递目标不是实例的 queue，而是 (声明事件, partition) 事件队列。
     // 两段式：先激活全部匹配路由的目标实例（订阅先于发送），再按队列去重发送。
     async fn emit(self_arc: &SharedRealm, emitter: Option<&str>,
                   event: &str, data: Value) -> anyhow::Result<()> {
@@ -350,7 +349,7 @@ impl Realm {
         for (route, partition) in targets {
             let queue = self.event_queues
                 .entry((route.event.clone(), partition))
-                .or_insert_with(|| broadcast::channel(self.mailbox_capacity).0);
+                .or_insert_with(|| broadcast::channel(self.queue_capacity).0);
             if queue.receiver_count() == 0 {
                 // 活过又离开的订阅者是自己的信号；刚激活的已有 Receiver。
                 self.dead_events.push(event, data.clone());
@@ -368,7 +367,7 @@ impl Realm {
 - 事件不属于任何 Actor。队列在场域层，实例激活时按其类型的 `@on` 声明绑定订阅（私有 Receiver = per-subscription cursor）。
 - 一个队列可有多个订阅者（多个 Actor 类型监听同一事件）——一对多投递是结构性的，不是 fan-out 模拟。
 - 串行语义：每实例的订阅消费任务一次只处理一条（逐队列顺序 drain）——同一实例串行由 cursor 保持，实例不拥有队列。
-- 直接调用不走队列：`ctx.invoke` / `engine.invoke` 是点对点（实例 mailbox 保留用于统一调用模型），事件投递才走共享队列。
+- 直接调用不走队列：`ctx.invoke` / `engine.invoke` 是点对点（实例的 queue 保留用于统一调用模型），事件投递才走共享队列。
 
 **通配符参数的实例化**：通配符参数不绑定 partition key，路由到固定 key `"__singleton__"` 的实例——整个 Actor 类型只有一个实例。这与投影 Actor 的场景一致：一个 DeptStatsActor 实例监听所有 `order.*` 事件，持续聚合。
 
@@ -712,7 +711,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 - **Scale-to-zero 不丢触发**：实例被驱逐期间产生的事件留在队列里，重新激活后游标未动，积压照常送达（broadcast 模型下这些事件静默丢失——与「事件数据被动持久化」矛盾，已废弃）
 - **慢消费者积压可见**：积压是可计量的队列长度，不是 broadcast 的 Lagged 整段静默丢失；失效显式化优于静默
 - **跳到最新（skip-to-now）向下兼容**：积压过多时，消费端可按消息时间把游标直接推到最新——丢弃陈旧积压、立即处理新事件。兜底阀门，让「消费不及时」可以选择性放弃而不必逐条消化
-- **多订阅者零复制**：N 个 Actor 监听同一事件 = 一个队列分区 + N 个游标；per-actor mailbox 模型下同一事件存 N 份的冗余从结构上消失
+- **多订阅者零复制**：N 个 Actor 监听同一事件 = 一个队列分区 + N 个游标；旧的 per-actor mailbox 模型下同一事件存 N 份的冗余从结构上消失
 - **保留 = 活跃订阅者的最小水位线**：一个 [ev][part] 队列只保留所有活跃订阅者游标仍需要的范围——最小游标之前的数据在写入路径 compaction 时删除。水位线的分母来自**路由注册表**（4.5b 持久化的 @on 元数据），不是原始 cursor 键：已永久退出的 actor 的陈旧游标不得把水位线钉死——注销 actor 时同步删其 cursor 行，它的积压随后跌破水位线、随普通 compaction 消失，无需独立回收器。**积压深度是 mq-data 前缀上的实时 okm reduce 计数**（写入 +1，水位线 compaction -1 unfold）——零扫描的运维面，skip-to-now 的决策直接读它
 - **诚实语义代价**：队列是缓冲不是存储——at-least-once 仅在「所有订阅者保持注册且在消费」期间成立。被永久注销且尚有未消费积压的订阅者，积压随之消失。与分层一致：ctx_state 是 durable truth，队列只保证「活着就能追上」
 
@@ -773,7 +772,7 @@ Aura 从 actor 保留下来的是**封装性**：state 按 partition key 隔离�
 
 **2. 替代消息队列——MQ 的三层拆解**
 
-传统架构中服务间通信靠 Kafka/NATS。传统 Actor 框架跨节点靠框架自带 RPC（Akka Remote、Erlang dist）。Aura 的元数据不跨节点同步（每节点独立 meta 实例，控制平面单写）；Actor 状态不跨节点复制（走 SlateDB+S3 或本地 Fjall）。不需要外部消息队列。Fluxora 去掉 Kafka/NATS，由 Aura 场域替代。
+传统架构中服务间通信靠 Kafka/NATS。传统 Actor 框架跨节点靠框架自带 RPC（Akka Remote、Erlang dist）。Aura 的引擎内部元数据不跨节点同步（每节点独立，控制平面单写）；Actor 状态不跨节点复制（走 SlateDB+S3 或本地 Fjall）。不需要外部消息队列。Fluxora 去掉 Kafka/NATS，由 Aura 场域替代。
 
 消息队列在 Aura 中**不是被替代，而是被拆解**——它的三个职能分别归入 Aura 已有的原生能力：
 
@@ -948,14 +947,14 @@ async def handle(ctx, add_to_cart=None):
      │                              ▼
      │                        ┌──────────────────┐
      │                        │ WaitingForResponse │
-     │                        │ (不消费 mailbox)    │
+     │                        │ (不消费 queue)      │
      │                        └────┬─────┬───────┘
      │              响应到达        │     │ 超时
      │◄─────────────────────────────┘     │
      │◄───────────────────────────────────┘
 ```
 
-`WaitingForResponse` 状态下不消费 mailbox 中的新事件——保证同一实例的串行语义。其他实例（不同 partition key）不受影响。
+`WaitingForResponse` 状态下不消费 queue 中的新事件——保证同一实例的串行语义。其他实例（不同 partition key）不受影响。
 
 **Host 核心结构**：
 
@@ -988,7 +987,7 @@ enum CallTarget {
 struct ActorInstance {
     partition_key: String,
     state: Value,                            // CBOR 状态树
-    mailbox: mpsc::Receiver<Event>,
+    queue: mpsc::Receiver<Event>,
     status: InstanceStatus,
 }
 
@@ -1093,9 +1092,9 @@ impl RealmHost {
                     let _ = tx.send(response);  // 唤醒 await 的 Actor
                 }
                 Responder::Callback { cb } => {
-                    // Steel Lisp：向 Actor mailbox 投递 ResumeEvent
+                    // Steel Lisp：向 Actor 的 queue 投递 ResumeEvent
                     if let Some(inst) = self.instances.get(&cb.actor_id) {
-                        inst.mailbox.send(Event::Resume {
+                        inst.queue.send(Event::Resume {
                             callback: cb,
                             data: response,
                         });
@@ -1111,7 +1110,7 @@ HTTP 响应和 Actor return 值走同一个 `resolve_call` 通道——call 的�
 
 **Python 桥接**：Python 的 `await ctx.invoke()` 通过 PyO3 桥接为 Rust future。`await` 时 Python coroutine 挂起并释放 GIL，Tokio runtime 调度其他 task。oneshot 解锁 → Rust future 完成 → Python coroutine 恢复。
 
-**Steel Lisp 桥接**：Steel 没有 async/await，用 callback。`ctx-invoke` 调用后立即返回，入口函数暂停，Actor 进入 `WaitingForResponse`。响应到达时 Host 不直接调用 Steel VM（跨线程不安全），而是向 Actor 的 mailbox 投递 `ResumeEvent`，事件循环收到后恢复执行 callback：
+**Steel Lisp 桥接**：Steel 没有 async/await，用 callback。`ctx-invoke` 调用后立即返回，入口函数暂停，Actor 进入 `WaitingForResponse`。响应到达时 Host 不直接调用 Steel VM（跨线程不安全），而是向 Actor 的 queue 投递 `ResumeEvent`，事件循环收到后恢复执行 callback：
 
 ```scheme
 (ctx-invoke ctx "user_info" (hash 'user_id "123")
@@ -1142,7 +1141,7 @@ Aura 场域内部（Actor ↔ Actor）的事件通信已经完整内化了传统
 | 事件持久化 | 每次 emit 落盘 Fjall WAL |
 | 事件重放 | Fjall 状态恢复 + stash 回放 |
 | 投递语义 | at-least-once + 幂等消费端（§5.7） |
-| 背压 | bounded mailbox（§5.8） |
+| 背压 | bounded queue（§5.8） |
 
 **场域内部不需要 MQ**——这是设计初衷，也是 §5.10「无外部消息队列」的定位。
 
@@ -1163,10 +1162,10 @@ MQ 的「无限容量 + 不可变日志 + 保留期删除」本质，在对象�
 
 #### 吞吐：水平扩展而非缓冲
 
-bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**，而不是引入缓冲队列：
+bounded queue 收到背压信号时，正确的反应是**触发水平扩展**，而不是引入缓冲队列：
 
 ```
-突发流量 → mailbox 满 → 背压信号
+突发流量 → queue 满 → 背压信号
   → 节点内扩容由存储引擎承接（数据跟随所属节点，无全局重分片——联邦裁决 ADR-0013）
   → 吸收突发，而非暂存
 ```
@@ -1205,7 +1204,7 @@ bounded mailbox 收到背压信号时，正确的反应是**触发水平扩展**
 
 | 层 | 组件 | 负责 |
 |:--|:--|:--|
-| 场域内状态/事件 | Fjall 本地+落湖（或 SlateDB + S3）＋ 独立 meta 实例 | 低延迟、随机读写、元数据单写可控 |
+| 场域内状态/事件 | Fjall 本地+落湖（或 SlateDB + S3），单一 okm 实例 | 低延迟、随机读写、内部元数据单写可控 |
 | 边界事件/审计/归档 | S3（本模式由 Fjall 自管上传） | 无限容量、不可变日志、保留删除 |
 | 消费组元数据 | KV（Fjall 或 SlateDB） | offset 点查、重试进度 |
 

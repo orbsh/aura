@@ -11,8 +11,8 @@ the **Actor instance**. `InstanceId = (actor_type, key)`, where `key` is the
 partition key (session_id, user_id, order_id, ...). Placement rules:
 
 - **Same key, serial**: all messages for one partition key land in the same
-  instance's mailbox, consumed one at a time by a single consumer — state
-  consistency comes from mailbox serialization, not locks
+  instance's queue, consumed one at a time by a single consumer — state
+  consistency comes from queue serialization, not locks
 - **Different keys, parallel**: instances with different keys are fully
   independent and never block each other
 - **Wildcard-subscription exception**: an Actor registered via `on_wildcard`
@@ -42,7 +42,7 @@ the partition key identifies a concrete instance within that type.
 
 ```
 ActorType "cart"                ← blueprint: state schema + handler + subscriptions
-  ├─ Instance ("cart", "alice")   ← concrete instance: own mailbox, own state
+  ├─ Instance ("cart", "alice")   ← concrete instance: own queue, own state
   ├─ Instance ("cart", "bob")
   └─ Instance ("cart", "carol")   ← same type, different keys: independent, parallel
 ```
@@ -66,6 +66,37 @@ deployment and code distribution (hot reload swaps definitions per type);
 the instance is the unit of serialization and state ownership (addressed,
 sharded, and recovered by `(type, key)`).
 
+### 2.1 Partition design principles: which identity picks which key
+
+The criterion for choosing a partition key is the **instance's standing
+ownership**, not a field the request happens to carry:
+
+- **Identity equals ownership → use the identity as the key.** User-scoped
+  data (carts, sessions) partitions by user_id: the instance identity itself
+  encodes the user, and the handler reads `ctx.self_id.key` — a
+  construction-level guarantee (the instance belongs to its key alone),
+  stronger than caller-supplied mounts (nothing to spoof).
+- **Ownership exceeds identity → use the ownership as the key; identity
+  rides as a parameter.** Group chat partitions by channel_id: one instance
+  serves many users, user_id is not the instance's standing attribute.
+  Messages **carry their own channel_id** (the client knows which channel it
+  is posting to; no engine-side lookup), and the sender's identity rides as
+  a request parameter (membership checks, attribution inside the handler).
+  Mounting user_id onto ctx here is a logical conflict — ctx is
+  per-instance, so a mounted field would claim "this instance's user", and
+  a group-chat instance has no such thing. Nor is an intermediary router
+  actor needed to look up the channel by user_id first: that adds a hop, a
+  state write, and turns the routing table into a second source of truth
+  for membership.
+- **Cross-partition reverse indexes (user ↔ channels, user ↔ orders) →
+  projection actors**: a per-user actor subscribes to the event stream and
+  maintains its own index — isomorphic to projection aggregation, off the
+  delivery hot path.
+
+In one sentence: **the partition key answers "who serially processes this
+message"; the request parameters answer "who initiated this request"** —
+two questions, answered independently, never mounted onto each other.
+
 ## 3. Key layout within a node: three binary segments
 
 An instance's state on disk is a concatenation of fixed-width binary
@@ -75,11 +106,10 @@ segments (the okm key discipline — no textual separators):
 [ns 2B BE][slot 1B][field encodings…][pkey]
 ```
 
-- **ns (2 bytes)**: the okm-level table/edge-table namespace. The data and
-  meta okm instances each allocate independently; they never collide (the
-  two-instance model: normal data and metadata are two separate okm
-  instances with independently selectable engines, fjall | slate; in
-  single-node mode both run on fjall in different directories)
+- **ns (2 bytes)**: the okm-level table/edge-table namespace, addressed
+  uniformly within the single okm instance (post ADR-0025, actor
+  definitions share the data plane's instance: ActorDef ns 41 beside
+  mq/state)
 - **slot (1 byte)**: access-method discriminator within the table
   (0 = primary entry); all index entries of one table share its ns segment
 - **Instance state fields**: each ctx_state field is one independent KV
@@ -110,13 +140,13 @@ lifecycle of partition state is decoupled from instance residency**:
 
 ## 5. Cluster layer: shard map and the routing invariant (Phase 5, not yet implemented)
 
-- **The shard map lives in the meta instance** (slatedb) under a
+- **The shard map lives in the node's own storage** (post ADR-0025, the data plane's okm instance) under a
   single-writer model: exactly one logical writer (the control plane)
   writes the shard map / actor registry; nodes read through caches — no
   multi-writer consensus. Federation contains no path to consensus: a
   multi-control-plane deployment is a directional retreat (it overturns
-  the federation, not an extension point); `ctx.metadata` stays
-  read-only to keep the writer count at one; and a "globally unique
+  the federation, not an extension point); internal metadata stays
+  control-plane-writable-only to keep the writer count at one; and a "globally unique
   config" does not exist under federation semantics — per-node
   independence is the ruling, not a defect. Moving to a logical
   single-cluster architecture wholesale would be a new ruling overturning
@@ -131,7 +161,7 @@ lifecycle of partition state is decoupled from instance residency**:
   (wiki ruling: no self-built strong-consistency replication) — the
   partitioning scheme and the replication scheme are decoupled; the
   default path carries no replication
-- Actor-definition hot reload rides the meta instance: write the new
+- Actor-definition hot reload rides the node's own storage: write the new
   definition → nodes re-read on activation
 
 ## Appendix: evictor complexity trade-off
@@ -152,7 +182,7 @@ contention becomes the bottleneck first. Revisit when both conditions hold.
 The skeleton of this scheme is **"serialization unit = partition unit =
 recovery unit"**: the partition key simultaneously determines message
 serialization, keyspace ownership, and the failure blast radius.
-Consistency comes from a single writer plus mailbox serialization, not
+Consistency comes from a single writer plus queue serialization, not
 from a consensus protocol; the availability gap (partitions frozen on node
 failure) is explicitly accepted and backstopped by an external
 strongly-consistent KV rather than built-in replicas.

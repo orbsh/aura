@@ -10,10 +10,10 @@
 ```
 UPLOAD (set)     its own lifecycle; may never execute
   └─ host introspects once (calls interface_schema(), or derives from @on decorators)
-  └─ metadata (receives/wildcard_receives/lifecycle) extracted and persisted to the meta store
+  └─ metadata (receives/wildcard_receives/lifecycle) extracted and persisted (the ActorDef table, data-plane okm instance — ADR-0025)
   └─ receives derives the delivery routes (event → type + key field)
 EXECUTION        per message: load script (latest version) → address handler by event name → run
-  └─ interface_schema is NEVER called — it is already a static record in the meta store
+  └─ interface_schema is NEVER called — it is already a static record in the ActorDef table
 VERSION CHANGE   a new `set` re-introspects once and updates the persisted metadata and routes;
                  until then the old metadata governs
 ```
@@ -38,7 +38,7 @@ def remove(args): ...
 def audit(args): ...
 ```
 
-**Delivery semantics: event queues, not actor mailboxes**. An event
+**Delivery semantics: event queues, not the instance's queue**. An event
 belongs to no actor — `emit("add_to_cart", data)` writes the event into
 the `add_to_cart` event queue; a queue for a handler with a declared
 `key` partitions by `(event, partition)` (the key field's value comes

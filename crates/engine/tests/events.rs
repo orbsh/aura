@@ -240,13 +240,30 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     let part = mq::part_hash_of("u1");
     let rows = mq::cursor_rows(&mut vs, eid, part).unwrap();
     assert_eq!(rows.len(), 2, "two registered subscribers: {rows:?}");
-    assert!(rows.iter().all(|(_, c)| *c == 3), "both caught up: {rows:?}");
+    // Caught up = both cursors equal the partition head (logical time,
+    // monotonic — not a compact 1..3 sequence). The last emit's append
+    // assigned the head; both subscribers drained it.
+    let head = rows.iter().map(|(_, c)| *c).max().unwrap();
+    assert!(head > 0, "head advanced past zero");
+    assert!(rows.iter().all(|(_, c)| *c == head), "both caught up: {rows:?}");
 
-    // Consumers caught up to 3. Write-path compaction ran on each emit
+    // Consumers caught up to the head. Write-path compaction ran on each emit
     // with whatever the watermark was AT THAT TIME (cursors lag during the
     // drain), so older rows may already be gone — the invariant is that
     // nothing at or above the final min cursor was deleted.
     let min = rows.iter().map(|(_, c)| *c).min().unwrap();
+    // The first event's logical time: the oldest row the drain saw. With
+    // write-path compaction it may already be deleted, so reconstruct the
+    // rewind point as the smallest still-known time below the head; if
+    // compaction removed everything below, fall back to min-1 (a rewind
+    // just below the watermark suffices — the invariant tested is
+    // relative, not tied to a literal 1..3 numbering).
+    let known: Vec<u64> = mq::backlog(&mut vs, "order.created", "u1", 0)
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    let first_time = known.first().copied().unwrap_or(min.saturating_sub(1));
     let remaining: Vec<u64> = {
         let after = min.saturating_sub(1);
         // Backlog after (min-1) = every row still at or above the
@@ -261,10 +278,11 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     };
     assert!(remaining.iter().all(|s| *s >= min), "nothing below the watermark survives: {remaining:?}");
 
-    // A lagging subscriber pins the watermark: rewind one cursor to 1,
-    // re-emit (compaction runs on the emit path), then verify rows below
-    // 1 are gone while later rows survive.
-    mq::advance(&mut vs, "order.created", "u1", "cart/u1", 1).unwrap();
+    // A lagging subscriber pins the watermark: rewind one cursor to the
+    // first event's logical time, re-emit (compaction runs on the emit
+    // path), then verify rows below the pinned watermark are gone while
+    // later rows survive.
+    mq::advance(&mut vs, "order.created", "u1", "cart/u1", first_time).unwrap();
     Realm::emit(
         &engine.realm,
         None,
@@ -278,7 +296,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     // below it are removed; rows at/above survive.
     aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", "u1").await.unwrap();
     let surviving = mq::backlog(&mut vs, "order.created", "u1", 0).unwrap();
-    assert!(surviving.iter().all(|(s, _)| *s >= 2),
-        "rows below the watermark are gone: {surviving:?}");
+    assert!(surviving.iter().all(|(s, _)| *s > first_time),
+        "rows at/below the pinned watermark are gone: {surviving:?}");
     assert!(surviving.len() >= 1, "at/above-watermark rows survive");
 }

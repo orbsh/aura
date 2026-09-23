@@ -151,12 +151,21 @@ impl Realm {
             .entry(actor.name.clone())
             .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
         // One declaration surface per type: routes assemble from the
-        // type's own `receives` as a side effect of registration.
+        // type's own `receives` as a side effect of registration. Two
+        // stores: the in-memory router (matching hot path — rebuilt from
+        // the persisted registry is unnecessary; the registry IS rebuilt
+        // on restart through this same code from boot reload) and the
+        // PERSISTED EventRoute table (mq): subscription facts survive
+        // restart and are readable by ops without introspecting scripts.
         for decl in &actor.receives {
             if decl.wildcard {
                 self.router.on_wildcard(&decl.event, &actor.name);
             } else {
                 self.router.on(decl.event.clone(), &actor.name, &decl.key_field);
+            }
+            let mut vs = self.mq.clone();
+            if let Err(e) = mq::route_put(&mut vs, &decl.event, &actor.name, &decl.key_field, decl.wildcard) {
+                eprintln!("route persist failed for {}/{}: {e}", decl.event, actor.name);
             }
         }
         self.types.insert(actor.name.clone(), actor);
@@ -313,7 +322,7 @@ impl Realm {
             if let Some(actor) = self.types.get(&id.actor_type) {
                 for route in self.router.routes_of(&id.actor_type) {
                     let partition = if route.partition_key_field.is_empty() {
-                        "__singleton__".to_string()
+                        mq::SINGLETON.to_string()
                     } else {
                         id.key.clone()
                     };
@@ -801,7 +810,7 @@ impl Realm {
             // no key → per-event singleton queue. The key comes from the
             // event data (wiki §5.4), not the emitter.
             let partition = if route.partition_key_field.is_empty() {
-                "__singleton__".to_string()
+                mq::SINGLETON.to_string()
             } else {
                 data.get(&route.partition_key_field)
                     .and_then(|v| v.as_str())
@@ -880,8 +889,11 @@ impl Realm {
         if rows.is_empty() {
             return Ok(());
         }
-        // Registered subscriber check: the cursor name ("type/key") must
-        // belong to a type whose routes include this event.
+        // Registered subscriber check: the cursor name ("type/key")
+        // must belong to a type whose PERSISTED routes include this
+        // event (the EventRoute registry — the watermark denominator
+        // is the durable subscription set, not the in-memory router
+        // and not the raw cursor keys).
         let mut min_seq: Option<u64> = None;
         for (actor_id, cursor) in &rows {
             let Some(name) = mq::actor_name_of(store, *actor_id)? else {
@@ -890,11 +902,12 @@ impl Realm {
             let Some((type_name, _key)) = name.split_once('/') else {
                 continue;
             };
-            let registered = realm
-                .router
-                .routes_of(type_name)
-                .iter()
-                .any(|r| r.event == event);
+            let registered = match mq::actor_id_of(store, type_name) {
+                Ok(aid) => mq::routes_of_event(store, event)?
+                    .iter()
+                    .any(|(r_aid, _, _)| *r_aid == aid),
+                Err(_) => false,
+            };
             if registered {
                 min_seq = Some(match min_seq {
                     Some(m) => m.min(*cursor),

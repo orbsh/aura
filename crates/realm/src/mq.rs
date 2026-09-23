@@ -8,8 +8,15 @@
 //!   (the text-first regime's documented cost: no delimiter, so "add"
 //!   prefix-matches "add_to_cart"; the row comparison is the exactness).
 //! - `ActorName` — same registry pattern for subscriber identity.
-//! - `MqData` — `[event_id][part_id][seq]` → payload. An event belongs to
-//!   no actor: one row per emitted event, N subscribers = N cursors.
+//! - `MqData` — `[event_id][part_id][time]` → payload. An event belongs to
+//!   no actor: one row per emitted event, N subscribers = N cursors. The
+//!   sort key is the LOGICAL time (ms, monotonic via MqHead — not wall
+//!   truth; the event's real timestamp rides the payload fields).
+//! - `MqHead` — `[event_id][part_id]` → last assigned logical time. The
+//!   per-partition write head: append reads it, assigns
+//!   `max(now_ms, last+1)`, writes it back. O(1) append (the old max-scan
+//!   over the partition prefix is gone) and cross-emitter monotonicity
+//!   (same-ms emits from concurrent emitters fold +1 into the sequence).
 //! - `MqCursor` — `[event_id][part_id][actor_id]` → last consumed seq.
 //!
 //! Backlog = range scan after the cursor; skip-to-now = cursor write to
@@ -43,7 +50,25 @@ pub struct EventName {
 pub struct MqDataKey {
     pub event_id: u32,
     pub part_id: u64,
-    pub seq: u64,
+    /// Logical time (ms), monotonic per partition via MqHead — the sort
+    /// order IS the delivery order; wall truth rides the payload.
+    pub time: u64,
+}
+
+/// Per-partition write head: the last logical time assigned by append.
+/// One row per partition (bounded — same cardinality as the partitions
+/// themselves); the O(1) alternative to scanning the data prefix for max.
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct MqHeadKey {
+    pub event_id: u32,
+    pub part_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MqHeadKey)]
+#[ok_ns(34)]
+pub struct MqHead {
+    pub last_time: u64,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -79,6 +104,38 @@ pub struct ActorNameKey {
 #[ok_ns(33)]
 pub struct ActorName {
     pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// EventRoute: the PERSISTED subscription registry. One row per (event,
+// actor-type) subscription assembled at registration from the type's @on
+// declarations. Replaces the in-memory Route table as the source of truth:
+// routes survive restart (no re-introspection to rebuild them), and
+// `routes_of` is an index scan. Wildcards ride the same row shape — a
+// `pattern` row is matched by prefix at emit (the registry stores the
+// declaration, the emit path does the matching, as before).
+// ---------------------------------------------------------------------------
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct EventRouteKey {
+    pub event_id: u32,
+    pub actor_id: u32,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EventRouteKey)]
+#[ok_index(by_actor { fields(actor_id) })]
+#[ok_ns(35)]
+pub struct EventRoute {
+    /// Mirror of the key's actor segment — index fields must be payload
+    /// fields (the key is not one), so the by_actor scan reads this.
+    pub actor_id: u32,
+    /// Empty = singleton subscription (no partition key); a wildcard
+    /// subscription carries the PREFIX here (matching is the emit path's
+    /// job) and `wildcard` is set.
+    pub key_field: String,
+    /// 0 = exact, 1 = wildcard (okm FieldType has no Bool — u8 sentinel).
+    pub wildcard: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +338,10 @@ pub(crate) fn resolve_actor_type_id(
     resolve_actor_id(&mut store.clone(), name)
 }
 
-/// Append one event to a partition; returns the assigned seq (the
-/// partition's max seq + 1 — a full-scan head derivation on the mq-data
-/// prefix; watermark compaction will revisit this).
+/// Append one event to a partition; returns the assigned logical time.
+/// O(1): the head row (MqHead) carries the partition's last assigned
+/// time — `max(now_ms, last+1)` keeps the sequence monotonic across
+/// concurrent emitters whose wall clocks agree to the millisecond or not.
 pub fn append(
     store: &mut MqStore,
     event: &str,
@@ -291,32 +349,21 @@ pub fn append(
     payload: &serde_json::Value,
 ) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_hash(part);
-    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
-    let seq = {
-        let mut max_seq = 0u64;
-        // Range scan the partition's primary-key segment: keys sort by seq
-        // (BE suffix), so the head is the max over the scan.
-        let mut prefix = Vec::new();
-        prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
-        prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-        prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
-        prefix.extend_from_slice(&event_id.to_be_bytes());
-        prefix.extend_from_slice(&part_id.to_be_bytes());
-        for suffix in store.scan_suffix(&prefix) {
-            // suffix = [seq 8B] (the rest of the primary key)
-            if suffix.len() >= 8 {
-                let mut b = [0u8; 8];
-                b.copy_from_slice(&suffix[suffix.len() - 8..]);
-                let s = u64::from_be_bytes(b);
-                if s > max_seq {
-                    max_seq = s;
-                }
-            }
-        }
-        max_seq + 1
+    let part_id = part_id_of(part);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut head_t = Collection::<MqStore, MqHeadKey, MqHead>::new(store.clone());
+    let head_key = MqHeadKey { event_id, part_id };
+    let time = {
+        let last = head_t.get(&head_key).map(|h| h.last_time).unwrap_or(0);
+        if now_ms > last { now_ms } else { last + 1 }
     };
-    t.put(&MqDataKey { event_id, part_id, seq }, &MqData {});
+    head_t.put(&head_key, &MqHead { last_time: time });
+    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
+    let seq = time;
+    t.put(&MqDataKey { event_id, part_id, time }, &MqData {});
     // Payload → dynamic segment, fully native. The emit chain guarantees
     // an object top (routing reads the partition key from data fields;
     // handlers receive objects) — no wrapping convention exists here or
@@ -332,23 +379,43 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
-    t.put_document(&MqDataKey { event_id, part_id, seq }, &obj);
+    t.put_document(&MqDataKey { event_id, part_id, time }, &obj);
     Ok(seq)
 }
+
+/// The reserved singleton partition id: key-less routes (wildcards and
+/// key-less @on) bind here. 0 is never produced by `part_hash` (mapped to
+/// 1), so the reserved value is structural, not a hash coincidence.
+pub const SINGLETON_PART: u64 = 0;
 
 /// Partition id: open-ended string → u64. FNV-1a — a key FIELD hash, not a
 /// namespace (ADR-0002's hash rejection is about the ns dictionary, not
 /// payload-level discriminators); collisions only merge two partitions'
 /// backlogs, never lose events, and the consumer's handler re-checks
-/// nothing (partitioning is a delivery fan-out key, not an address).
+/// nothing (partitioning is a delivery fan-out key, not an address). 0 is
+/// reserved for the singleton partition (mapped to 1 on collision).
 fn part_hash(part: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in part.as_bytes() {
         h ^= *b as u64;
         h = h.wrapping_mul(0x1000_0000_01b3);
     }
-    h
+    if h == 0 { 1 } else { h }
 }
+
+/// Partition id for a partition name: key-less partitions (the
+/// `__singleton__` sentinel the routing layer passes) map to the
+/// reserved id; everything else hashes.
+pub fn part_id_of(part: &str) -> u64 {
+    if part == SINGLETON {
+        SINGLETON_PART
+    } else {
+        part_hash(part)
+    }
+}
+
+/// The singleton partition sentinel the routing layer uses.
+pub const SINGLETON: &str = "__singleton__";
 
 /// The subscriber's cursor (0 = nothing consumed).
 pub fn cursor(store: &mut MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
@@ -357,7 +424,7 @@ pub fn cursor(store: &mut MqStore, event: &str, part: &str, actor: &str) -> anyh
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
-        part_id: part_hash(part),
+        part_id: part_id_of(part),
         actor_id,
     })
     .map(|c| c.cursor)
@@ -376,7 +443,7 @@ pub fn advance(
     let actor_id = resolve_actor_id(store, actor)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
-        &MqCursorKey { event_id, part_id: part_hash(part), actor_id },
+        &MqCursorKey { event_id, part_id: part_id_of(part), actor_id },
         &MqCursor { cursor: seq },
     );
     Ok(())
@@ -391,7 +458,7 @@ pub fn backlog(
     after_seq: u64,
 ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_hash(part);
+    let part_id = part_id_of(part);
     let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
@@ -408,9 +475,9 @@ pub fn backlog(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq > after_seq {
-            if t.get(&MqDataKey { event_id, part_id, seq }).is_some() {
+            if t.get(&MqDataKey { event_id, part_id, time: seq }).is_some() {
                 // Reconstruct from the dynamic segment (name-keyed).
-                let v = match t.get_document(&MqDataKey { event_id, part_id, seq }) {
+                let v = match t.get_document(&MqDataKey { event_id, part_id, time: seq }) {
                     Some(obj) if !obj.contains_key("_root") => {
                         let mut m = serde_json::Map::new();
                         for (k, dv) in &obj {
@@ -442,21 +509,106 @@ pub fn skip_to_now(
     actor: &str,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_hash(part);
+    let part_id = part_id_of(part);
+    let head = Collection::<MqStore, MqHeadKey, MqHead>::new(store.clone())
+        .get(&MqHeadKey { event_id, part_id })
+        .map(|h| h.last_time)
+        .unwrap_or(0);
+    advance(store, event, part, actor, head)
+}
+
+// ---------------------------------------------------------------------------
+// EventRoute registry ops: the persisted subscription set. Writers are the
+// realm registration path (register/deregister); readers are emit matching,
+// `routes_of` (activation binding) and the watermark denominator.
+// ---------------------------------------------------------------------------
+
+/// Persist one subscription: (event, actor type) → key field declaration.
+/// Idempotent (a re-register overwrites the same row).
+pub fn route_put(
+    store: &mut MqStore,
+    event: &str,
+    actor_type: &str,
+    key_field: &str,
+    is_wildcard: bool,
+) -> anyhow::Result<()> {
+    let event_id = resolve_event_id(store, event)?;
+    let actor_id = resolve_actor_id(store, actor_type)?;
+    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    t.put(
+        &EventRouteKey { event_id, actor_id },
+        &EventRoute { actor_id, key_field: key_field.to_string(), wildcard: u8::from(is_wildcard) },
+    );
+    Ok(())
+}
+
+/// Drop every subscription row for one actor type (deregistration /
+/// hot-swap): its cursors then fall out of the watermark denominator.
+pub fn routes_drop_actor(store: &mut MqStore, actor_type: &str) -> anyhow::Result<()> {
+    let actor_id = resolve_actor_id(store, actor_type)?;
+    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
+    prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);
     prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
-    prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&part_id.to_be_bytes());
-    let mut head = 0u64;
+    prefix.extend_from_slice(&actor_id.to_be_bytes());
+    let mut stale = Vec::new();
     for suffix in store.scan_suffix(&prefix) {
-        if suffix.len() >= 8 {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&suffix[suffix.len() - 8..]);
-            head = head.max(u64::from_be_bytes(b));
+        if suffix.len() >= 4 {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&suffix[suffix.len() - 4..]);
+            stale.push(u32::from_be_bytes(b));
         }
     }
-    advance(store, event, part, actor, head)
+    for event_id in stale {
+        t.delete_by_pkey(&EventRouteKey { event_id, actor_id });
+    }
+    Ok(())
+}
+
+/// Every subscription row for one event: (actor_id, key_field, is_wildcard).
+pub fn routes_of_event(
+    store: &mut MqStore,
+    event: &str,
+) -> anyhow::Result<Vec<(u32, String, bool)>> {
+    let event_id = resolve_event_id(store, event)?;
+    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
+    prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);
+    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+    prefix.extend_from_slice(&event_id.to_be_bytes());
+    let mut out = Vec::new();
+    for suffix in store.scan_suffix(&prefix) {
+        if suffix.len() < 4 {
+            continue;
+        }
+        // suffix = [actor_id 4B] (the rest of the primary key)
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&suffix[suffix.len() - 4..]);
+        let actor_id = u32::from_be_bytes(b);
+        if let Some(row) = t.get(&EventRouteKey { event_id, actor_id }) {
+            out.push((actor_id, row.key_field, row.wildcard != 0));
+        }
+    }
+    Ok(out)
+}
+
+/// Every subscription row for one actor type: (event_id, key_field,
+/// is_wildcard). The activation binding's persistent `routes_of`.
+pub fn routes_of_actor(
+    store: &mut MqStore,
+    actor_type: &str,
+) -> anyhow::Result<Vec<(u32, String, bool)>> {
+    let actor_id = resolve_actor_id(store, actor_type)?;
+    let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    let mut out = Vec::new();
+    for hit in t.scan::<__OkmIndex_EventRoute_by_actor>(&actor_id.to_be_bytes()) {
+        if let Some(row) = &hit.1 {
+            out.push((hit.0.decoded.event_id, row.key_field.clone(), row.wildcard != 0));
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +646,7 @@ pub fn delete_before(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq < min_seq {
-            t.delete_by_pkey(&MqDataKey { event_id, part_id, seq });
+            t.delete_by_pkey(&MqDataKey { event_id, part_id, time: seq });
             removed += 1;
         }
     }

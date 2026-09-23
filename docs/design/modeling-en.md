@@ -74,6 +74,40 @@ Sleeping never loses data (state is durable, events stay in the queue); residenc
 
 The criterion in one sentence: **stay resident when the money saved (activation cost × expected arrivals within the window) exceeds the money spent (memory × window duration)** — per-type TTL is the mechanism that turns this judgment into a single declaration.
 
+## High-frequency state shape: game rooms (direct fjall writes vs session memory)
+
+A real-time game room is the extreme case of state frequency, and it forces a boundary that was previously implicit — **how far direct ctx.state writes into fjall scale, and when session memory becomes necessary**.
+
+The arithmetic first: 100 players × 20Hz tick = 2,000 field writes/s per room. A direct fjall write (in-process, no wire protocol round trip, no socket, no RTT) costs ~1µs, so a room consumes ~0.2% of one core — **direct fjall writes comfortably cover casual and mid-scale rooms**. Compare an external Redis at the same write rate: ~100µs RTT per write plus every room queued behind a single-threaded event loop. The in-process engine is two orders of magnitude faster; this is the "hierarchy is a physical constraint" principle applied again — when the state's consumer (the handler) and the storage live in the same process, out-of-process storage (Redis/Kafka) is a structural disadvantage, not a tuning problem.
+
+The real costs on the direct-write path are not fjall itself but two secondary ones:
+
+- **JSON ↔ DynamicValue conversion** (the value.rs seam): once per field. Merge each frame into ONE snapshot write instead of 100 tiny per-field writes.
+- **Document-granularity semantic mismatch**: okm's per-field document write is designed for low-frequency fields; "one snapshot per frame" must collapse into a single put to keep snapshot semantics.
+
+Beyond that scale (denser ticks, more fields, more rooms), switch to the **session memory** shape:
+
+```
+Direct fjall writes (default, casual/mid-scale)    Session memory (heavy: denser ticks / more fields)
+  One whole-frame snapshot put per tick into        Hot state lives in the resident session
+  ctx.state = one native-encoded write, ~µs          (process memory) = zero serialization,
+  Crash recovery for free (state is always in        plain memory-array access
+  the engine), no dual-authority problem             Crash recovery via event replay (the MQ
+                                                      partition replays the input stream) or
+                                                      low-frequency checkpoints into ctx.state
+                                                      (lose N seconds)
+```
+
+Decision criteria, in priority order:
+
+1. **Default to direct fjall writes** — the structurally cleaner shape: single source of truth (state is always in the engine), free crash recovery, zero ops surface. Confirm the budget first (write rate × field count × room count against the ~0.2%/room measurement); do not jump to memory on instinct.
+2. **Session memory only when the direct-write budget is exceeded** — and switching brings its recovery plan with it (event replay first: input events are already persisted in the MQ partition; replay = the existing backlog scan + cursor; a snapshot is merely a replay accelerator) and accepts the dual-authority boundary (session memory is the hot authority, ctx.state the low-frequency truth).
+3. **Either way, frame-merge the input events** (clients sample at 20Hz; the server merges all inputs within one tick into a single event before it lands in the MQ) — standard input sampling for real-time multiplayer; it is what bounds the MQ write path.
+
+One-line criterion: **direct fjall writes are the default; session memory is an upgrade for "frame budget exceeded AND a replay/checkpoint plan exists", never the starting point.**
+
+The three-tier game-server mapping (prism connections / aura logic / probe execution) and the frame-driven vs message-driven gap: see PLAN Phase 8 and partitioning.md §5.
+
 ## Outbound delivery: where the field's boundary sits
 
 The field's event delivery covers actor ↔ actor; pushing messages to connections outside the field (a user's WS connection) is **outbound delivery**, borne by the outer connection plane (prism, Phase 8) — aura never knows WS exists:
@@ -116,3 +150,4 @@ The engine provides no business-data channel; bulk interaction with external sto
 | Long waits on external results | Timer wheel / event re-entry, no residency held |
 | Residency decision | per-type `idle_ttl`: mutation flows don't stay; shared high-frequency queries stay briefly (cache shape); long sessions / LLM calls stay long |
 | Pushing to online users | emit `outbound_message` (user_id in the payload) → the connection plane's outbound bridge pushes over WS; offline users via a per-user queue |
+| Per-frame high-frequency state (game rooms) | Default: direct fjall writes (whole-frame merged single put); switch to session memory + event-replay recovery only when the budget is exceeded |

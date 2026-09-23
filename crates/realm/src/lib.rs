@@ -114,20 +114,9 @@ impl Realm {
     /// (PersistedActor records — JSON there is a API-currency record,
     /// not a storage value; its migration is a separate concern).
     /// Wrap a freshly constructed realm into its shared handle and spawn
-    /// the timer driver against it. Call exactly once at construction —
-    /// `Arc::get_mut` requires the no-other-holders property.
-    pub fn shared(self) -> SharedRealm {
-        // Two-step: wrap first, then spawn the driver against the shared
-        // handle and install it synchronously via blocking_lock — safe
-        // here ONLY outside a runtime. For async callers use shared_async.
-        let arc = Arc::new(tokio::sync::Mutex::new(self));
-        let handle = timer::TimerDriver::spawn(arc.clone());
-        arc.blocking_lock().timers = handle;
-        arc
-    }
-
-    /// Async construction: same contract as `shared`, usable inside a
-    /// runtime (Engine::start and tests).
+    /// the timer driver against it. Call exactly once at construction.
+    /// the timer driver against it, and install the handle. Call exactly
+    /// once at construction.
     pub async fn shared_async(self) -> SharedRealm {
         let arc = Arc::new(tokio::sync::Mutex::new(self));
         let handle = timer::TimerDriver::spawn(arc.clone());

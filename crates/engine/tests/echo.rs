@@ -487,20 +487,20 @@ def execute(args):
 //
 // UPLOAD is its own lifecycle: registering a script actor persists the
 // definition + introspected TTL into the meta store; a fresh engine booted
-// on the same meta dir reloads the type — metadata survives node restart,
-// execution never re-introspects.
+// on the same data dir reloads the type — definitions survive node
+// restart, execution never re-introspects.
 
 #[cfg(all(feature = "fjall", feature = "steel"))]
 #[tokio::test]
 async fn script_actor_definition_survives_restart() {
+    // ADR-0025 Plan A: definitions live in the DATA plane's okm instance
+    // (ActorDef table) — restart persistence rides the single data dir,
+    // there is no separate meta instance/config anymore.
     let dir = tempfile::tempdir().unwrap();
-    let meta_dir = tempfile::tempdir().unwrap();
 
     let mut cfg = aura_config::EngineConfig::default();
     cfg.engine = aura_config::Engine::Fjall;
     cfg.data_dir = Some(dir.path().to_path_buf());
-    cfg.meta_engine = aura_config::Engine::Fjall;
-    cfg.meta_dir = Some(meta_dir.path().to_path_buf());
 
     // Node 1: register a script actor (declares idle_ttl via
     // interface_schema — introspection happens at upload).

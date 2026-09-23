@@ -128,7 +128,10 @@ pub struct TimerDriver {
     /// id → queue key (cancellation) and id → entry (target matching).
     index: HashMap<TimerId, (tokio_util::time::delay_queue::Key, Entry)>,
     commands: mpsc::UnboundedReceiver<Command>,
-    realm: crate::SharedRealm,
+    /// Weak: the driver must never keep the realm (and its engine file
+    /// lock) alive — same discipline as the evictor task (ADR-0016 §4).
+    /// Expiry actions upgrade; a dropped realm simply never fires.
+    realm: std::sync::Weak<tokio::sync::Mutex<crate::Realm>>,
 }
 
 impl TimerDriver {
@@ -140,7 +143,7 @@ impl TimerDriver {
             queue: DelayQueue::new(),
             index: HashMap::new(),
             commands,
-            realm,
+            realm: std::sync::Arc::downgrade(&realm),
         };
         tokio::spawn(driver.run());
         TimerHandle {
@@ -220,17 +223,18 @@ impl TimerDriver {
     }
 
     async fn fire(&self, entry: Entry) {
+        let Some(realm) = self.realm.upgrade() else { return };
         match entry {
             Entry::Deliver { target, tag } => {
-                crate::Realm::deliver_timer(self.realm.clone(), target, tag).await;
+                crate::Realm::deliver_timer(realm.clone(), target, tag).await;
             }
             Entry::Reclaim { target, kind } => {
                 match kind {
                     ReclaimKind::Idle => {
-                        crate::Realm::evict_instance(self.realm.clone(), &target).await;
+                        crate::Realm::evict_instance(realm.clone(), &target).await;
                     }
                     ReclaimKind::Watchdog => {
-                        crate::Realm::watchdog_expiry(self.realm.clone(), &target).await;
+                        crate::Realm::watchdog_expiry(realm.clone(), &target).await;
                     }
                 }
             }

@@ -1,5 +1,5 @@
 //! Realm: the event/call fabric. Phase 1 — virtual-actor registry, runtime
-//! loop driving mailboxes, idle-TTL eviction (scale-to-zero: on_sleep →
+//! loop driving queuees, idle-TTL eviction (scale-to-zero: on_sleep →
 //! drop, on_wake on reactivation). Event namespace and emit/on arrive in
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
@@ -55,8 +55,8 @@ pub struct Realm {
     types: HashMap<String, ActorType>,
     /// Live instances by (type, key).
     instances: HashMap<(String, String), Instance>,
-    /// Mailbox capacity per instance.
-    mailbox_capacity: usize,
+    /// Queue capacity per instance.
+    queue_capacity: usize,
     /// Instance state store (in-memory now; Fjall in Phase 4).
     pub store: SharedStore,
     /// The mq byte engine (ADR-0018 step 1): the event-queue tables bind
@@ -113,7 +113,7 @@ impl Realm {
         Self {
             types: HashMap::new(),
             instances: HashMap::new(),
-            mailbox_capacity: 64,
+            queue_capacity: 64,
             mq: mq_store.clone(),
             store: std::sync::Arc::new(state::StateDocumentStore::new(mq_store)),
             idle_ttl: Duration::from_secs(30),
@@ -263,7 +263,7 @@ impl Realm {
     async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
         let key = (id.actor_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
-            let mut inst = Instance::new(id.clone(), self.mailbox_capacity);
+            let mut inst = Instance::new(id.clone(), self.queue_capacity);
             // on_wake: fresh residency. Runs on first activation too —
             // symmetric with on_sleep; a first-time wake is still a wake.
             if let Some(actor) = self.types.get(&id.actor_type) {
@@ -339,7 +339,7 @@ impl Realm {
     }
 
     /// Drive one job through its instance's handler. Called by the runtime
-    /// loop; serial per instance (single consumer per mailbox).
+    /// loop; serial per instance (single consumer per queue).
     async fn run_job(self_arc: SharedRealm, id: &InstanceId, job: Job) {
         let mut realm = self_arc.lock().await;
         realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone()))
@@ -461,12 +461,12 @@ impl Realm {
                         .timeout
                         .map(|t| (tokio::time::Instant::now() + t, t));
                     let inst = realm.instance(self_arc.clone(), &target).await?;
-                    inst.mailbox
+                    inst.queue
                         .tx
                         .try_send(Job { handler: handler.to_string(), args: args.clone(), reply: reply_tx })
                         .map_err(|_| {
                             anyhow::anyhow!(
-                                "mailbox full: {}/{}",
+                                "queue full: {}/{}",
                                 target.actor_type,
                                 target.key
                             )
@@ -482,7 +482,7 @@ impl Realm {
                                 .get_mut(&(target.actor_type.clone(), target.key.clone()))
                                 .and_then(|i| {
                                     // Take only OUR job: recv from this instance's rx.
-                                    i.mailbox.rx.try_recv().ok()
+                                    i.queue.rx.try_recv().ok()
                                 })
                         };
                         if let Some(job) = job {
@@ -507,7 +507,7 @@ impl Realm {
                 }
             }
         };
-        // Cold path: the job still reaches the target's mailbox (the
+        // Cold path: the job still reaches the target's queue (the
         // target executes without a parked caller); the result is
         // resolved back through resolve_call when it completes.
         let resolve_id = call_id.clone();
@@ -567,7 +567,7 @@ impl Realm {
         }
     }
 
-    /// Submit a job to an instance: activation + mailbox send. The sender
+    /// Submit a job to an instance: activation + queue send. The sender
     /// awaits the reply oneshot (internal plumbing; the actor-facing call
     /// is `Realm::call`).
     pub async fn submit(
@@ -583,12 +583,12 @@ impl Realm {
                 anyhow::bail!("unknown actor type: {}", target.actor_type);
             }
             let inst = realm.instance(self_arc.clone(), &target).await?;
-            inst.mailbox
+            inst.queue
                 .tx
                 .try_send(Job { handler: handler.to_string(), args, reply: reply_tx })
-                .map_err(|_| anyhow::anyhow!("mailbox full: {}/{}", target.actor_type, target.key))?;
+                .map_err(|_| anyhow::anyhow!("queue full: {}/{}", target.actor_type, target.key))?;
         }
-        // Runtime loop drains the mailbox; spawn a consumer for this job
+        // Runtime loop drains the queue; spawn a consumer for this job
         // (per-job spawn is Phase 1's simple shape; the persistent loop
         // task arrives with the scheduler work).
         {
@@ -601,7 +601,7 @@ impl Realm {
                         .instances
                         .get_mut(&(target2.actor_type.clone(), target2.key.clone()));
                     match inst {
-                        Some(i) => i.mailbox.rx.recv().await,
+                        Some(i) => i.queue.rx.recv().await,
                         None => None,
                     }
                 };

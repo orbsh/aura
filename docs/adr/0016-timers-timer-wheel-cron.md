@@ -44,7 +44,7 @@ A per-realm **timer wheel**: each entry is
 (5s) additionally scans the wheel and delivers due entries as ordinary
 queued jobs to the target instance.
 
-- **Delivery = a normal mailbox job.** A due timer is indistinguishable
+- **Delivery = a normal queue job.** A due timer is indistinguishable
   from an event job at the actor side (`QueuedJob` with a reserved
   handler name, e.g. `__on_timer`, payload carrying the timer's
   caller-chosen tag). No new callback concept.
@@ -56,7 +56,7 @@ queued jobs to the target instance.
   as long as the actor keeps asking — no "self-feeding immortal"
   residency.
 - **Persistence question — timers do NOT survive eviction, by
-  default.** A timer is in-memory scheduling state like a mailbox; the
+  default.** A timer is in-memory scheduling state like a queue; the
   actor's durable truth lives in its StateStore. But two krystallizer
   cases need timers to outlive eviction: the 50-minute compression
   wake and cron. Therefore: a timer may be registered as **durable**

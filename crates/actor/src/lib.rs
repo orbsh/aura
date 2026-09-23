@@ -1,4 +1,4 @@
-//! Actor model: definition, context, mailbox.
+//! Actor model: definition, context, queue.
 //!
 //! ctx surface is bounded by ADR-0011: state / metadata / invoke only.
 //! emit/on, contracts, and hooks stay off ctx (realm-level or static
@@ -272,9 +272,9 @@ impl Ctx {
     }
 }
 
-/// One instance's mailbox: MPSC pipeline (Aura §1 topology). The realm owns
+/// One instance's queue: MPSC pipeline (Aura §1 topology). The realm owns
 /// the senders; the runtime drains and runs handlers.
-pub struct Mailbox {
+pub struct Queue {
     pub id: InstanceId,
     pub tx: mpsc::Sender<Job>,
     pub rx: mpsc::Receiver<Job>,
@@ -290,7 +290,7 @@ pub struct Job {
     pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>>,
 }
 
-impl Mailbox {
+impl Queue {
     pub fn new(id: InstanceId, capacity: usize) -> Self {
         let (tx, rx) = mpsc::channel(capacity);
         Self { id, tx, rx }
@@ -307,11 +307,11 @@ pub struct QueuedJob {
     pub args: Value,
 }
 
-/// Live instance: mailbox + last-activity instant, the unit the runtime
+/// Live instance: queue + last-activity instant, the unit the runtime
 /// loop schedules and the idle-TTL evicts.
 pub struct Instance {
     pub id: InstanceId,
-    pub mailbox: Mailbox,
+    pub queue: Queue,
     /// Event-queue subscriptions (Phase 4.5c step 2): one private Receiver
     /// per (event, partition) queue this instance's @on declarations bind —
     /// the per-subscription cursor that keeps consumption serial here.
@@ -323,8 +323,8 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(id: InstanceId, capacity: usize) -> Self {
-        let mailbox = Mailbox::new(id.clone(), capacity);
-        Self { id, mailbox, subscriptions: Vec::new(), last_activity: std::time::Instant::now() }
+        let queue = Queue::new(id.clone(), capacity);
+        Self { id, queue, subscriptions: Vec::new(), last_activity: std::time::Instant::now() }
     }
 }
 

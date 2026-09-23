@@ -157,7 +157,7 @@ impl Engine {
         handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<aura_actor::call::Waited> {
-        // Slot construction errors (unknown type/full mailbox) are Err;
+        // Slot construction errors (unknown type/full queue) are Err;
         // wait results — including Done(Err(timeout/handler failure)) —
         // travel inside the Waited so callers see failure as a value.
         Realm::call(&self.realm, None, target, handler, args)

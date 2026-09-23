@@ -223,7 +223,7 @@ impl TimerDriver {
     }
 
     async fn fire(&self, entry: Entry) {
-        let Some(realm) = self.realm.upgrade() else { return };
+        let Some(realm) = std::sync::Weak::upgrade(&self.realm) else { return };
         match entry {
             Entry::Deliver { target, tag } => {
                 crate::Realm::deliver_timer(realm.clone(), target, tag).await;

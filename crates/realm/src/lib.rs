@@ -183,14 +183,24 @@ impl Realm {
         // The store is already a shared Arc: handlers get a direct handle.
         // (Phase 1 single-node: the store is lock-free per operation. The
         // realm lock only guards registry/instances, never state.)
-        let dispatch_realm = self_arc.clone();
+        // Weak on purpose: the dispatch closure is cloned into resident
+        // sessions (steel's register_fn requires 'static) and those live
+        // inside the realm's own Sessions map — a strong capture here is a
+        // reference cycle (realm → sessions → session → closure → realm)
+        // that keeps the fjall Database open forever after engine drop.
+        let dispatch_realm = Arc::downgrade(&self_arc);
         aura_actor::Ctx::new(
             id.clone(),
             store,
             Arc::new(move |target, handler: &str, args| {
                 let realm = dispatch_realm.clone();
                 let handler = handler.to_string();
-                Box::pin(async move { dispatch_call(realm, target, &handler, args).await })
+                Box::pin(async move {
+                    let realm = std::sync::Weak::upgrade(&realm).ok_or_else(|| {
+                        anyhow::anyhow!("realm dropped: dispatch after engine shutdown")
+                    })?;
+                    dispatch_call(realm, target, &handler, args).await
+                })
             }),
         )
     }

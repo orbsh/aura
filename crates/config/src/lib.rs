@@ -17,11 +17,6 @@ pub struct EngineConfig {
     pub engine: Engine,
     /// Data directory for persistent engines. Ignored by `memory`.
     pub data_dir: Option<std::path::PathBuf>,
-    /// Metadata plane engine (separate okm instance; Phase 4/5). Defaults
-    /// to matching the data plane engine.
-    pub meta_engine: Engine,
-    /// Metadata plane directory (meta instance is a separate engine).
-    pub meta_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,8 +36,6 @@ impl Default for EngineConfig {
             namespace: "default".into(),
             engine: Engine::Memory,
             data_dir: None,
-            meta_engine: Engine::Memory,
-            meta_dir: None,
         }
     }
 }
@@ -63,8 +56,6 @@ impl TryFrom<crate::kdl::RootConfig> for EngineConfig {
             namespace: root.node.namespace,
             engine: parse_engine(&root.data.engine)?,
             data_dir: Some(root.data.path.into()),
-            meta_engine: parse_engine(&root.meta.engine)?,
-            meta_dir: Some(root.meta.path.into()),
         })
     }
 }

@@ -15,17 +15,11 @@ data {
     path "/var/lib/aura/data"
 }
 
-meta {
-    engine "fjall"
-    path "/var/lib/aura/meta"
-}
 "#;
     let cfg = knus::parse::<RootConfig>("test.kdl", text).unwrap();
     assert_eq!(cfg.node.id, "home-node");
     assert_eq!(cfg.data.engine, "fjall");
     assert_eq!(cfg.data.path, "/var/lib/aura/data");
-    assert_eq!(cfg.meta.engine, "fjall");
-    assert_eq!(cfg.meta.path, "/var/lib/aura/meta");
 }
 
 #[test]
@@ -41,23 +35,14 @@ data {
     path "/tmp/aura-data"
 }
 
-meta {
-    engine "memory"
-    path "/tmp/aura-meta"
-}
 "#;
     let cfg = knus::parse::<RootConfig>("test.kdl", text).unwrap();
     let ec = aura_config::EngineConfig::try_from(cfg).unwrap();
     assert_eq!(ec.node_id, "n1");
     assert!(matches!(ec.engine, aura_config::Engine::Fjall));
-    assert!(matches!(ec.meta_engine, aura_config::Engine::Memory));
     assert_eq!(
         ec.data_dir.as_deref(),
         Some(std::path::Path::new("/tmp/aura-data"))
-    );
-    assert_eq!(
-        ec.meta_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/aura-meta"))
     );
 }
 
@@ -74,10 +59,6 @@ data {
     path "/tmp/x"
 }
 
-meta {
-    engine "fjall"
-    path "/tmp/y"
-}
 "#;
     let cfg = knus::parse::<RootConfig>("test.kdl", text).unwrap();
     let err = aura_config::EngineConfig::try_from(cfg).unwrap_err();
@@ -105,10 +86,6 @@ data {
     }
 }
 
-meta {
-    engine "fjall"
-    path "/tmp/aura-meta"
-}
 "#;
     let cfg = knus::parse::<RootConfig>("test.kdl", text).unwrap();
     assert_eq!(cfg.data.engine, "slate");

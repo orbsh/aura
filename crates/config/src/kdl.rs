@@ -15,9 +15,7 @@
 //! }
 //!
 //! // metadata plane: registry, shard map
-//! meta {
 //!     engine "fjall"
-//!     path "/var/lib/aura/meta"
 //! }
 //! ```
 
@@ -28,12 +26,10 @@ pub struct RootConfig {
     /// `node { ... }` — node identity.
     #[knus(child)]
     pub node: NodeConfig,
-    /// `data { ... }` — the data plane (actor state).
+    /// `data { ... }` — the one storage plane (mq, state, definitions —
+    /// ADR-0025 Plan A: no separate meta instance).
     #[knus(child)]
     pub data: StorageConfig,
-    /// `meta { ... }` — the metadata plane (registry, shard map).
-    #[knus(child)]
-    pub meta: StorageConfig,
 }
 
 #[derive(Decode, Debug, Clone)]

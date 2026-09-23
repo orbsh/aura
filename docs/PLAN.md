@@ -29,8 +29,8 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - aura: `Realm` owns `Sessions`; `run_job` calls `with_session(instance_key)` — cold start loads, later calls reuse; sessions die with the realm (test isolation), hot replacement can evict selectively
     - eviction = drop the session; rebuild = re-instantiate + reload source (same as activation)
   - Remaining:
-    - interim shim: event delivery still falls back to the script's `execute` when the addressed handler name has no binding — remove when queues record real handler names
-    - wasm: `Module` compiled once + resident `Store`/`Instance` (independent of the ctx-bridge frame path, which stays Phase 6.6)
+    - interim shim: REMOVED (2026-09-23) — event delivery addresses the handler by its concrete event name; no execute fallback
+    - wasm: DONE (2026-09-23) — `Module` compiled once at session spawn + resident `Store`/`Instance` (`WasmSession`, see Phase 4.5 wasm carrier completion)
   - Phase 3 wire (2026-09-16): ctx bridge over the wire landed — Frame::Host round trip, gateway resolves host calls via pending_remote (call_id → instance), state/invoke scoped to the remote actor instance (engine/src/host_wire.rs); E2E: probe script's ctx_state_set/get + ctx_invoke round-trip through the wire.
   - Phase 3 wire (2026-09-16): `Body::RemoteProbe` — realm holds probe connections by node alias (`probes` + `pending_remote`); `run_job` sends Frame::Call over the wire and awaits the correlated reply; engine `probes.rs` gateway accepts probe dial-ins, registers by alias, correlates Result frames. E2E: real probe dials the gateway, invoke round-trips through the probe's resident session.
   - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics
@@ -76,7 +76,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - k10r/gravity-class Rust services ship as `.wasm` artifacts uploaded at runtime (`set(lang="wasm", bytes)`)
     - compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework
   - Work items
-    - [ ] wasm carrier completion: pointer marshalling (Phase 4 `link` payloads), ctx bridge host imports on wasm, `interface_schema` introspection (Rust-exported fn returning JSON, same contract as python/steel)
+    - [x] wasm carrier completion (LANDED 2026-09-23): `WasmSession` (probe-runtime `carrier/wasmtime.rs`) — resident session, module compiled at spawn; CBOR over linear memory (host writes args via the guest's `aura_alloc`, calls `handler(ptr, len) -> i64`, unpacks `(ptr:u32)<<32|len:u32`); handlers = function exports named after their events; `interface_schema` explicit export wins else export-list derivation; ctx-bridge host imports under `aura_host` namespace, uniform `(i32, i32) -> i64` packed ABI, undeclared import = instantiation failure (capability refusal); source = WAT text or base64 `.wasm`; `ResidentSession` gained `as_any` for carrier-specific introspection. Tests: probe `tests/wasm_session.rs` (WAT fixtures, 7 tests)
     - [x] metadata declaration unified on the type: `ActorType.receives` (ReceiveDecl: event + key_field + wildcard) with `.on(event, key_field)` / `.on_wildcard(pattern)` builders; introspection writes onto the type at register; `register_type` assembles routes as a side effect — one declaration surface per type (emits: none, per ADR-0012). Hot-swap route updates still pending (needs a set() versioning path)
     - [x] remove the Rust-closure actor form (`ActorType::simple`) from the public API — deleted; cli demo + all engine tests migrated to script actors (steel; nushell for the slow handler). Body::Rust remains in the enum with no public constructor (framework-internal future use)
       - rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path

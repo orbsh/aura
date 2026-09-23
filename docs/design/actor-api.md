@@ -152,21 +152,29 @@ export def execute [args] {
 
 Rust 服务的唯一发布形态：编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛，host 侧 NestStorage 执行器在 registry 分配的 app ns 前缀下承载物理存储（ADR-0007 存储承载分流）。静态 OKM derive，不需要 okm-dynamic。
 
-约定（Phase 4 `link` payload 落地指针编解码）：
+约定（已落地——CBOR 过线性内存，无 JSON 债）：
 
 ```rust
-// 编译目标 wasm32-wasi；模块导出二选一：
-// 1. WASI command：导出 _start（args 经 WASI 传入）
-// 2. 类型化导出：execute(i64) -> i64（args JSON 指针进，结果 JSON 指针出）
+// 编译目标 wasm32-wasi。模块导出：
+//   - memory：线性内存
+//   - aura_alloc(len: i32) -> i32：guest 分配器（bump allocator 即可；
+//     模块生命周期 = session 生命周期）
+//   - 每个 handler 一个函数，以事件命名，签名 (ptr: i32, len: i32) -> i64
 #[no_mangle]
-pub extern "C" fn execute(args_ptr: i64) -> i64 {
-    // 线性内存编解码随 Phase 4 link payloads 落地（MB 级字节，执行前哈希校验）
-    todo!()
+pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
+    // args 是 host 写入 guest 内存 (args_ptr, args_len) 处的 CBOR 字节。
+    // 返回 (ptr: u32) << 32 | len: u32，指向 guest 写好的 CBOR 结果
+    // （经 aura_alloc 分配）。
+    let result: Vec<u8> = cbor_encode(handle(add_to_cart_inner(args_ptr, args_len)));
+    let ptr = aura_alloc(result.len() as i32);
+    (ptr as u64) << 32 | result.len() as u64
 }
 ```
 
-- 多入口导出约定：每个 handler 导出为以事件名命名的函数（`add_to_cart(i64) -> i64`）——事件名即导出名，`interface_schema` 由导出清单推导（Phase 4.5c step 3 落地）
-- `interface_schema` 声明路径与 python/steel 相同：导出同名函数返回 JSON（指针约定），上传期自省生效
+- 值以 **CBOR 字节**过线性内存——host 序列化 args、经 `aura_alloc` 写入、调用 handler、解包 `(ptr, len)` 打包返回。JSON 只出现在 host 侧 `ResidentSession` 边界，与所有 carrier 一致
+- 多入口导出约定：每个 handler 导出为以事件名命名的函数（`add_to_cart`）——事件名即导出名；通配 handler 以模式串导出（`order.*`）
+- `interface_schema` 同一约定：导出同名函数优先（按 handler 方式调用，schema JSON 以 CBOR 编码过线）；否则 receives 半边由导出清单推导——`aura_alloc`/`memory`/`interface_schema` 之外的每个函数导出都是事件 handler
+- Host imports（ctx bridge）注册在 `aura_host` 模块命名空间下，每个 host 函数一个 import，统一签名 `(ptr: i32, len: i32) -> i64`、同样打包返回：guest 把参数 CBOR 编码进线性内存后调用 import；host 跑 HostFn 并经 guest 的 `aura_alloc` 写回结果。import 了未声明 host 函数的模块实例化即失败（能力拒绝，不是运行时错误）
 - Host imports 刻意最小化：无 fs、无 network——能力面（Phase 5）决定授予什么
 - aura 引擎本身**不提供进程内 Rust Actor**——框架机制（evictor 类）就是 realm 内的普通逻辑；Rust 代码要成为 Actor 只有一条路：编译为 wasm 上传
 

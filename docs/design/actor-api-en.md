@@ -226,27 +226,45 @@ a frame up-call — the host-side NestStorage executor carries the physical
 store under a registry-allocated app ns prefix (ADR-0007 storage-carriage
 split). Static OKM derives; no okm-dynamic needed.
 
-Convention (Phase 4 `link` payload lands pointer marshalling):
+Convention (landed — CBOR over linear memory, no JSON debt):
 
 ```rust
-// Build target wasm32-wasi; the module exports one of:
-// 1. A WASI command: export _start (args via WASI)
-// 2. A typed export: execute(i64) -> i64 (args JSON pointer in, result JSON pointer out)
+// Build target wasm32-wasi. The module exports:
+//   - memory: the linear memory
+//   - aura_alloc(len: i32) -> i32: guest allocator (bump allocator is fine;
+//     module lifetime = session lifetime)
+//   - one function per handler, NAMED AFTER ITS EVENT, signature
+//     (ptr: i32, len: i32) -> i64
 #[no_mangle]
-pub extern "C" fn execute(args_ptr: i64) -> i64 {
-    // Linear-memory marshalling lands with Phase 4 link payloads
-    // (MB-scale bytes, hash-verified before execution)
-    todo!()
+pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
+    // args are CBOR bytes written by the host into guest memory at
+    // (args_ptr, args_len). Return (ptr: u32) << 32 | len: u32 pointing at
+    // the CBOR-encoded result the guest wrote (allocate via aura_alloc).
+    let result: Vec<u8> = cbor_encode(handle(add_to_cart_inner(args_ptr, args_len)));
+    let ptr = aura_alloc(result.len() as i32);
+    (ptr as u64) << 32 | result.len() as u64
 }
 ```
 
-- Multi-entry export convention: each handler exports as a function
-  named after its event (`add_to_cart(i64) -> i64`) — the event name is
-  the export name, and `interface_schema` derives from the export list
-  (lands with Phase 4.5c step 3)
-- The `interface_schema` declaration path matches python/steel: export a
-  function of the same name returning JSON (pointer convention) — it
-  takes effect at upload-time introspection
+- Values cross the linear memory as **CBOR bytes** — the host serializes
+  the args, writes them through `aura_alloc`, calls the handler, and
+  unpacks the packed `(ptr, len)` return. JSON appears only at the host's
+  `ResidentSession` boundary, the same seam every carrier sits behind
+- Multi-entry export convention: each handler exports as a function named
+  after its event (`add_to_cart`) — the event name is the export name;
+  wildcard handlers export under the pattern (`order.*`)
+- `interface_schema` follows the same convention: exporting a function by
+  that name wins (called like a handler, JSON schema CBOR-encoded on the
+  wire); otherwise the receives half derives from the export list — every
+  function export except `aura_alloc`/`memory`/`interface_schema` is an
+  event handler
+- Host imports (the ctx bridge) register under the `aura_host` module
+  namespace, one import per host function, uniform signature
+  `(ptr: i32, len: i32) -> i64` with the same packed return: the guest
+  CBOR-encodes its argument into linear memory and calls the import; the
+  host runs the HostFn and writes the reply back through the guest's
+  `aura_alloc`. A module that imports an undeclared host function fails
+  instantiation (capability refusal, not a runtime error)
 - Host imports are deliberately minimal: no fs, no network — the
   capability surface (Phase 5) decides what is granted
 - The aura engine ships **no in-process Rust actor** — framework

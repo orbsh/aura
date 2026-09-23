@@ -97,11 +97,11 @@ impl<T> AuraCollection<T> where T: Serialize + DeserializeOwned + EntityKeyGener
 
 多节点协调不做 Raft/Paxos（openraft 已明确暂停，无回归条件）。当前口径：
 
-- **元数据每节点独立**：meta okm 实例（Actor 注册表、shard map、配置）由控制平面单点写入，节点缓存读取（见 [partitioning.md §5](partitioning.md)）——单一逻辑写入者使共识失去必要性。
+- **引擎内部元数据每节点独立**：actor 注册表、shard map、配置住在本节点自己的存储里（ADR-0025 后即数据面 okm 实例），由控制平面单点写入，节点缓存读取（见 [partitioning.md §5](partitioning.md)）——单一逻辑写入者使共识失去必要性。
 - **联邦节点间走 well-known 协议认证**：节点互不共享存储、不共享共识日志；身份经 well-known 协议（公钥/证书）认证后按用户 namespace 隔离交互。
 - **用户数据跟随所属节点**：用户登录到另一节点时，其历史数据不在该节点——数据主权绑定所属节点，不做登录信息的全局同步。
 
-共识不通过「出现第二个写入者」触发——联邦内部没有这个路径：多控制面部署是方向性倒退（推翻联邦而非扩展点）；`ctx.metadata` 保持只读面（只有控制平面能写），写入者永远单一；「全局唯一配置」在联邦语义下不存在——每节点独立是裁决而非缺陷。若未来整体转向逻辑单集群架构，那是推翻 ADR-0013 的新裁决，不是本架构内的扩展点。原 `Distribution` trait（`propose(cmd)` Raft 提案接口）已随本裁决删除。
+共识不通过「出现第二个写入者」触发——联邦内部没有这个路径：多控制面部署是方向性倒退（推翻联邦而非扩展点）；引擎内部元数据保持控制平面只写面（只有控制平面能写），写入者永远单一；「全局唯一配置」在联邦语义下不存在——每节点独立是裁决而非缺陷。若未来整体转向逻辑单集群架构，那是推翻 ADR-0013 的新裁决，不是本架构内的扩展点。原 `Distribution` trait（`propose(cmd)` Raft 提案接口）已随本裁决删除。
 
 **Actor 完全不感知底层引擎**——`ctx.state.get("history")` 的调用方式不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
 
@@ -117,7 +117,7 @@ Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查
 |:---|:---|:---|:---|
 | Actor 状态（用户数据） | SlateDB + S3 | Fjall（单机/离线） | S3 自动复制，无需手动同步 |
 | Actor 状态（延迟敏感 + 需强一致复制） | TiDB 模式（每个 Actor = Region） | — | **数据级 Raft 复制**，属 TiDB/TiKV 范畴（外部现成方案，非本架构默认路径） |
-| 配置/元数据 | 每节点独立 meta 实例（控制平面单写） | — | 单一逻辑写入者使共识失去必要性；见 §分发层 |
+| 配置/引擎内部元数据 | 本节点存储（控制平面单写，ADR-0025 后即数据面 okm 实例） | — | 单一逻辑写入者使共识失去必要性；见 §分发层 |
 | 脚本/图片（静态资产） | 文件系统同步（git / S3） | — | 静态资产不是数据，不需要共识 |
 
 **Actor 状态的 TiDB 模式**：每个 Actor 天然是一个 shard 边界。Actor:user:alice 独立一个 Raft Group（3 副本），Actor:user:bob 独立另一个。写放大始终 3x，不随 Actor 数量增长。这和 TiDB 的 Region 模型一致——Actor 是天然的分片边界。**但属数据级 Raft 复制**——此分支需要 actor 数据跨节点复制，是「分片 + Raft」强一致路径，应直接落现成的 TiKV / TiDB 分片机制（或 FoundationDB 得全局事务），非此架构的默认路径（默认 SlateDB+S3 / Fjall+落湖；元数据每节点独立，不引入共识）。
@@ -140,38 +140,31 @@ Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查
 
 **Lua 脚本的工程断层**：Redis 为挽救吞吐量引入的 Lua 脚本，除了单线程死锁风险外，还导致主技术栈（Rust/Go）与脚本层发生工程学与调试断层——失去强类型保护、单元测试和 IDE 感知提示。
 
-### 3.3 双 API 设计：ctx.state + ctx.metadata
+### 3.3 Actor 读写 API：ctx.state（单 API）
 
-**Actor 读写 API 分离**：Actor 数据写入两套 API——`ctx.state` 本实例状态（KV），`ctx.metadata` 受控元数据（meta okm 实例）。**登录状态不在元数据里**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
+Actor 的持久化面只有一套 API——`ctx.state` 本实例状态（KV）。独立 meta 实例与 `ctx.metadata` 已随 ADR-0025 撤销：actor 定义是数据面 okm 实例里的 `ActorDef` 表（ns 41），注册表/分片映射等是引擎内部结构，不对 Actor 暴露读写面。**登录状态不在别处**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
 
 ```rust
-// Actor 自身状态（KV，本地 Fjall 或 SlateDB+S3）
+// Actor 自身状态（KV，数据面 okm 实例：本地 Fjall 或 SlateDB+S3）
 ctx.state.get("history")           // 读取对话历史
 ctx.state.set("history", value)    // 写入对话历史
-
-// 受控元数据（meta okm 实例，控制平面单写，节点缓存读取）
-ctx.metadata.get("actor_registry")     // 查询 Actor 注册表
-ctx.metadata.set("gateway_rules", cfg) // 更新网关配置（本节点）
-ctx.metadata.get("node_health")        // 查询节点健康状态
-ctx.metadata.get("actor_shards")       // 查询 Actor 分片映射
 ```
 
 | API | 数据类型 | 存储 | 复制 |
 |:---|:---|:---|:---|
-| `ctx.state` | Actor 状态（对话/偏好/缓存） | SlateDB + S3（默认）/ Fjall | S3 自动处理 / 无复制 |
-| `ctx.metadata` | Actor 注册表、分片映射、本节点配置 | meta okm 实例（fjall 或 slate，Phase 4 两实例模型） | 无全局复制——单写入点 + 节点缓存 |
+| `ctx.state` | Actor 状态（对话/偏好/缓存） | 数据面 okm 实例：SlateDB + S3（默认）/ Fjall | S3 自动处理 / 无复制 |
 
 ### 3.4 分布式架构拓扑
 
 ```
 ┌─────────────────────────────────────────────┐
-│ ctx.state (Actor 状态)  ──► data okm 实例    │ ← 本地 Fjall 或 SlateDB+S3
-│ ctx.metadata (受控元数据) ──► meta okm 实例   │ ← 控制平面单写，节点缓存读取
+│ ctx.state (Actor 状态)  ──► 数据面 okm 实例   │ ← 本地 Fjall 或 SlateDB+S3
+│ actor 定义/注册表等内部元数据 ──► 同一实例      │ ← 控制平面单写（ADR-0025）
 └─────────────────────────────────────────────┘
             │
             ▼
 ┌─────────────────────────────────────────────┐
-│ Fjall/SlateDB 存储（data + meta 两实例分离）   │
+│ Fjall/SlateDB 存储（单一 okm 实例，一个目录）   │
 └─────────────────────────────────────────────┘
 
 联邦节点之间：well-known 协议认证身份，无共享存储、无共识日志、无全局登录同步
@@ -179,13 +172,13 @@ ctx.metadata.get("actor_shards")       // 查询 Actor 分片映射
 
 ### 3.5 Fjall vs SlateDB
 
-- **Fjall 的定位**：纯 Rust LSM-Tree 存储引擎，进程内嵌入，零网络开销。data 与 meta 两实例可独立选引擎（Phase 4）。
+- **Fjall 的定位**：纯 Rust LSM-Tree 存储引擎，进程内嵌入，零网络开销。ADR-0025 后为单一 okm 实例（actor 定义并入数据面）。
 
 - **Actor 状态复制的正确方案**：
   - 默认：SlateDB + S3（S3 处理复制，成本低 20 倍）
   - 延迟敏感：TiDB 模式（每个 Actor = 一个 Raft Group，写放大固定 3x）——外部现成方案，非默认路径
 
-- **双 API 分离**：`ctx.state` 处理 Actor 状态，`ctx.metadata` 处理受控元数据；两者走不同 okm 实例，职责与存储互不干扰。
+- **单 API 单实例**：`ctx.state` 是 Actor 唯一的持久化面；actor 定义等引擎内部元数据住在同一个 okm 实例（ADR-0025），不对 Actor 暴露第二套 API。
 
 → 详见 [Redis 批判：RESP 协议 vs 二进制序列化](https://github.com/orbsh/wiki/blob/main/redis-critique.md#8-resp-协议-vs-二进制序列化嵌入式架构的物理优势)。Fjall 的 API 设计和与其他引擎的对比见 [KV 存储引擎架构 §三引擎 API 对比](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
 
@@ -260,7 +253,7 @@ pub enum EngineCommand {
 }
 ```
 
-当用户提交 `DispatchUserScript` 时，本地状态机根据用户选择，将物理内存指针映射到对应的语言虚拟机。运行期交接棒流程为：从 Fjall LSM-Tree 中读出 CBOR 编码的 Actor 状态（零网络延迟）→ 解码为 `ciborium::Value` → 根据用户选择的 EngineType 拉起对应的嵌入式虚拟机（Steel/PyO3/Wasm），Host 从 CBOR Value 中取出字段注入虚拟机执行 → 更新结果状态 → 写回本地 Fjall。Actor 状态不走网络路径；受控元数据经 `ctx.metadata` 写 meta okm 实例（本节点）。具体的多语言执行逻辑已在 [§2.2](#22-多语言网关纯-rust-混合-actor-实现) 的 `exec_steel_lisp` 和 `exec_embedded_python` 中完整实现，此处不再重复。
+当用户提交 `DispatchUserScript` 时，本地状态机根据用户选择，将物理内存指针映射到对应的语言虚拟机。运行期交接棒流程为：从 Fjall LSM-Tree 中读出 CBOR 编码的 Actor 状态（零网络延迟）→ 解码为 `ciborium::Value` → 根据用户选择的 EngineType 拉起对应的嵌入式虚拟机（Steel/PyO3/Wasm），Host 从 CBOR Value 中取出字段注入虚拟机执行 → 更新结果状态 → 写回本地 Fjall。Actor 状态不走网络路径。具体的多语言执行逻辑已在 [§2.2](#22-多语言网关纯-rust-混合-actor-实现) 的 `exec_steel_lisp` 和 `exec_embedded_python` 中完整实现，此处不再重复。
 
 #### 用户驱动模式的工程爽点
 
@@ -271,7 +264,7 @@ pub enum EngineCommand {
    当你托管在云端的 Hermes 大脑发现："接下来的任务需要去读取一个复杂的深度学习 .bin 权重文件，或者分析一段遗留的 PyTorch 矩阵"时，AI 会自己在分布式提案里写明：`engine: EngineType::PyO3`。它通过纯粹的内存指针，直接在当前 Rust 进程里无缝吃掉 Python 的 AI 生态。
 
 3. **多语言在 Fjall 磁盘里的统一**：
-   不管用户刚才任性地选了 Lisp 还是 Python，它们对智能体状态的修改（Mutation），最终都会被反序列化回最基础的二进制内存块（`Vec<u8>`），写回本地 Fjall。受控元数据变更（如有）通过 `ctx.metadata` 写 meta okm 实例。
+   不管用户刚才任性地选了 Lisp 还是 Python，它们对智能体状态的修改（Mutation），最终都会被反序列化回最基础的二进制内存块（`Vec<u8>`），写回本地 Fjall。
 
 **框架不再是法官，框架只提供执行能力；用户和 AI 的动态意志决定哪种语言在这一毫秒登上多模态内存舞台。**
 

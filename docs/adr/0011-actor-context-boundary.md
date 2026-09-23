@@ -2,6 +2,8 @@
 
 **Status:** Accepted (2026-09-12)
 
+**Erratum (2026-09-23, ADR-0025):** the `ctx.metadata` surface listed below was reserved but never implemented; with the meta plane's dissolution (ADR-0025) it is withdrawn — `ctx.state` / `ctx.invoke` are the whole context surface. The text below is preserved as decided.
+
 ## Context
 
 The Actor entry function receives a single `ctx` argument. Across aura-architecture.md the
@@ -40,7 +42,7 @@ bound and (b) subject to Host control or record.** Everything else is expressed 
 
 ## Update (2026-09-22, ADR-0016)
 
-The timer rejection narrows: **blocking / self-scheduling forms** (`ctx.sleep()`, `ctx.every()` — the actor stops to wait, or registers once and is woken forever) stay rejected. **Delivery scheduling** (`ctx.timer.register(at, tag, durable)` / `ctx.timer.cancel(id)` — non-blocking, explicit re-arm, delivery through the mailbox) passes the criterion on both prongs: it is instance-identity-bound (the timer belongs to and fires back at this instance) and Host-controlled (delivery is a governed, auditable mailbox job; eviction still applies). `@cron` in `interface_schema` is confirmed as a declarative trigger: the Host introspects the declaration (same path as `lifecycle.idle_ttl`), translates it into durable one-shot timers, and re-arms are the actor's job on each delivery. See ADR-0016 for the full timer surface.
+The timer rejection narrows: **blocking / self-scheduling forms** (`ctx.sleep()`, `ctx.every()` — the actor stops to wait, or registers once and is woken forever) stay rejected. **Delivery scheduling** (`ctx.timer.register(at, tag, durable)` / `ctx.timer.cancel(id)` — non-blocking, explicit re-arm, delivery through the instance's queue) passes the criterion on both prongs: it is instance-identity-bound (the timer belongs to and fires back at this instance) and Host-controlled (delivery is a governed, auditable queue job; eviction still applies). `@cron` in `interface_schema` is confirmed as a declarative trigger: the Host introspects the declaration (same path as `lifecycle.idle_ttl`), translates it into durable one-shot timers, and re-arms are the actor's job on each delivery. See ADR-0016 for the full timer surface.
 
 ## Consequences
 

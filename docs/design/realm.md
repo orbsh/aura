@@ -302,7 +302,7 @@ struct WildcardRoute {
 }
 ```
 
-通配符用 `Vec` 而非 HashMap，因为匹配是反向的（给定事件名，找哪些前缀能匹配），HashMap 帮不上忙。通配符数量通常很少（几个投影 Actor），线性扫描足够。如果通配符多到成为瓶颈，再换 Trie。
+通配符用 `Vec` 而非 HashMap，因为匹配是反向的（给定事件名，找哪些前缀能匹配），HashMap 帮不上忙。通配符数量通常很少（几个投影 Actor），线性扫描足够——且 emit 时线性扫描的成本是**订阅者声明的前缀数量**（每 emit 一次 O(wildcard 订阅数)），与事件词汇量无关；词汇量大不影响。若通配订阅本身多到成为瓶颈（数百个模式），再换基数树（radix trie，web 框架路由形态：按段分叉、`*` 段为通配捕获）——当下不做。
 
 **分发路径（Phase 4.5c 事件队列模型，已实现）**：
 
@@ -337,25 +337,29 @@ impl Realm {
             if !self.instances.contains_key(&(route.actor_type.clone(), partition.clone())) {
                 self.instance(self_arc.clone(), &target).await?;
             }
-            // 按队列去重：两条路由绑定同一队列（多个订阅类型监听同一事件）
-            // 时只发送一次——队列扇出到全部订阅者，重复发送会双重投递。
-            if queued.insert((route.event.clone(), partition.clone())) {
+            // 按队列去重：队列身份 = (具体事件名, partition)。多个订阅类型监听
+            // 同一事件时各持私有 cursor，事件只落一份；通配路由匹配到的
+            // 具体事件名就是队列名（模式串只在 router 匹配层存在）。
+            if queued.insert((event.to_string(), partition.clone())) {
                 targets.push((route, partition));
             }
         }
 
-        // 第二段：向每个队列持久化写入（4.5c step 2b：okm 队列分区，
-        // emit 即落盘；当前实现为 broadcast 的过渡形态，见 §5.7）
+        // 第二段：向每个队列持久化写入（4.5c step 2b）。队列身份 = 具体事件名
+        // （通配路由匹配到的名字，模式串不落队列），经 EventName registry 换成
+        // event_id 后按 [event_id][part_id][time] 落 okm 分区——MqHead 保
+        // 逻辑时间单调，append O(1)。每个订阅者一条 cursor 指向同一分区。
         for (route, partition) in targets {
-            let queue = self.event_queues
-                .entry((route.event.clone(), partition))
-                .or_insert_with(|| broadcast::channel(self.queue_capacity).0);
-            if queue.receiver_count() == 0 {
-                // 活过又离开的订阅者是自己的信号；刚激活的已有 Receiver。
-                self.dead_events.push(event, data.clone());
+            let event_name = event.to_string();
+            let mut store = realm.mq.clone();
+            if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
+                eprintln!("mq append failed for {event_name}/{partition}: {e}");
+                realm.dead_events.push(event, data.clone());
                 continue;
             }
-            let _ = queue.send(QueuedJob { handler: event.into(), args: data.clone() });
+            // 落盘即触发 min-watermark 压缩（写路径压缩，分母 = EventRoute
+            // 持久注册表）。
+            Self::compact_queue_locked(&mut realm, &event_name, &partition, &mut store).await?;
         }
         Ok(())
     }
@@ -364,10 +368,12 @@ impl Realm {
 
 **队列语义**：
 
-- 事件不属于任何 Actor。队列在场域层，实例激活时按其类型的 `@on` 声明绑定订阅（私有 Receiver = per-subscription cursor）。
+- 事件不属于任何 Actor。队列在场域层，实例激活时按其类型的 `@on` 声明绑定订阅（私有 cursor = per-subscription 消费位）。
 - 一个队列可有多个订阅者（多个 Actor 类型监听同一事件）——一对多投递是结构性的，不是 fan-out 模拟。
 - 串行语义：每实例的订阅消费任务一次只处理一条（逐队列顺序 drain）——同一实例串行由 cursor 保持，实例不拥有队列。
 - 直接调用不走队列：`ctx.invoke` / `engine.invoke` 是点对点（实例的 queue 保留用于统一调用模型），事件投递才走共享队列。
+
+**通配订阅的具体名展开**：router 层保存模式串（`"order.*"`），但队列身份和 handler 名永远是具体事件名。emit 时以发出的具体名落队列；通配订阅者的消费任务每轮把模式前缀经 `mq::events_matching`（EventName registry 前缀扫描）展开为已注册的具体名集合，逐名读 cursor/backlog，投递 handler = 具体名，每个具体名一条 cursor（有界：只累积实际见过的词汇）。新事件名出现时自动加入下一轮展开——无需订阅者做任何事。
 
 **通配符参数的实例化**：通配符参数不绑定 partition key，路由到固定 key `"__singleton__"` 的实例——整个 Actor 类型只有一个实例。这与投影 Actor 的场景一致：一个 DeptStatsActor 实例监听所有 `order.*` 事件，持续聚合。
 

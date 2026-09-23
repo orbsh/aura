@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     // Echo Actor: define → invoke → return. The Phase 0 acceptance path,
     // now as a script actor.
     engine
-        .register(ActorType::script("echo", "steel", ECHO, Some("execute".into())))
+        .register(ActorType::script("echo", "steel", ECHO))
         .await?;
 
     let target = InstanceId { actor_type: "echo".into(), key: "a1".into() };
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     // Chained invoke: echo.a2 invoked BY caller.c1's ctx — exercises ctx.invoke
     // through the same realm dispatch.
     engine
-        .register(ActorType::script("caller", "steel", CALLER, Some("execute".into())))
+        .register(ActorType::script("caller", "steel", CALLER))
         .await?;
 
     let result = engine

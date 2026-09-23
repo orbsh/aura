@@ -22,7 +22,7 @@ const CALLER: &str = r#"
 "#;
 
 fn echo_type() -> ActorType {
-    ActorType::script("echo", "steel", ECHO, Some("execute".into()))
+    ActorType::script("echo", "steel", ECHO)
 }
 
 // ---------------------------------------------------------------- Phase 0 --
@@ -51,7 +51,7 @@ async fn ctx_invoke_routes_through_realm() {
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
     // actor sees; target resolution is registry-declared.
     engine
-        .register(ActorType::script("caller", "steel", CALLER, Some("execute".into())))
+        .register(ActorType::script("caller", "steel", CALLER))
         .await
         .unwrap();
 
@@ -114,7 +114,7 @@ async fn state_survives_scale_to_zero() {
     (hash "count" (+ n 1))))
 "#;
     engine.register(
-        ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
+        ActorType::script("counter", "steel", COUNTER)
     ).await.unwrap();
 
     let target = InstanceId { actor_type: "counter".into(), key: "k1".into() };
@@ -147,7 +147,6 @@ export def execute [args] {
     { sum: ($args.items | math sum) }
 }
 "#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -173,7 +172,6 @@ async fn python_script_actor() {
             r#"def execute(args):
     return {"doubled": args["x"] * 2}
 "#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -199,7 +197,6 @@ async fn script_unknown_language_is_error_value() {
             "koto-op",
             "koto",
             "1 + 2",
-            None,
         ))
         .await;
 
@@ -244,7 +241,7 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 
     // "dweller": 10-minute TTL (long-lived resident, the retention-window
     // shape). "echo": no override — realm default applies.
-    let dweller = ActorType::script("dweller", "steel", ECHO, Some("execute".into()))
+    let dweller = ActorType::script("dweller", "steel", ECHO)
         .with_idle_ttl(Duration::from_secs(600));
     engine.register(dweller).await;
     engine.register(echo_type()).await;
@@ -307,7 +304,6 @@ async fn steel_script_ctx_bridge() {
          (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"ttl2\", \"handler\": \"execute\", \"args\": {\"hello\": true}}")))
     (hash "present" (hash-ref got "present") "visits" (hash-ref got "value") "echo" (hash-ref echoed "hello")))
 )"#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -344,7 +340,6 @@ def execute(args):
     echo = ctx_invoke(json.dumps({"type": "echo", "key": "ttl3", "handler": "execute", "args": {"ok": 7}}))
     return {"stored": got["value"], "echo": echo["ok"]}
 "#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -376,7 +371,6 @@ async fn script_state_survives_eviction() {
     (ctx_state_set (string-append "{\"field\": \"count\", \"value\": " (number->string n) "}"))
     (hash "count" n))
 )"#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -449,7 +443,6 @@ def interface_schema(args):
 def execute(args):
     return {"ok": True}
 "#,
-            Some("execute".into()),
         ))
         .await;
 
@@ -473,7 +466,6 @@ def interface_schema(args):
 def execute(args):
     return {"ok": True}
 "#,
-            Some("execute".into()),
         ))
         .await;
     {
@@ -517,7 +509,6 @@ async fn script_actor_definition_survives_restart() {
 (define (execute args)
   (hash "ok" #t))
 "#,
-                Some("execute".into()),
             ))
             .await
             .unwrap();
@@ -564,7 +555,6 @@ export def execute [args] {
     { ok: true }
 }
 "#,
-            Some("execute".into()),
         ))
         .await
         .unwrap();
@@ -602,7 +592,6 @@ def remove(args):
 def audit(args):
     return None
 "#,
-            None,
         ))
         .await
         .unwrap();

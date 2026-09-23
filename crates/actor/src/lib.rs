@@ -31,7 +31,6 @@ pub enum Body {
     Script {
         language: String,
         source: String,
-        entry: Option<String>,
     },
     /// Remote probe actor (Phase 3): the body lives on a probe node that
     /// dialed into THIS control plane. `node_alias` addresses the probe's
@@ -97,11 +96,10 @@ impl ActorType {
         name: impl Into<String>,
         language: impl Into<String>,
         source: impl Into<String>,
-        entry: Option<String>,
     ) -> Self {
         Self {
             name: name.into(),
-            body: Body::Script { language: language.into(), source: source.into(), entry },
+            body: Body::Script { language: language.into(), source: source.into() },
             idle_ttl: None,
             max_exec: None,
             on_sleep: None,

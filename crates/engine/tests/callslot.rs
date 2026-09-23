@@ -17,7 +17,7 @@ const ECHO: &str = r#"
 "#;
 
 fn echo() -> ActorType {
-    ActorType::script("echo", "steel", ECHO, Some("execute".into()))
+    ActorType::script("echo", "steel", ECHO)
 }
 
 fn slow_echo() -> ActorType {
@@ -27,7 +27,7 @@ export def execute [args] {
     args
 }
 "#;
-    ActorType::script("slow_echo", "nushell", SLOW, Some("execute".into()))
+    ActorType::script("slow_echo", "nushell", SLOW)
 }
 
 #[tokio::test]
@@ -83,7 +83,6 @@ async fn cold_call_returns_pending_without_parking() {
         "approval",
         "steel",
         ECHO,
-        Some("execute".into()),
     );
     approval.on_wake = None;
     engine.register(approval).await;

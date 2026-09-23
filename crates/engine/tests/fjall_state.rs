@@ -27,7 +27,7 @@ mod fjall_tests {
     (hash "count" (+ n 1))))
 "#;
     fn counter() -> ActorType {
-        ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
+        ActorType::script("counter", "steel", COUNTER)
     }
 
     #[test]

@@ -451,7 +451,7 @@ impl Realm {
                 result
             }
             aura_actor::Body::Rust(handler) => handler(ctx, job.args).await,
-            aura_actor::Body::Script { language, source, entry: _ } => {
+            aura_actor::Body::Script { language, source } => {
                 // Resident sessions (Phase 2.6): one VM/PTY per actor
                 // instance, loaded once, called per event. Cross-call
                 // state lives in the session (module globals / $env);
@@ -989,7 +989,7 @@ impl Default for Realm {
 /// declaration = `None`, never a registration error — declaration is
 /// optional metadata.
 pub async fn introspect_schema(actor: &aura_actor::ActorType) -> Option<serde_json::Value> {
-    let aura_actor::Body::Script { language, source, entry: _ } = &actor.body else {
+    let aura_actor::Body::Script { language, source } = &actor.body else {
         return None; // Rust types declare TTL via the builder
     };
     let raw = tokio::task::spawn_blocking({

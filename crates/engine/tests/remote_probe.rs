@@ -51,7 +51,6 @@ async fn remote_probe_roundtrip() {
             "echo",
             "steel",
             r#"(define (execute args) args)"#,
-            Some("execute".into()),
         )
     )
     .await;

@@ -101,9 +101,9 @@ pub struct ActorDefKey {
     pub type_id: u32,
 }
 
-/// One document per actor type. `Option` fields map to sentinel
-/// encodings: `entry` empty string = none; `idle_ttl_secs` 0 = realm
-/// default (a zero TTL is meaningless — it would evict on arrival).
+/// One document per actor type. `Option` maps to a sentinel encoding:
+/// `idle_ttl_secs` 0 = realm default (a zero TTL is meaningless — it
+/// would evict on arrival).
 ///
 /// The introspected schema is NOT a declared field: it rides the DYNAMIC
 /// segment (one `schema` entry, `DynamicValue::Obj`) — structured nTLV
@@ -118,7 +118,6 @@ pub struct ActorDef {
     pub name: String,
     pub language: String,
     pub source: String,
-    pub entry: String,
     pub idle_ttl_secs: u64,
 }
 
@@ -135,7 +134,6 @@ impl ActorDef {
                 name: def.name.clone(),
                 language: def.language.clone(),
                 source: def.source.clone(),
-                entry: def.entry.clone().unwrap_or_default(),
                 idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
             },
             def.schema.as_ref().map(crate::value::json_to_dyn),
@@ -150,7 +148,6 @@ impl ActorDef {
             name: self.name,
             language: self.language,
             source: self.source,
-            entry: (!self.entry.is_empty()).then_some(self.entry),
             idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
             schema: schema.map(|v| crate::value::dyn_to_json(&v)),
         }

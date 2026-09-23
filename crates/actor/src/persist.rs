@@ -2,9 +2,9 @@
 //! their introspected metadata survive node restart.
 //!
 //! Lifecycle (PLAN 4.5b): UPLOAD is its own lifecycle — `set` persists the
-//! definition (source, language, entry) plus the introspected metadata;
+//! definition (source, language) plus the introspected metadata;
 //! EXECUTION never reads the schema part — message handling loads source +
-//! entry from the record. Boot reloads every persisted script type back
+//! Boot reloads every persisted script type back
 //! into the realm.
 //!
 //! The PERSISTENCE TABLES live in aura-realm (`realm/src/meta.rs`) over the
@@ -23,7 +23,6 @@ pub struct PersistedActor {
     pub name: String,
     pub language: String,
     pub source: String,
-    pub entry: Option<String>,
     /// Per-type idle TTL, seconds; absent = realm default.
     pub idle_ttl_secs: Option<u64>,
     /// Metadata extracted from `interface_schema()` introspection at
@@ -34,14 +33,13 @@ pub struct PersistedActor {
 
 impl PersistedActor {
     pub fn from_type(actor: &ActorType) -> Option<Self> {
-        let crate::Body::Script { language, source, entry } = &actor.body else {
+        let crate::Body::Script { language, source } = &actor.body else {
             return None; // Rust handlers are compile-time; nothing to persist
         };
         Some(Self {
             name: actor.name.clone(),
             language: language.clone(),
             source: source.clone(),
-            entry: entry.clone(),
             idle_ttl_secs: actor.idle_ttl.map(|d| d.as_secs()),
             schema: None,
         })
@@ -53,7 +51,6 @@ impl PersistedActor {
             self.name.clone(),
             self.language.clone(),
             self.source.clone(),
-            self.entry.clone(),
         );
         t.idle_ttl = self.idle_ttl_secs.map(std::time::Duration::from_secs);
         t

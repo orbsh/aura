@@ -22,7 +22,7 @@ const LISTENER: &str = r#"
 "#;
 
 fn counter() -> ActorType {
-    ActorType::script("counter", "steel", COUNTER, Some("execute".into()))
+    ActorType::script("counter", "steel", COUNTER)
 }
 
 #[tokio::test]
@@ -59,7 +59,6 @@ async fn events_do_not_cross_namespaces() {
             "listener",
             "steel",
             LISTENER,
-            Some("execute".into()),
         )
     };
     engine.register_in("alice", listener()).await;

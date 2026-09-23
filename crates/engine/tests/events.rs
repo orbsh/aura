@@ -8,23 +8,32 @@ use aura_realm::Realm;
 
 // Steel counter (4.5a): count events + record the last payload per event
 // name. Field names as bare strings; payloads as values.
-const COUNTER: &str = r#"
-(define (execute args)
+// The handler fn is named after the EVENT it serves (multi-entry model:
+// the @on collector binds functions under the event name; no execute
+// fallback). One script per event name.
+fn counter_script(events: &[&'static str]) -> String {
+    // One handler fn per event name, identical body (the multi-entry
+    // model binds handlers under their event names; a wildcard
+    // subscriber serves several events, so it declares several names).
+    let body = |name: &str| format!(
+        r#"(define ({name} args)
   (let* ((got (ctx_state_get "events"))
          (n (if (hash-ref got "present") (hash-ref got "value") 0)))
     (ctx_state_set (hash "field" "events" "value" (+ n 1)))
     (ctx_state_set (hash "field" (string-append "last:" (hash-ref args "event")) "value" args))
-    n))
-"#;
+    n))"#
+    );
+    events.iter().map(|e| body(e)).collect::<Vec<_>>().join("\n")
+}
 
-fn counter_of(name: &'static str) -> ActorType {
-    ActorType::script(name, "steel", COUNTER, Some("execute".into()))
+fn counter_of(name: &'static str, events: &[&'static str]) -> ActorType {
+    ActorType::script(name, "steel", counter_script(events))
 }
 
 #[tokio::test]
 async fn exact_route_partition_key_from_event_data() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart")).await;
+    engine.register(counter_of("cart", &["add_to_cart"])).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("add_to_cart", "cart", "user_id");
@@ -55,7 +64,7 @@ async fn exact_route_partition_key_from_event_data() {
 #[tokio::test]
 async fn wildcard_route_goes_to_singleton() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("audit")).await;
+    engine.register(counter_of("audit", &["order.created", "order.cancelled"])).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on_wildcard("order.*", "audit");
@@ -83,7 +92,7 @@ async fn wildcard_route_goes_to_singleton() {
 #[tokio::test]
 async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart")).await;
+    engine.register(counter_of("cart", &["cart_updated"])).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("cart_updated", "cart", "user_id");
@@ -118,8 +127,8 @@ async fn unmatched_events_land_in_dead_ring() {
 #[tokio::test]
 async fn exact_and_wildcard_both_match_deliver_independently() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart")).await;
-    engine.register(counter_of("stats")).await;
+    engine.register(counter_of("cart", &["order.created"])).await;
+    engine.register(counter_of("stats", &["order.created"])).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
@@ -153,7 +162,7 @@ async fn invoke_path_unaffected() {
 (define (execute args) args)
 "#;
     engine.register(
-        ActorType::script("echo", "steel", ECHO, Some("execute".into()))
+        ActorType::script("echo", "steel", ECHO)
     ).await.unwrap();
     let out = engine
         .invoke(InstanceId { actor_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
@@ -171,8 +180,8 @@ async fn invoke_path_unaffected() {
 #[tokio::test]
 async fn one_event_multiple_subscriber_types() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart")).await;
-    engine.register(counter_of("stats")).await;
+    engine.register(counter_of("cart", &["order.created"])).await;
+    engine.register(counter_of("stats", &["order.created"])).await;
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
@@ -212,7 +221,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
 "#;
     for name in ["cart", "stats"] {
         engine.register(
-            ActorType::script(name, "steel", ECHO, Some("execute".into()))
+            ActorType::script(name, "steel", ECHO)
                 .on("order.created", "user_id"),
         )
         .await;

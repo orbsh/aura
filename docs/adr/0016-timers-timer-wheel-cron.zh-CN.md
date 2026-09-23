@@ -117,6 +117,55 @@ Host 可控）；其 Update 注记把旧的拒绝收窄到阻塞/自调度形态
   wheel 由既有 tick 扫描——内存有界、单任务，5 秒粒度对两类
   消费者（秒级插话窗口、分钟级压缩/cron 唤醒）都够。
 
+## 修订（2026-09-23）：统一定时面落在 tokio-util DelayQueue；回收型条目；idle 自完成时刻起算
+
+驻留/超时面的实现推演（由 gravity turn-executor 驱动）修订三项裁决；
+上文原裁决保留为已定案。
+
+**1. wheel 用 tokio-util 的 `DelayQueue`——不手写、不由 tick 扫描。**
+`DelayQueue` 是公开的 hashed wheel（与本 ADR 草拟的 `Wheel` 结构同源），
+恰好暴露所需的三元操作：`insert_at(value, when) -> Key`、`remove(&Key)`
+（取消，O(1)）、`poll_expired()`（流式取到期条目）。它自带到期驱动
+（内部一个 `Sleep`），evictor tick 不再需要扫描 wheel：条目到期即刻
+触发，不等下一个 tick。任务数仍有界——每 realm **一个驱动任务**
+（`while let Some(expired) = queue.poll_expired().await`）。本条取代
+§4 的「不派生异步任务、由既有 tick 扫描」：那是手写 wheel 的代价，
+现成库消除了代价。§4 的 Why-Not 条目（「每定时器一个 tokio::sleep
+任务」）仍被拒绝，理由不变（任务数无界、无持久注册路径）——驱动是
+全体定时器共享的一个任务，该条目当时没有考虑这个形态。
+
+**2. 两种条目。** 调度面实际存在两种形态，wheel 同时承载：
+
+- **投递型条目** `(deliver_at, target, tag, durable)`——唤醒一个
+  actor，投递 `__on_timer` 作业（插话检查、压缩唤醒、cron）。
+  持久型写 StateStore 保留名字空间，`on_wake` 恢复路径重新
+  `insert_at`——与 §1 的裁决一致。
+- **回收型条目** `(deliver_at, target, kind)`——没有人会来了，
+  收回资源（idle-TTL 驱逐、执行看门狗）。到期动作不是投递作业，
+  而是 `evict_instance`（on_sleep + session 丢弃；看门狗场景对
+  在等的 reply 发超时错误）。回收型条目恒为内存态；它们需要
+  **取消**（新工作到达 → 作废未决的 idle 定时器），这就是
+  `DelayQueue::remove`——与 actor 用的 cancel/re-arm 是同一 API。
+
+**3. idle_ttl 自作业完成起算，不自到达起算。** `last_activity`
+保持原义（观测面：最后作业到达时刻），但不再驱动驱逐。改为：
+`run_job` 入口取消该实例未决的 idle 回收条目（工作到达了），完成时
+重新注册一条（deliver_at = now + idle_ttl）。长执行（LLM 调用吃满
+整个 TTL）不再可能在执行中途驱逐实例——作业运行期间 idle 回收条目
+根本不存在。被取代的「驱逐竞态」条款原文没有；它是把驻留接到本
+ADR 时发现的缺陷。
+
+**4. 执行看门狗 = 带声明预算的回收型条目。** `lifecycle.max_exec`
+（per-type，在 `interface_schema` 中与 `idle_ttl` 并列声明）在作业
+入口注册回收条目（deliver_at = now + max_exec），完成时取消。到期 =
+实例超出执行预算：驱逐（on_sleep、session 丢弃）并对在等的 reply
+发超时错误。这是最大时长控制，不是空闲计量——两个关注点沿两种
+条目干净分离。
+
+evictor 任务仅保留 `pending_calls` 的 deadline 扫描（其自身也是
+将来回收型条目的迁移对象）；`evict_idle` 的线性扫描删除——驱逐
+改为定时器驱动，O(到期) 而非 O(实例数)。
+
 ## Why Not
 
 - **按 user 的 gravity 实例**：把一个用户的 agent 拆散到各

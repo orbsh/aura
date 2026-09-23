@@ -5,6 +5,7 @@
 
 pub mod event;
 pub mod mq;
+pub mod timer;
 pub mod meta;
 pub mod value;
 pub mod state;
@@ -91,6 +92,9 @@ pub struct Realm {
     call_seq: u64,
     /// Unmatched events (bounded ring, diagnostic output).
     pub dead_events: event::DeadEvents,
+    /// Unified scheduling surface (ADR-0016 revised): delivery + reclaim
+    /// timers on one DelayQueue; the driver task fires entries on expiry.
+    pub timers: timer::TimerHandle,
 }
 
 impl Realm {
@@ -109,6 +113,28 @@ impl Realm {
     /// the ctx seam. The engine's meta plane keeps its own SharedStore
     /// (PersistedActor records — JSON there is a API-currency record,
     /// not a storage value; its migration is a separate concern).
+    /// Wrap a freshly constructed realm into its shared handle and spawn
+    /// the timer driver against it. Call exactly once at construction —
+    /// `Arc::get_mut` requires the no-other-holders property.
+    pub fn shared(self) -> SharedRealm {
+        // Two-step: wrap first, then spawn the driver against the shared
+        // handle and install it synchronously via blocking_lock — safe
+        // here ONLY outside a runtime. For async callers use shared_async.
+        let arc = Arc::new(tokio::sync::Mutex::new(self));
+        let handle = timer::TimerDriver::spawn(arc.clone());
+        arc.blocking_lock().timers = handle;
+        arc
+    }
+
+    /// Async construction: same contract as `shared`, usable inside a
+    /// runtime (Engine::start and tests).
+    pub async fn shared_async(self) -> SharedRealm {
+        let arc = Arc::new(tokio::sync::Mutex::new(self));
+        let handle = timer::TimerDriver::spawn(arc.clone());
+        arc.lock().await.timers = handle;
+        arc
+    }
+
     pub fn with_mq(mq_store: mq::MqStore) -> Self {
         Self {
             types: HashMap::new(),
@@ -125,6 +151,9 @@ impl Realm {
             pending_calls: HashMap::new(),
             call_seq: 0,
             dead_events: event::DeadEvents::default(),
+            // Placeholder; the real handle lands right after the realm
+            // is wrapped in its Arc (the driver needs the SharedRealm).
+            timers: timer::TimerHandle::detached(),
         }
     }
 
@@ -148,6 +177,11 @@ impl Realm {
     /// timeout. Split point is the entry, decided here at registration.
     pub fn declare_call(&mut self, actor_type: &str, spec: CallSpec) {
         self.call_specs.insert(actor_type.into(), spec);
+    }
+
+    /// Residency probe (test/ops): is this instance currently resident?
+    pub fn is_resident(&self, id: &InstanceId) -> bool {
+        self.instances.contains_key(&(id.actor_type.clone(), id.key.clone()))
     }
 
     pub fn actor_type(&self, name: &str) -> Option<&ActorType> {
@@ -344,6 +378,16 @@ impl Realm {
         let mut realm = self_arc.lock().await;
         realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone()))
             .map(|i| i.last_activity = Instant::now());
+        // ADR-0016 revised: the instance's pending idle-reclaim entry is
+        // void the moment work arrives (work CANCELLED it — idempotent
+        // cancel covers a timer that fired between tick and execution).
+        // The watchdog (max_exec budget) arms for the job's duration; the
+        // max_exec is per-type, falling back to no watchdog when unset.
+        let watchdog_ttl = realm.types.get(&id.actor_type).and_then(|a| a.max_exec);
+        realm.timers.cancel_target(id);
+        if let Some(budget) = watchdog_ttl {
+            realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Watchdog, budget);
+        }
         let Some(actor) = realm.types.get(&id.actor_type) else {
             let _ = job
                 .reply
@@ -429,7 +473,62 @@ impl Realm {
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")))
             }
         };
+        // ADR-0016 revised §3: idle_ttl is measured from job COMPLETION.
+        // Cancel the watchdog (budget consumed by a finished job is not a
+        // violation) and re-arm idle from now. last_activity keeps its
+        // meaning as the observation surface (last job arrival).
+        {
+            let mut realm = self_arc.lock().await;
+            realm.timers.cancel_target(id);
+            let idle = realm
+                .types
+                .get(&id.actor_type)
+                .and_then(|a| a.idle_ttl)
+                .unwrap_or(realm.idle_ttl);
+            realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Idle, idle);
+            realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone()))
+                .map(|i| i.last_activity = Instant::now());
+        }
         let _ = job.reply.send(result);
+    }
+
+    /// Reclaim expiry (ADR-0016 revised): idle elapsed — evict the
+    /// instance (on_sleep, session drop, queue entry cancel). Replaces
+    /// evict_idle's linear scan for the timer-driven path.
+    pub async fn evict_instance(realm: SharedRealm, id: &InstanceId) {
+        let mut locked = realm.lock().await;
+        let key = (id.actor_type.clone(), id.key.clone());
+        let Some(inst) = locked.instances.remove(&key) else { return };
+        locked.timers.cancel_target(id);
+        if let Some(actor) = locked.types.get(&id.actor_type) {
+            if let Some(on_sleep) = actor.on_sleep.clone() {
+                let ctx = Self::ctx_for(realm.clone(), locked.store.clone(), id);
+                if let Err(e) = on_sleep(ctx).await {
+                    eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);
+                }
+            }
+        }
+        locked.sessions.evict(&format!("{}/{}", key.0, key.1));
+    }
+
+    /// Watchdog expiry (ADR-0016 revised §4): the instance exceeded its
+    /// execution budget — evict. The caller of the in-flight job observes
+    /// the eviction as a dropped reply (parked Pending entries resolve at
+    /// their own deadline; scoping pending_calls by instance is future
+    /// work once PendingEntry carries the target).
+    pub async fn watchdog_expiry(realm: SharedRealm, id: &InstanceId) {
+        Self::evict_instance(realm, id).await;
+    }
+
+    /// Deliver-type expiry (ADR-0016 §1): a `__on_timer` queue job to the
+    /// target (durable restore re-registers; ctx.timer wiring is a
+    /// separate concern — this is the driver-side delivery only).
+    pub async fn deliver_timer(realm: SharedRealm, target: InstanceId, tag: String) {
+        let job = aura_actor::QueuedJob {
+            handler: "__on_timer".into(),
+            args: serde_json::json!({ "tag": tag }),
+        };
+        Self::run_job_queued(realm, &target, job).await;
     }
 
     /// The unified call (Phase 3.5): same path for realm Actor / remote
@@ -616,6 +715,9 @@ impl Realm {
     /// Evict instances idle longer than `idle_ttl`: run on_sleep, drop the
     /// instance. State survives in the store — scale-to-zero drops the
     /// resident, not the data.
+    /// Manual/idempotent sweep of all idle instances — NOT the production
+    /// eviction path anymore (that is the wheel's reclaim entries). Kept
+    /// for tests and ops tooling that force-evict everything idle.
     pub async fn evict_idle(&mut self, self_arc: SharedRealm) -> Vec<InstanceId> {
         let default_ttl = self.idle_ttl;
         // Per-type residency policy: the type's own TTL wins; `None` falls
@@ -825,6 +927,11 @@ impl Realm {
     /// handle: the evictor never keeps the realm (and its storage engine)
     /// alive — engine shutdown drops the realm even with the task running.
     pub fn spawn_evictor(realm: &SharedRealm) {
+        // Evictor task (post-ADR-0016-revision): only the pending-call
+        // deadline sweep remains. Idle eviction is fully timer-driven —
+        // the wheel's reclaim entries fire `evict_instance` on expiry
+        // (idle measured from job completion), so the O(instances) linear
+        // scan per tick is gone.
         let realm = Arc::downgrade(realm);
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(5));
@@ -833,7 +940,6 @@ impl Realm {
                 let Some(realm) = realm.upgrade() else { break };
                 let mut locked = realm.lock().await;
                 locked.sweep_deadlines().await;
-                locked.evict_idle(realm.clone()).await;
             }
         });
     }

@@ -55,6 +55,10 @@ pub struct ActorType {
     /// value differs by role — a turn-executor dwells through its
     /// retention window while an entity actor can be reclaimed quickly.
     pub idle_ttl: Option<Duration>,
+    /// Execution budget (ADR-0016 revised §4): a reclaim entry fires if a
+    /// single job runs longer than this — maximum-duration control, not
+    /// idleness. Declared as `lifecycle.max_exec` in interface_schema.
+    pub max_exec: Option<Duration>,
     /// Optional on_sleep: called by the Host before the instance is
     /// evicted (scale-to-zero). Return value is ignored; state flushing is
     /// the store's job, not the hook's.
@@ -99,6 +103,7 @@ impl ActorType {
             name: name.into(),
             body: Body::Script { language: language.into(), source: source.into(), entry },
             idle_ttl: None,
+            max_exec: None,
             on_sleep: None,
             on_wake: None,
             receives: Vec::new(),
@@ -127,6 +132,13 @@ impl ActorType {
     }
 
     /// Declare a per-type idle TTL (residency policy). See the field doc.
+    /// Execution budget per job (ADR-0016 revised §4): a watchdog reclaim
+    /// entry fires when one job exceeds it — evict + fail the reply.
+    pub fn with_max_exec(mut self, budget: Duration) -> Self {
+        self.max_exec = Some(budget);
+        self
+    }
+
     pub fn with_idle_ttl(mut self, ttl: Duration) -> Self {
         self.idle_ttl = Some(ttl);
         self

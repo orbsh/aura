@@ -22,8 +22,7 @@ impl Engine {
     /// boot, never silently falls back).
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
         let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
-        let realm: SharedRealm =
-            Arc::new(tokio::sync::Mutex::new(Realm::with_mq(mq.clone())));
+        let realm: SharedRealm = Realm::with_mq(mq.clone()).shared_async().await;
         Realm::spawn_evictor(&realm);
         // Namespaces share the SAME okm engine (one fjall keyspace); each
         // namespace derives a prefix-bound handle at realm construction —

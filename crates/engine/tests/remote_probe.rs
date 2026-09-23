@@ -38,6 +38,7 @@ async fn remote_probe_roundtrip() {
             .into(),
         },
         idle_ttl: Some(Duration::from_secs(60)),
+        max_exec: None,
         on_sleep: None,
         on_wake: None,
         receives: vec![],

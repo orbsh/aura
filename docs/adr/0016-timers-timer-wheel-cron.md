@@ -147,6 +147,69 @@ which groups an instance actually carries). New injected capabilities
   (seconds-scale interrupt windows and minute-scale compression/cron
   wakes).
 
+## Revision (2026-09-23): unified scheduling on tokio-util DelayQueue; reclaim-type timers; idle measured from completion
+
+Implementation review of the residency/timeout surface (driven by the
+gravity turn-executor) amends three rulings; the original text above is
+preserved as decided.
+
+**1. The wheel is tokio-util's `DelayQueue` — not hand-rolled, not
+tick-scanned.** `DelayQueue` is a public hashed-wheel (the same
+`Wheel` structure this ADR sketched) exposing exactly the needed
+trio: `insert_at(value, when) -> Key`, `remove(&Key)` (cancel,
+O(1)), and `poll_expired()` as a stream. It drives itself (one
+internal `Sleep`), so the 5-second evictor tick no longer needs to
+scan the wheel: due entries fire the moment they expire, not on the
+next tick. The task count stays bounded — ONE driver task per realm
+(`while let Some(expired) = queue.poll_expired().await`). This
+supersedes §4's "no per-timer async task / wheel scanned by the
+existing tick" clause: that clause was the price of hand-rolling;
+the library removes the price. §4's Why-Not entry ("one tokio::sleep
+task per timer") remains rejected for the reason given (unbounded
+task count, no persistence path) — the driver is one task for ALL
+timers, which that entry never considered.
+
+**2. Two entry kinds.** The scheduling surface turned out to have two
+shapes, and the wheel holds both:
+
+- **Deliver entries** `(deliver_at, target, tag, durable)` — wake an
+  actor by delivering a `__on_timer` job (interrupt checks,
+  compression wakes, cron). Durable entries are written to the
+  StateStore's reserved namespace and re-`insert_at`-ed in the
+  `on_wake` restore path, exactly as §1 ruled.
+- **Reclaim entries** `(deliver_at, target, kind)` — nobody is coming;
+  take the resources back (idle-TTL eviction, execution watchdog).
+  The expiry action is NOT a job delivery but `evict_instance`
+  (on_sleep + session drop + reply-with-timeout for the watchdog's
+  target). Reclaim entries are always in-memory; they need CANCEL
+  (new work arrived → abort the pending idle timer), which is
+  `DelayQueue::remove` — the same cancel/re-arm API actors use.
+
+**3. idle_ttl is measured from job COMPLETION, not arrival.**
+`last_activity` keeps its meaning (observation surface: last job
+arrival) but no longer drives eviction. Instead: `run_job` cancels the
+instance's pending idle reclaim entry on entry (work arrived), and
+re-registers one at completion (deliver_at = now + idle_ttl). A long
+turn (an LLM call eating the whole TTL) can no longer expire the
+instance mid-execution — the reclaim entry simply does not exist while
+the job runs. The eviction-race clause this supersedes never existed
+in the original text; it was the flaw found when wiring residency to
+this ADR.
+
+**4. The execution watchdog is a reclaim entry with a declared
+budget.** `lifecycle.max_exec` (per-type, declared in
+`interface_schema` beside `idle_ttl`) registers a reclaim entry at job
+start (deliver_at = now + max_exec) and is cancelled at completion.
+Expiry = the instance exceeded its execution budget: evict (on_sleep,
+session drop) and fail the pending reply with a timeout error. This
+is maximum-duration control, not idleness measurement — the two
+concerns split cleanly along the two entry kinds.
+
+The evictor task remains only for `pending_calls` deadline sweeps
+(itself a future reclaim-entry migration); `evict_idle`'s linear scan
+is deleted — eviction is now timer-driven, O(expiry) not
+O(instances).
+
 ## Why Not
 
 - **Per-user gravity instances**: splits one user's agent across

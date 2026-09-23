@@ -10,11 +10,13 @@
 //! cross-instance lookups do not exist). The definition's proxy key is
 //! that id; the raw name rides a declared field for observability.
 //!
-//! The introspected schema rides as its verbatim JSON text: it IS an
-//! interface artifact (the LLM/script-side contract consumed by
-//! introspection surfaces), carried through the seam like any other
-//! interface currency — never a storage encoding of structured data.
-//! The `PersistedActor` struct (aura-actor) is the seam type.
+//! The introspected schema rides the DYNAMIC segment as structured nTLV
+//! (one `schema` entry, nested objects resolved through the field-name
+//! dictionary): the interface-artifact attribute (the LLM/script-side
+//! contract consumed by introspection surfaces) is unchanged, but the
+//! storage shape is a first-class dynamic document — no JSON-text detour,
+//! no opaque blob. The `PersistedActor` struct (aura-actor) is the seam
+//! type; JSON exists only at that seam (script/LLM currency).
 
 use crate::mq::MqStore;
 use aura_actor::PersistedActor;
@@ -101,9 +103,13 @@ pub struct ActorDefKey {
 
 /// One document per actor type. `Option` fields map to sentinel
 /// encodings: `entry` empty string = none; `idle_ttl_secs` 0 = realm
-/// default (a zero TTL is meaningless — it would evict on arrival). The
-/// introspected schema rides verbatim as a JSON string (interface
-/// artifact; empty = none).
+/// default (a zero TTL is meaningless — it would evict on arrival).
+///
+/// The introspected schema is NOT a declared field: it rides the DYNAMIC
+/// segment (one `schema` entry, `DynamicValue::Obj`) — structured nTLV
+/// encoding, no JSON-text detour, readable field-wise. The interface-
+/// artifact attribute (the LLM/script-side contract) is unchanged; only
+/// the storage shape stopped being an opaque text blob.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(ActorDefKey)]
 #[ok_ns(41)]
@@ -114,35 +120,39 @@ pub struct ActorDef {
     pub source: String,
     pub entry: String,
     pub idle_ttl_secs: u64,
-    pub schema: String,
 }
 
+/// The dynamic-segment key the schema rides under ("schema" as a dynamic
+/// name — the dictionary assigns it an id disjoint from the declared
+/// fields; a ctx/registry field of the same name cannot collide because
+/// this table's declared set is fixed above).
+const SCHEMA_FIELD: &str = "schema";
+
 impl ActorDef {
-    fn of(def: &PersistedActor) -> Self {
-        Self {
-            name: def.name.clone(),
-            language: def.language.clone(),
-            source: def.source.clone(),
-            entry: def.entry.clone().unwrap_or_default(),
-            idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
-            schema: def
-                .schema
-                .as_ref()
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        }
+    fn of(def: &PersistedActor) -> (Self, Option<okm_core::obj_dynamic::DynamicValue>) {
+        (
+            Self {
+                name: def.name.clone(),
+                language: def.language.clone(),
+                source: def.source.clone(),
+                entry: def.entry.clone().unwrap_or_default(),
+                idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
+            },
+            def.schema.as_ref().map(crate::value::json_to_dyn),
+        )
     }
 
-    fn into_persisted(self) -> PersistedActor {
+    fn into_persisted(
+        self,
+        schema: Option<okm_core::obj_dynamic::DynamicValue>,
+    ) -> PersistedActor {
         PersistedActor {
             name: self.name,
             language: self.language,
             source: self.source,
             entry: (!self.entry.is_empty()).then_some(self.entry),
             idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
-            schema: (!self.schema.is_empty())
-                .then(|| serde_json::from_str(&self.schema).ok())
-                .flatten(),
+            schema: schema.map(|v| crate::value::dyn_to_json(&v)),
         }
     }
 }
@@ -156,7 +166,18 @@ impl ActorDef {
 pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
     let type_id = resolve_type_id(meta, &actor.name)?;
     let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
-    t.put(&ActorDefKey { type_id }, &ActorDef::of(actor));
+    let (row, schema) = ActorDef::of(actor);
+    t.put(&ActorDefKey { type_id }, &row);
+    // Schema rides the dynamic segment (structured nTLV, no JSON text);
+    // absent schema = the field is absent (sentinel by absence).
+    let dynamic = schema
+        .map(|v| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(SCHEMA_FIELD.to_string(), v);
+            m
+        })
+        .unwrap_or_default();
+    t.put_fields(&ActorDefKey { type_id }, &dynamic);
     Ok(())
 }
 
@@ -165,10 +186,22 @@ pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
 /// materializes through the row's own typed decoder — the same codec
 /// put wrote, no second one.
 pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
-    let t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
+    let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
     let mut out = Vec::new();
-    for (_, payload) in t.scan_documents_raw() {
-        out.push(ActorDef::decode_payload(&payload).into_persisted());
+    for (suffix, payload) in t.scan_documents_raw() {
+        // suffix = [type_id 4B]: the primary key of the row (u32 BE).
+        if suffix.len() < 4 {
+            continue;
+        }
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&suffix[suffix.len() - 4..]);
+        let type_id = u32::from_be_bytes(b);
+        let key = ActorDefKey { type_id };
+        let schema = t
+            .get_fields(&key)
+            .and_then(|f| f.get(SCHEMA_FIELD).cloned());
+        let row = ActorDef::decode_payload(&payload);
+        out.push(row.into_persisted(schema));
     }
     Ok(out)
 }

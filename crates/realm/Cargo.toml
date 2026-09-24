@@ -8,7 +8,8 @@ license.workspace = true
 aura-actor = { path = "../actor" }
 probe-runtime = { path = "../../../probe/crates/runtime" }
 probe-protocol = { path = "../../../probe/crates/protocol" }
-okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde"] }
+okm-dynamic = { git = "https://github.com/orbsh/okm", branch = "main" }
 base64 = "0.22"
 sha2 = "0.10"
 fjall = { version = "3.1.10", optional = true }

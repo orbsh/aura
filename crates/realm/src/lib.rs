@@ -10,6 +10,7 @@ pub mod meta;
 pub mod value;
 pub mod state;
 pub mod namespace;
+pub mod store_exec;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
 use aura_actor::{ActorType, Instance, InstanceId, Job, SharedStore};

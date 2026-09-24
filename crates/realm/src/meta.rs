@@ -44,6 +44,9 @@ pub struct TypeName {
     /// fold logic payload-shaped; retire both when 0024's key-field
     /// groups land in the derive).
     pub id: u32,
+    /// The type's own storage namespace (ADR-0026): allocated at first
+    /// registration from the actor base block, never reused.
+    pub ns: u32,
     /// Single-group discriminator (always 0): the derive rejects empty
     /// group lists, so the registry-wide watermark declares a constant
     /// group instead.
@@ -51,6 +54,11 @@ pub struct TypeName {
 }
 
 use __OkmIndex_TypeName_by_name as TypeNameByName;
+
+/// The first ns a registered actor type receives (ADR-0026 §1): the low
+/// block is aura's own (mq 30–35, meta/state 40–41); actor types allocate
+/// from a fixed base above it, and ids are never reused within the node.
+pub const ACTOR_NS_BASE: u32 = 100;
 
 fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let mut t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
@@ -62,18 +70,25 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
         }
     }
     // Miss: next id = MAX reduce watermark + 1 (no scan; ids never
-    // reused — unfold is a no-op for this watermark).
+    // reused — unfold is a no-op for this watermark). The type's storage
+    // ns rides the same registration: base + id (one allocation per
+    // type, monotonic with the id, never reclaimed).
     let watermark = okm_core::reduce_get::<MqStore, MaxTypeId>(
         t.store(),
         <TypeName as Document>::NS_PREFIX,
         &TypeIdKey { id: 0 },
-        &TypeName { name: String::new(), id: 0, global: 0 },
+        &TypeName { name: String::new(), id: 0, ns: 0, global: 0 },
     )
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
     t.put(
         &TypeIdKey { id },
-        &TypeName { name: name.to_string(), id, global: 0 },
+        &TypeName {
+            name: name.to_string(),
+            id,
+            ns: ACTOR_NS_BASE + id,
+            global: 0,
+        },
     );
     Ok(id)
 }
@@ -157,6 +172,20 @@ impl ActorDef {
 // ---------------------------------------------------------------------------
 // The public surface: persist / load_all (JSON only at the struct seam).
 // ---------------------------------------------------------------------------
+
+/// The type's storage ns (ADR-0026): registry resolve (no allocation —
+/// unregistered types have no ns; the caller registers first).
+pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
+    for hit in t.scan::<TypeNameByName>(name.as_bytes()) {
+        if let Some(row) = &hit.1 {
+            if row.name == name {
+                return Ok(row.ns);
+            }
+        }
+    }
+    anyhow::bail!("no storage ns for unregistered actor type `{name}`")
+}
 
 /// Persist one definition (latest version wins per type name; the id is
 /// stable across versions — the registry resolve).
@@ -246,5 +275,21 @@ mod tests {
         // A second type gets its own document and its own id.
         persist(&meta, &sample("stats")).unwrap();
         assert_eq!(load_all(&meta).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn storage_ns_allocation_is_stable_base_offset_and_distinct() {
+        let meta = MqStore::mem();
+        persist(&meta, &sample("cart")).unwrap();
+        persist(&meta, &sample("stats")).unwrap();
+        let ns_cart = ns_of(&meta, "cart").unwrap();
+        let ns_stats = ns_of(&meta, "stats").unwrap();
+        // Each type owns one real ns from the actor base block.
+        assert!(ns_cart >= ACTOR_NS_BASE && ns_stats >= ACTOR_NS_BASE);
+        assert_ne!(ns_cart, ns_stats, "two types never share a ns");
+        // Re-resolve (re-registration path) is stable — no reallocation.
+        assert_eq!(ns_cart, ns_of(&meta, "cart").unwrap());
+        // Unregistered types have none.
+        assert!(ns_of(&meta, "ghost").is_err());
     }
 }

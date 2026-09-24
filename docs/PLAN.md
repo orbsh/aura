@@ -137,6 +137,41 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - Docs status: realm.md §on-decorator matches the ruling; actor-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture probe-adapter wording updated to event-queue semantics (2026-09-15)
 
 - [x] Phase 4.8 — Timers (ADR-0016, docs/adr/0016-timers-timer-wheel-cron.md en+zh; ADR-0011 amended — blocking/self-scheduling stays rejected, delivery scheduling passes the criterion): timer wheel scanned by the evictor tick; due entries deliver as ordinary `__on_timer` queue jobs (同目标到期合并一次唤醒); delivery counts as activity, re-arm explicit (投递不隐式自我重排); memory tier (dies with eviction) + durable tier (StateStore reserved namespace, restored via on_wake); declarative `lifecycle.cron` in `interface_schema` (注册时内省翻译为持久定时器，运行时从不解释 cron 表达式，错过策略 = skip-and-jump-to-next) + imperative `ctx.timer.register/cancel`; ctx-bridge host fns move to dot-namespaced introspectable groups (`ctx.store.*`, `ctx.timer.*`); gravity 按 channel 一实例（ADR-0016 ruling）。
+- [~] **Phase 4.9 — Type-scoped actor storage (PRIORITY, ADR-0026, docs/adr/0026-type-scoped-actor-storage.md en+zh)**
+  - Ruling: storage isolation moves from the instance level to the TYPE level; the instance key keeps answering "who serially processes this message" and stops deciding storage layout. Terminology: routing-side `partition key` renames to **instance key** (aligns with `InstanceId`/`instance_key` in the state registry — one concept, one name; "partition" was the storage fact this ADR supersedes). Cross-node sharding vocabulary (Phase 5 shard map) keeps `shard` — node placement, not instance identity
+    - each actor TYPE occupies one real okm ns (bounded declared vocabulary — satisfies the closed-vocabulary ns ruling; events/partitions stay registry+hash); low ns block reserved for aura (mq 30–35, meta/state 40–41), actor types allocate from a fixed base; allocation = `register_type` side effect via the type registry (the existing type_id assigner); ids never reused
+    - instances are documents inside the type's ns (okm collection/document terminology; the type's ns plays a SQL-schema role): the `InstanceState` one-document-per-instance isolation shape is superseded; cross-instance aggregation inside one type = ordinary scan/reduce over the type's ns — projection actors retire for same-type aggregation, remain for cross-type precomputation
+    - ctx.store rises to okm capability level: put / get / scan / reduce over the type's declared tables (exact op names set at implementation); field-level get/set/delete point model replaced; handles structurally bound to the type's ns at registration (cross-type access not expressible); nested invoke resolves target ns through the type registry, never caller-supplied keys
+    - per-user namespace isolation (Phase 3.6 PrefixStore) stays, orthogonal — it prefixes the whole engine beneath the type nss
+    - serialization/partition routing/timer/mq semantics untouched; existing instance-state bytes discarded, no migration (ADR-0018 precedent)
+  - Schema declaration (rides the 4.5b upload lifecycle; execution path never regenerates):
+    - python: decorator over the okm type definitions derives the schema, merged into `interface_schema` (same implicit+explicit merge as @on)
+    - steel/nushell: hand-written schema literal in interface_schema; handlers call ctx store functions directly (nushell stays memory-only until its PTY host bridge lands)
+    - wasm: same op set over CBOR per the landed carrier ABI
+    - merged schema persists on ActorDef (dynamic segment) at registration; `ctx.interface_schema` reads the persisted copy (reflection for handlers; dev-time completion served by the LLM receiving interface_schema)
+  - Protocol naming (aura side docs-only; prism side lands with Phase 8): the wire/concept layer carries only `ev` in BOTH directions — no direction field; emit/on are per-end implementation details (aura @on+emit; prism client ws.send/ws.on); prism = aura event semantics extended to the user end
+  - Work items
+    - [ ] terminology rename: routing-side `partition key` → `instance key` across code (router fields, ReceiveDecl `.on(event, key_field)`, event payload key-extraction naming) and the design docs' live passages (partitioning.md §1/§2.1 rewrite lands with the docs item below); historical PLAN phase entries stay unedited
+    - [ ] op set narrowing: finalize the ctx.store emit op set for steel/nushell (Collection-semantic-layer ops over dynamic documents: put_document/get_document/scan/reduce), error shapes, JSON seam at the aura-actor boundary. No bypass guard: the developer has full control, primitive misuse is self-sabotage
+    - [ ] registry→ns allocation: type registry gains ns assignment (fixed base above reserved block), register_type persists the mapping
+    - [ ] InstanceState retirement: state.rs document model + StateDocumentStore seam removed, replaced by typed-ns tables; engine tests migrate off field-level ctx.store.get/set
+    - [ ] per-language schema declaration: python decorator derivation (merge into interface_schema), steel/nushell literal form; wasm (Rust source) compiles okm INTO the module — script implements VirtualStorage over aura_host emit imports, runs the real Collection API in-module (static derives, no dynamic schema form for storage); ctx bridge host fns rebuilt over the op set
+    - [ ] `ctx.interface_schema` read of the persisted copy
+    - [ ] docs: storage.md/partitioning.md rewrite (instance-document passages superseded), wiki sync, prism-facing `ev` naming noted in ADR-0017's prism-side scope
+- [~] **Phase 4.10 — Probe affinity + namespace demotion (PRIORITY after 4.9; companion to ADR-0026)**
+  - Ruling: the probe is an actor's EXECUTION portion — it follows the actor, not the user. The tenant assumption (users exist) leaked into the base layer and is removed
+    - probe binding is actor-TYPE affinity (the 2.6 registry already records actor→probe bindings; affinity is metadata, not a routing hop): an actor type names its execution capacity; the probe never asks "which user"
+    - node trust is deployment-level and rides ADR-0015 (ed25519 node identity): "may this machine execute" is separate from "whose user is this" — the 3.6 user-credential derivation pointed the wrong way
+    - user separation is the APPLICATION's concern: gravity distinguishes users through its own mechanism (user-organized types/instances, or sender metadata in the payload per the ADR-0017 amendment — identity rides payload metadata, never Ctx). The framework neither provides nor presupposes a user dimension
+    - no-user applications are first-class: an intranet distributed-compute deployment puts one probe per node, registers affinity, and the actor side shards tasks — no user concept appears
+  - Namespace demotion (amends Phase 3.6): the `PrefixStore` mechanism survives as an APPLICATION-AVAILABLE namespace primitive (construction-time prefix isolation — the structural guarantee is the value), but its binding dimension is the application's choice — gravity may bind user, a compute project binds nothing; "probe registration credential = user credential → namespace derived" is superseded
+  - Consistency with ADR-0026: after type-scoped nss, multi-tenant user isolation (when an application wants it) is the application organizing types/keys — the framework's isolation units are exactly two: type ns (storage) and instance serialization (routing); user is not among them
+  - Work items
+    - [ ] probe registry: type-affinity records become the binding surface; the user-credential→namespace path at registration removed
+    - [ ] `register_in`/`call_in`/`emit_in` surfaces re-documented: namespace binding is an explicit application decision, not a credential derivation
+    - [ ] ADR-0015 dependency: node identity handshake lands before this phase's trust story is complete (registration currently discards credentials)
+    - [ ] docs: partitioning.md §3.6-era passages + wiki probe-adapter wording swept; 0026 §1 "用户 namespace 隔离是正交的、保留" line updated to the demoted shape
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Actor hosting: Gravity as Actor type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.
@@ -160,6 +195,63 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-23，自 HANDOFF 简报合并）
+
+起点 `ffb9a5c`（timer wheel 批次收尾），终点 aura `8a92122` / probe `9da8ed8`，
+全量测试通过（`cargo test -p aura-engine --features "fjall,nushell,steel"` 36 个 +
+`aura-realm --features fjall`）。已知失败清单：**空**（fjall_state 真 bug 已修、
+callslot deadline 属 feature 组合误判——见下）。
+
+### 已完成（全部已提交）
+
+- [x] fjall_state 修复（a7a5b9d）：`ctx_for` dispatch 闭包持强 SharedRealm → 进入
+      resident session（steel `register_fn` 'static）→ 引用环钉死 fjall Database，
+      Engine drop 后重开 `Locked`。修复：闭包持 `Arc::downgrade`，`Weak::upgrade`
+      每次调用。standing rule：任何活得比单个 job 久的闭包/task 持 realm Weak。
+- [x] callslot 假失败澄清：deadline 测试用 nushell slow handler，feature 不全时
+      job 瞬时错误早于 50ms deadline。规则：engine 测试用全语言 feature 跑。
+- [x] MQ 投递层演进（388bbea + 86a255e）：MqData 键改逻辑时间
+      `[event_id][part_id][time]`（MqHead 行保单调，append O(1)，skip-to-now 读
+      head）；新 MqHead 表（ns 34）；singleton 结构化（part_id 0 保留）；水位分母
+      切持久 EventRoute 注册表。设计否决记录：per-event 动态 ns、Part_id↔seq
+      registry、partition registry。
+- [x] EventRoute 持久注册表（388bbea 内）：ns 35，`register_type` 落表；durable
+      事实源 + ops 面 + 水位分母；内存 EventRouter 保留为 emit 匹配热路径。
+- [x] meta schema 动态段化（a0b0c03）：`ActorDef` 删 `schema: String`，schema 以
+      `DynamicValue::Obj` 走 dynamic segment；存储层不再有任何 JSON 文本。
+- [x] shim 移除（aura 68877c2 + probe 9da8ed8）：四层 entry 全删；handler 只按
+      事件名寻址；25 处测试/CLI 迁移。
+- [x] wildcard 队列身份修复（c249ac2）：emit 一律以具体事件名落队列；通配订阅经
+      `events_matching` 展开具体名、逐名 cursor。规则：队列身份与 handler 名永远
+      是具体事件名，模式串只在 router 与展开步骤。
+- [x] docs（ec89966 + 8a92122 + 493720d）：modeling.md 游戏房间高频状态形态节；
+      realm.md emit 分发路径重写为持久队列现状；wasm carrier ABI 设计文档落地 →
+      Phase 4.5 主项闭环（PLAN:79 勾选，4.5c step 5 勾选）。
+
+### 遗留待办（未动）
+
+- [ ] events_matching 增量化（可选小优化）：通配订阅每轮 50ms 全量重扫；可缓存
+      上轮展开 + EventName registry 水位，registry 不变即跳过。通配订阅多/词汇大
+      时才值得（Windmill 判据）。
+- [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
+      函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
+- [ ] cold call over the wire：probe 不必改，缺的是 aura 侧 `resolve_call`
+      重进入路径 + gravity 的持久化。
+- [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
+      登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
+      身份归属修订（2026-09-22）：认证数据住 **prism**，aura 只在投递载荷里收到
+      sender 元数据（Ctx 不变）——与 ADR-0017 §3/§5/§7 修订一起在 prism 侧执行
+      （aura 侧无远程挂载改造——ADR-0025 的 Plan B 已否决，2026-09-23）。
+- [ ] Phase 4 Remaining：slate engine option on both planes（无压力）。
+- [ ] 热替换路由更新（4.5）：needs a set() versioning path。
+
+### 跨仓备忘（prism 侧）
+
+- 双编码调试姿态：JSON 保留为解码路径不作为线上默认；一个 action 模型、两个
+  codec impl、一致性测试 round-trip 每个 Frame 变体过两种编码；不加第三种编码。
+- 游戏服务端方向：房间制/回合制现在就能搭；实时动作类需先解决帧驱动 + 房间内
+  并发（未立项）。
 
 ## 会话记录（2026-09-22，自 HANDOFF 简报合并）
 

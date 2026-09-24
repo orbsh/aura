@@ -35,7 +35,7 @@ pub struct TypeIdKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(TypeIdKey)]
 #[ok_index(by_name { fields(name) })]
-#[ok_reduce(MaxTypeId { group(global) })]
+#[ok_reduce(HighWater(id) { group(global) })]
 #[ok_ns(40)]
 pub struct TypeName {
     pub name: String,
@@ -73,7 +73,7 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     // reused — unfold is a no-op for this watermark). The type's storage
     // ns rides the same registration: base + id (one allocation per
     // type, monotonic with the id, never reclaimed).
-    let watermark = okm_core::reduce_get::<MqStore, MaxTypeId>(
+    let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_TypeName_0>(
         t.store(),
         <TypeName as Document>::NS_PREFIX,
         &TypeIdKey { id: 0 },
@@ -91,20 +91,6 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
         },
     );
     Ok(id)
-}
-
-/// MAX reduce over the whole registry (a single group — the group
-/// segment is empty): the highest assigned type id. Unfold = keep (ids
-/// retired, never reclaimed).
-pub struct MaxTypeId;
-
-impl ReduceLogic for MaxTypeId {
-    type Document = TypeName;
-    type Acc = u64;
-    fn fold(acc: &mut u64, item: &TypeName) {
-        *acc = (*acc).max(item.id as u64);
-    }
-    fn unfold(_acc: &mut u64, _item: &TypeName) {}
 }
 
 // ---------------------------------------------------------------------------

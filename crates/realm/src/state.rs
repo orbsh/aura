@@ -69,7 +69,7 @@ pub struct InstanceStateKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(InstanceStateKey)]
 #[ok_index(by_key { fields(type_id, instance_key) })]
-#[ok_reduce(MaxInstanceId { group(type_id) })]
+#[ok_reduce(HighWater(instance_id) { group(type_id) })]
 #[ok_ns(34)]
 pub struct InstanceState {
     /// Registry-resolved actor type id (fixed width, index-leading).
@@ -81,28 +81,6 @@ pub struct InstanceState {
     /// payload fields, so the id rides here for `MaxInstanceId`. Written
     /// on every create path; addressing always goes through the KEY.
     pub instance_id: u32,
-}
-
-/// MAX reduce over `type_id`: the group accumulator tracks the highest
-/// assigned proxy id per type, so the next id is `reduce_get(..) + 1`
-/// with no scan. fold = max; unfold = keep — id assignment is monotonic
-/// (ids are never reused), and max is trivially stable under the
-/// exactly-once fold/unfold contract: a deleted document must not lower
-/// the watermark, and the engine's reversibility guarantee is preserved
-/// because the fold/unfold pair still reproduces the same accumulator
-/// trajectory (max then keep = the watermark the fold left).
-pub struct MaxInstanceId;
-
-impl ReduceLogic for MaxInstanceId {
-    type Document = InstanceState;
-    type Acc = u64;
-    fn fold(acc: &mut u64, item: &InstanceState) {
-        *acc = (*acc).max(item.instance_id as u64);
-    }
-    fn unfold(_acc: &mut u64, _item: &InstanceState) {
-        // Deliberate no-op: the watermark never decreases (ids retired,
-        // not reclaimed — see the struct doc).
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +119,7 @@ fn resolve_instance_id(
     };
     // reduce_get(store, ns, key, document): the group segment comes from
     // the named fields (type_id only) — key/other fields are irrelevant.
-    let watermark: u64 = okm_core::reduce_get::<MqStore, MaxInstanceId>(
+    let watermark: u64 = okm_core::reduce_get::<MqStore, __OkmReduce_InstanceState_0>(
         t.store(),
         <InstanceState as Document>::NS_PREFIX,
         &InstanceStateKey { type_id, instance_id: 0 },

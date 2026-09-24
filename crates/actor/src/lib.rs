@@ -156,7 +156,9 @@ impl ActorType {
 /// Narrow alias so the public API stays readable without a futures dep.
 pub mod call;
 pub mod persist;
+pub mod store_emit;
 pub use persist::PersistedActor;
+pub use store_emit::{StoreOp, StoreOpKind};
 
 pub mod futures_boxed {
     pub type BoxFuture<'a, T> =

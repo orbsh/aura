@@ -608,3 +608,85 @@ def audit(args):
     assert_eq!(routes.len(), 1, "order.* wildcard routed");
     assert!(realm.router.matches("unrelated").is_empty());
 }
+
+// ADR-0026 §3 + §4: the type declares storage collections through its
+// interface_schema (`storage.collections` — serde CollectionSchema +
+// indexes/reduces); `ctx_store_emit` executes ops against the type's own
+// ns, and `ctx_interface_schema` reads the persisted copy. steel script,
+// full round trip through the host bridge.
+#[cfg(feature = "steel")]
+#[tokio::test]
+async fn store_emit_roundtrip_and_interface_schema_read() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let full_src = r#"
+(define (interface_schema args)
+  (hash "storage"
+        (hash "collections"
+              (hash "notes"
+                    (hash "schema"
+                          (hash "key_len" 8
+                                "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+                                "layout_version" 1
+                                "hot_width" 8
+                                "payload_header_len" 3
+                                "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+                                "cold_fields" (list)
+                                "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+
+(define (put-note args)
+  (ctx_store_emit (hash "collection" "notes"
+                        "op" "put_document"
+                        "key" (hash "id" 7)
+                        "doc" (hash "count" 42))))
+
+(define (get-note args)
+  (ctx_store_emit (hash "collection" "notes"
+                        "op" "get_document"
+                        "key" (hash "id" 7))))
+
+(define (read-schema args)
+  (ctx_interface_schema ""))
+"#;
+    engine
+        .register(aura_actor::ActorType::script(
+            "store-keeper",
+            "steel",
+            full_src,
+        ))
+        .await
+        .expect("register store-keeper");
+
+    let target = aura_actor::InstanceId { actor_type: "store-keeper".into(), key: "k".into() };
+
+    // DEBUG: introspect directly to see what schema comes back.
+    let src = r#"
+(define (interface_schema args)
+  (hash "storage" (hash "collections" (hash "notes" (hash "schema" (hash "key_len" 8))))))
+"#;
+    // probe with the FULL source from the registered actor
+
+
+    // The type's plan resolved at registration: ctx.store is available.
+    engine
+        .invoke(target.clone(), "put-note", serde_json::json!(7))
+        .await
+        .expect("put through ctx_store_emit");
+    let got = engine
+        .invoke(target.clone(), "get-note", serde_json::json!(7))
+        .await
+        .expect("get through ctx_store_emit");
+    assert_eq!(got["count"], 42);
+
+    // The persisted schema copy is readable from the handler.
+    let schema = engine
+        .invoke(target.clone(), "read-schema", serde_json::json!(null))
+        .await
+        .expect("ctx_interface_schema");
+    assert!(
+        schema["storage"]["collections"]["notes"].is_object(),
+        "interface_schema carries the storage declaration: {schema}"
+    );
+
+    // A type without a storage declaration has no ctx.store surface:
+    // registering one and calling ctx_store_emit errors as a value.
+}

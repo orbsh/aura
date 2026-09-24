@@ -175,6 +175,15 @@ pub struct Ctx {
     pub state: State,
     /// Call surface — the single controlled path (ADR-0011).
     invoke: Invoke,
+    /// Type-scoped storage executor (ADR-0026 §3): one entry carrying okm
+    /// Collection ops as data (`ctx.store.emit(op)`). The runtime injects
+    /// the handle bound to the OWNING TYPE's ns — cross-type access is not
+    /// expressible through it. `None` when the runtime has no storage plan
+    /// for the type (no declared collections → no storage surface).
+    store_emit: Option<store_emit_handle::StoreEmitHandle>,
+    /// The persisted interface_schema copy (uploaded version, 4.5b
+    /// lifecycle). `None` = the type declared none.
+    interface_schema: Option<Value>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -250,6 +259,16 @@ pub mod dispatch_handle {
     >;
 }
 
+pub mod store_emit_handle {
+    use super::*;
+    use crate::StoreOp;
+    /// One storage instruction, executed against the owning type's ns
+    /// (the runtime resolves the plan; the handle carries no addressing).
+    /// Sync: script host fns run inside spawn_blocking.
+    pub type StoreEmitHandle =
+        Arc<dyn Fn(StoreOp) -> Result<Value, String> + Send + Sync>;
+}
+
 impl Invoke {
     /// Call the dispatch target and wait for its result. Used by the script
     /// ctx bridge (which blocks inside spawn_blocking).
@@ -264,7 +283,40 @@ impl Ctx {
             state: State::new(self_id.clone(), store),
             self_id,
             invoke: Invoke { dispatch },
+            store_emit: None,
+            interface_schema: None,
         }
+    }
+
+    /// Inject the type-scoped storage executor (realm-side assembly;
+    /// actors never construct a Ctx themselves).
+    pub fn with_store_emit(mut self, handle: store_emit_handle::StoreEmitHandle) -> Self {
+        self.store_emit = Some(handle);
+        self
+    }
+
+    /// Inject the persisted interface_schema copy.
+    pub fn with_interface_schema(mut self, schema: Value) -> Self {
+        self.interface_schema = Some(schema);
+        self
+    }
+
+    /// The type-scoped storage surface: exactly one entry, `emit(op)` —
+    /// okm Collection instructions as data (ADR-0026 §3). Fails when the
+    /// type declared no storage (no schema → no collections → no surface).
+    pub fn store(&self) -> StoreSurface<'_> {
+        StoreSurface { emit: self.store_emit.as_ref() }
+    }
+
+    /// The persisted interface_schema (uploaded copy; execution never
+    /// re-introspects). `None` = not declared.
+    pub fn interface_schema(&self) -> Option<&Value> {
+        self.interface_schema.as_ref()
+    }
+
+    /// The raw store-emit handle (host-bridge assembly clones the Arc).
+    pub fn store_emit_handle(&self) -> Option<&store_emit_handle::StoreEmitHandle> {
+        self.store_emit.as_ref()
     }
 
     /// The single controlled call surface (ADR-0011).
@@ -281,6 +333,24 @@ impl Ctx {
     /// The invoke dispatch handle, for sync wrappers around `invoke`.
     pub fn invoke_handle(&self) -> dispatch_handle::DispatchHandle {
         self.invoke.dispatch.clone()
+    }
+}
+
+/// The actor-visible storage surface: one method, `emit`. The op is the
+/// protocol type (`StoreOp`); the runtime executes it against the type's
+/// declared collections (okm Collection semantics — documents, indexes,
+/// preset reduces, dynamic-segment fields).
+pub struct StoreSurface<'a> {
+    emit: Option<&'a store_emit_handle::StoreEmitHandle>,
+}
+
+impl StoreSurface<'_> {
+    /// Execute one okm Collection instruction against the type's ns.
+    pub fn emit(&self, op: StoreOp) -> Result<Value, String> {
+        let f = self
+            .emit
+            .ok_or_else(|| "this type declares no storage (no storage schema) — ctx.store is unavailable".to_string())?;
+        f(op)
     }
 }
 

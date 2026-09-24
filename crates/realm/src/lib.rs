@@ -91,6 +91,15 @@ pub struct Realm {
     /// session for re-entry routing.
     pending_calls: HashMap<CallId, PendingEntry>,
     call_seq: u64,
+    /// Storage plans per actor type (ADR-0026): ns + parsed collections,
+    /// resolved once from the type registry + the persisted interface_schema
+    /// (4.5b upload copy). The ctx store executor rebuilds the
+    /// DynamicCollection from here per op — schema data, no host objects.
+    store_plans: HashMap<String, store_exec::StorePlan>,
+    /// Persisted interface_schema copies per actor type (the uploaded
+    /// version, engine.register seeds from the introspected schema —
+    /// `ctx.interface_schema` reads THIS, never a re-introspection).
+    persisted_schemas: HashMap<String, Option<serde_json::Value>>,
     /// Unmatched events (bounded ring, diagnostic output).
     pub dead_events: event::DeadEvents,
     /// Unified scheduling surface (ADR-0016 revised): delivery + reclaim
@@ -140,6 +149,8 @@ impl Realm {
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
             call_seq: 0,
+            store_plans: HashMap::new(),
+            persisted_schemas: HashMap::new(),
             dead_events: event::DeadEvents::default(),
             // Placeholder; the real handle lands right after the realm
             // is wrapped in its Arc (the driver needs the SharedRealm).
@@ -151,6 +162,27 @@ impl Realm {
         self.call_specs
             .entry(actor.name.clone())
             .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
+        // Storage plan resolve (ADR-0026): ns from the type registry, the
+        // declared collections from the persisted interface_schema copy.
+        // Failure = no plan = no ctx.store surface (surface absence is
+        // the correct form for "declared no storage" — never a panic).
+        let (ns, schema) = match crate::meta::ns_and_schema_of(&self.mq, &actor.name) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("storage plan resolve failed for `{}`: {e}", actor.name);
+                (0, None)
+            }
+        };
+        self.persisted_schemas.insert(actor.name.clone(), schema.clone());
+        self.store_plans.remove(&actor.name);
+        if let Some(schema) = schema {
+            match store_exec::StorePlan::from_schema(ns as u16, &schema) {
+                Ok(plan) => {
+                    self.store_plans.insert(actor.name.clone(), plan);
+                }
+                Err(e) => eprintln!("storage plan parse failed for `{}`: {e}", actor.name),
+            }
+        }
         // One declaration surface per type: routes assemble from the
         // type's own `receives` as a side effect of registration. Two
         // stores: the in-memory router (matching hot path — rebuilt from
@@ -189,7 +221,14 @@ impl Realm {
 
     /// Build a ctx for an instance: state backed by the shared store,
     /// invoke routed through the realm's dispatch.
-    fn ctx_for(self_arc: SharedRealm, store: aura_actor::SharedStore, id: &InstanceId) -> aura_actor::Ctx {
+    fn ctx_for(
+        self_arc: SharedRealm,
+        store: aura_actor::SharedStore,
+        store_engine: mq::MqStore,
+        plan: Option<&store_exec::StorePlan>,
+        schema: Option<serde_json::Value>,
+        id: &InstanceId,
+    ) -> aura_actor::Ctx {
         // The store is already a shared Arc: handlers get a direct handle.
         // (Phase 1 single-node: the store is lock-free per operation. The
         // realm lock only guards registry/instances, never state.)
@@ -199,7 +238,7 @@ impl Realm {
         // reference cycle (realm → sessions → session → closure → realm)
         // that keeps the fjall Database open forever after engine drop.
         let dispatch_realm = Arc::downgrade(&self_arc);
-        aura_actor::Ctx::new(
+        let mut ctx = aura_actor::Ctx::new(
             id.clone(),
             store,
             Arc::new(move |target, handler: &str, args| {
@@ -212,7 +251,39 @@ impl Realm {
                     dispatch_call(realm, target, &handler, args).await
                 })
             }),
-        )
+        );
+        // Type-scoped storage executor (ADR-0026 §3): the handle resolves
+        // the type's plan through the realm (Weak, same retain-cycle
+        // discipline) and executes the op against the type's own ns. The
+        // schema carries the key layout — there is no caller-supplied
+        // addressing to bind at this point.
+        // Plan + schema are resolved by the CALLER (it already holds the
+        // realm lock — ctx_for is called under it everywhere) and captured
+        // as DATA: the emit handle clones the plan and the mq handle, so
+        // the executor never dereferences the realm at emit time (no
+        // blocking_lock in spawn_blocking, no retain cycle).
+        if let Some(plan) = plan {
+            let store = store_engine.clone();
+            let plan = plan.clone();
+            ctx = ctx.with_store_emit(Arc::new(move |op: aura_actor::StoreOp| {
+                store_exec::execute(&store, &plan, &op)
+            }));
+        }
+        if let Some(schema) = schema {
+            ctx = ctx.with_interface_schema(schema);
+        }
+        ctx
+    }
+
+    /// The type's storage plan (resolved at registration from the
+    /// persisted interface_schema copy).
+    pub fn plan_of(&self, type_name: &str) -> Option<&store_exec::StorePlan> {
+        self.store_plans.get(type_name)
+    }
+
+    /// The type's persisted interface_schema copy.
+    pub fn schema_of(&self, type_name: &str) -> Option<&Option<serde_json::Value>> {
+        self.persisted_schemas.get(type_name)
     }
 
     /// Host functions exposed to script actors (Phase 2.5 ctx bridge).
@@ -283,6 +354,27 @@ impl Realm {
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
+        // Type-scoped storage (ADR-0026 §3): ONE entry, okm Collection
+        // instructions as data. The handle is bound to the owning type's
+        // ns at ctx construction — the fn itself carries no addressing.
+        if let Some(surface) = ctx.store_emit_handle() {
+            let emit_fn = surface.clone();
+            fns.insert(
+                "ctx_store_emit".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    let op: aura_actor::StoreOp = serde_json::from_value(arg)
+                        .map_err(|e| anyhow::anyhow!("ctx_store_emit: bad op: {e}"))?;
+                    (emit_fn)(op).map_err(|e| anyhow::anyhow!(e))
+                }) as HostFn,
+            );
+        }
+        if let Some(schema) = ctx.interface_schema() {
+            let schema = schema.clone();
+            fns.insert(
+                "ctx_interface_schema".into(),
+                Arc::new(move |_arg: serde_json::Value| Ok(schema.clone())) as HostFn,
+            );
+        }
         fns
     }
 
@@ -311,7 +403,14 @@ impl Realm {
             // symmetric with on_sleep; a first-time wake is still a wake.
             if let Some(actor) = self.types.get(&id.actor_type) {
                 if let Some(on_wake) = actor.on_wake.clone() {
-                    let ctx = Self::ctx_for(self_arc.clone(), self.store.clone(), id);
+                    let ctx = Self::ctx_for(
+                        self_arc.clone(),
+                        self.store.clone(),
+                        self.mq.clone(),
+                        self.plan_of(&id.actor_type),
+                        self.schema_of(&id.actor_type).cloned().flatten(),
+                        id,
+                    );
                     on_wake(ctx, serde_json::Value::Null).await?;
                 }
             }
@@ -429,7 +528,14 @@ impl Realm {
             return;
         };
         let body = actor.body.clone();
-        let ctx = Self::ctx_for(self_arc.clone(), realm.store.clone(), id);
+        let ctx = Self::ctx_for(
+            self_arc.clone(),
+            realm.store.clone(),
+            realm.mq.clone(),
+            realm.plan_of(&id.actor_type),
+            realm.schema_of(&id.actor_type).cloned().flatten(),
+            id,
+        );
         let sessions = realm.sessions.clone();
         let probes = realm.probes.clone();
         drop(realm);
@@ -488,9 +594,8 @@ impl Realm {
                 let host = if pure_nushell {
                     None
                 } else {
-                    Some(probe_runtime::carrier::HostBridge {
-                        functions: Self::host_bridge_for(&ctx),
-                    })
+                    let fns = Self::host_bridge_for(&ctx);
+                    Some(probe_runtime::carrier::HostBridge { functions: fns })
                 };
                 let instance_key = format!("{}/{}", id.actor_type, id.key);
                 tokio::task::spawn_blocking(move || {
@@ -536,7 +641,14 @@ impl Realm {
         locked.timers.cancel_target(id);
         if let Some(actor) = locked.types.get(&id.actor_type) {
             if let Some(on_sleep) = actor.on_sleep.clone() {
-                let ctx = Self::ctx_for(realm.clone(), locked.store.clone(), id);
+                let ctx = Self::ctx_for(
+                    realm.clone(),
+                    locked.store.clone(),
+                    locked.mq.clone(),
+                    locked.plan_of(&id.actor_type),
+                    locked.schema_of(&id.actor_type).cloned().flatten(),
+                    id,
+                );
                 if let Err(e) = on_sleep(ctx).await {
                     eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);
                 }
@@ -777,7 +889,14 @@ impl Realm {
             let Some(inst) = self.instances.remove(&key) else { continue };
             if let Some(actor) = self.types.get(&key.0) {
                 if let Some(on_sleep) = actor.on_sleep.clone() {
-                    let ctx = Self::ctx_for(self_arc.clone(), self.store.clone(), &inst.id);
+                    let ctx = Self::ctx_for(
+                        self_arc.clone(),
+                        self.store.clone(),
+                        self.mq.clone(),
+                        self.plan_of(&key.0),
+                        self.schema_of(&key.0).cloned().flatten(),
+                        &inst.id,
+                    );
                     if let Err(e) = on_sleep(ctx).await {
                         // Eviction proceeds regardless: the hook is
                         // advisory; state is already in the store.

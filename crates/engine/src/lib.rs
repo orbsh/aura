@@ -99,6 +99,7 @@ impl Engine {
         // Phase 4.5c: derive delivery routes from the introspected schema —
         // `receives` (event → key field) seeds the router per @on
         // declaration; empty key = singleton (per-event queue consumer).
+        let mut introspected: Option<serde_json::Value> = None;
         if let Some(schema) = aura_realm::introspect_schema(&actor).await {
             if actor.idle_ttl.is_none() {
                 if let Some(ttl) = schema.get("lifecycle").and_then(|l| l.get("idle_ttl")).and_then(parse_ttl) {
@@ -118,11 +119,15 @@ impl Engine {
                     actor = actor.on_wildcard(pattern.clone());
                 }
             }
+            // Keep the uploaded copy: it persists with the definition AND
+            // seeds the ctx store plan + `ctx.interface_schema` read.
+            introspected = Some(schema);
         }
         // Phase 4.5b + ADR-0025 Plan A: persist the definition as a
         // data-plane row (actor_defs beside mq/state) — definitions
         // outlive the process, one okm instance for everything.
-        if let Some(def) = aura_actor::persist::PersistedActor::from_type(&actor) {
+        if let Some(mut def) = aura_actor::persist::PersistedActor::from_type(&actor) {
+            def.schema = introspected.clone();
             let realm = self.realm.lock().await;
             aura_realm::meta::persist(&realm.mq, &def)?;
         }

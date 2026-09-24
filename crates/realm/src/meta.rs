@@ -193,6 +193,21 @@ pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The type's ns + persisted storage schema in one resolve: the actor
+/// ctx bridge's store-executor assembly input (ns from the type registry,
+/// schema from the ActorDef's dynamic segment — the uploaded copy).
+/// `schema: None` = the type declared no storage (no ctx.store surface).
+pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
+    let ns = ns_of(meta, name)?;
+    let type_id = resolve_type_id(meta, name)?;
+    let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
+    let schema = t
+        .get_fields(&ActorDefKey { type_id })
+        .and_then(|f| f.get(SCHEMA_FIELD).cloned())
+        .map(|v| crate::value::dyn_to_json(&v));
+    Ok((ns, schema))
+}
+
 /// Every persisted definition (boot reload). The raw document scan is
 /// the export surface (slot-0 primary entries only); each payload
 /// materializes through the row's own typed decoder — the same codec
@@ -218,6 +233,71 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
     Ok(out)
 }
 
+#[cfg(test)]
+mod ns_schema_tests {
+    use super::*;
+
+    #[test]
+    fn ns_and_schema_resolves_after_persist() {
+        let meta = MqStore::mem();
+        let def = PersistedActor {
+            name: "sc".into(),
+            language: "steel".into(),
+            source: "x".into(),
+            idle_ttl_secs: None,
+            schema: Some(serde_json::json!({"storage": {"collections": {"notes": {"schema": {"key_len": 8}}}}})),
+        };
+        persist(&meta, &def).unwrap();
+        let (ns, schema) = ns_and_schema_of(&meta, "sc").unwrap();
+        assert!(ns > 0);
+        assert!(schema.is_some(), "schema must come back from the dynamic segment");
+        assert_eq!(schema.unwrap()["storage"]["collections"]["notes"]["schema"]["key_len"], 8);
+    }
+
+    #[test]
+    fn big_schema_roundtrip() {
+        let meta = MqStore::mem();
+        for probe in [
+            serde_json::json!({"a": [{"c": 0}]}),
+            serde_json::json!({"a": [[1]]}),
+            serde_json::json!({"a": {"b": [1]}}),
+            serde_json::json!({"a": {"b": [{"c": 0}]}}),
+            serde_json::json!({"a": {"b": {"c": [{"d": "x"}]}}}),
+            serde_json::json!({"a": 4096}),
+            serde_json::json!({"a": [1, 2, 3]}),
+            serde_json::json!({"a": {"b": 0}}),
+        ] {
+            let def = PersistedActor { name: "p".into(), language: "steel".into(), source: "x".into(), idle_ttl_secs: None, schema: Some(probe.clone()) };
+            let m2 = MqStore::mem();
+            persist(&m2, &def).unwrap();
+            let all = load_all(&m2).unwrap();
+            assert!(all[0].schema.is_some(), "roundtrip failed for {probe}");
+        }
+        let full = serde_json::json!({
+            "storage": {"collections": {"notes": {"schema": {
+                "key_len": 8,
+                "key_fields": [{"name":"id","ty":"U64","width":8,"offset":0,"tag":0}],
+                "layout_version": 1,
+                "hot_width": 8,
+                "payload_header_len": 3,
+                "hot_fields": [{"name":"count","ty":"U64","width":8,"offset":0,"tag":0}],
+                "cold_fields": [],
+                "slots": {"primary":0,"dynamic":1,"dict_id":2,"dict_name":3,"declared_index_base":4096,"declared_reduce_base":8192,"junction_base":12288}
+            }}}}
+        });
+        let def = PersistedActor {
+            name: "big".into(),
+            language: "steel".into(),
+            source: "(define (execute a) a)".into(),
+            idle_ttl_secs: None,
+            schema: Some(full),
+        };
+        persist(&meta, &def).unwrap();
+        let all = load_all(&meta).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].schema.is_some(), "big schema must round-trip");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

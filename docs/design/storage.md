@@ -103,7 +103,7 @@ impl<T> AuraCollection<T> where T: Serialize + DeserializeOwned + EntityKeyGener
 
 共识不通过「出现第二个写入者」触发——联邦内部没有这个路径：多控制面部署是方向性倒退（推翻联邦而非扩展点）；引擎内部元数据保持控制平面只写面（只有控制平面能写），写入者永远单一；「全局唯一配置」在联邦语义下不存在——每节点独立是裁决而非缺陷。若未来整体转向逻辑单集群架构，那是推翻 ADR-0013 的新裁决，不是本架构内的扩展点。原 `Distribution` trait（`propose(cmd)` Raft 提案接口）已随本裁决删除。
 
-**Actor 完全不感知底层引擎**——`ctx.state.get("history")` 的调用方式不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
+**Actor 完全不感知底层引擎**——`ctx.store.emit` 的指令形态不变，底层是 Fjall 同步返回还是 SlateDB 从 Block Cache 命中，对 Actor 透明。
 
 → 两条架构路径的完整对比见 [KV 存储引擎架构 §11](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#11-两条架构路径fjall-vs-slatedb)。三引擎（Fjall/SlateDB/SurrealKV）的 API 差异和选型指南见 [KV 存储引擎架构 §三引擎 API 对比](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
 
@@ -140,25 +140,28 @@ Actor 状态是 KV 模式（点查 + 前缀扫描），SQL 的关系代数和查
 
 **Lua 脚本的工程断层**：Redis 为挽救吞吐量引入的 Lua 脚本，除了单线程死锁风险外，还导致主技术栈（Rust/Go）与脚本层发生工程学与调试断层——失去强类型保护、单元测试和 IDE 感知提示。
 
-### 3.3 Actor 读写 API：ctx.state（单 API）
+### 3.3 Actor 读写 API：ctx.store.emit（单 API）
 
-Actor 的持久化面只有一套 API——`ctx.state` 本实例状态（KV）。独立 meta 实例与 `ctx.metadata` 已随 ADR-0025 撤销：actor 定义是数据面 okm 实例里的 `ActorDef` 表（ns 41），注册表/分片映射等是引擎内部结构，不对 Actor 暴露读写面。**登录状态不在别处**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
+Actor 的持久化面只有一套 API——`ctx.store.emit(op)`，携带 okm Collection 指令作用于**本类型声明的 collections**（ADR-0026 §3）：存储隔离在类型层，每个 Actor 类型占一个真实 okm ns，类型声明的 collections 的 schema 随 interface_schema 上传持久化；实例是类型 ns 内的 document。旧的 `ctx.state` 每实例一份平铺字段文档（`ctx_state_get/set/delete` 点读写）已退役——点模型无法承载 scan/index/reduce，被 collection 接口面取代。独立 meta 实例与 `ctx.metadata` 已随 ADR-0025 撤销：actor 定义是数据面 okm 实例里的 `ActorDef` 表（ns 41），注册表/分片映射等是引擎内部结构，不对 Actor 暴露读写面。**登录状态不在别处**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
 
 ```rust
-// Actor 自身状态（KV，数据面 okm 实例：本地 Fjall 或 SlateDB+S3）
-ctx.state.get("history")           // 读取对话历史
-ctx.state.set("history", value)    // 写入对话历史
+// Actor 状态（数据面 okm 实例：本地 Fjall 或 SlateDB+S3）
+// handler 经 ctx bridge 发一条存储指令（wire 上是 JSON，realm 转成 DynamicValue）
+ctx.store.emit(put_document("counters", key, doc))   // 写一个 document
+ctx.store.emit(get_document("counters", key))        // 读一个 document
+// 还有 scan（schema 声明的 AccessMethod）与 reduce（count/high_water/low_water 预设）
+//——同类型跨实例聚合 = 类型 ns 内的普通 scan/reduce，不再需要 projection actor
 ```
 
 | API | 数据类型 | 存储 | 复制 |
 |:---|:---|:---|:---|
-| `ctx.state` | Actor 状态（对话/偏好/缓存） | 数据面 okm 实例：SlateDB + S3（默认）/ Fjall | S3 自动处理 / 无复制 |
+| `ctx.store.emit` | Actor 状态（类型声明的 collections） | 数据面 okm 实例：SlateDB + S3（默认）/ Fjall | S3 自动处理 / 无复制 |
 
 ### 3.4 分布式架构拓扑
 
 ```
 ┌─────────────────────────────────────────────┐
-│ ctx.state (Actor 状态)  ──► 数据面 okm 实例   │ ← 本地 Fjall 或 SlateDB+S3
+│ ctx.store.emit (Actor 状态) ──► 数据面 okm 实例 │ ← 本地 Fjall 或 SlateDB+S3
 │ actor 定义/注册表等内部元数据 ──► 同一实例      │ ← 控制平面单写（ADR-0025）
 └─────────────────────────────────────────────┘
             │
@@ -178,7 +181,7 @@ ctx.state.set("history", value)    // 写入对话历史
   - 默认：SlateDB + S3（S3 处理复制，成本低 20 倍）
   - 延迟敏感：TiDB 模式（每个 Actor = 一个 Raft Group，写放大固定 3x）——外部现成方案，非默认路径
 
-- **单 API 单实例**：`ctx.state` 是 Actor 唯一的持久化面；actor 定义等引擎内部元数据住在同一个 okm 实例（ADR-0025），不对 Actor 暴露第二套 API。
+- **单 API 单实例**：`ctx.store.emit` 是 Actor 唯一的持久化面（ADR-0026 §3）；actor 定义等引擎内部元数据住在同一个 okm 实例（ADR-0025），不对 Actor 暴露第二套 API。
 
 → 详见 [Redis 批判：RESP 协议 vs 二进制序列化](https://github.com/orbsh/wiki/blob/main/redis-critique.md#8-resp-协议-vs-二进制序列化嵌入式架构的物理优势)。Fjall 的 API 设计和与其他引擎的对比见 [KV 存储引擎架构 §三引擎 API 对比](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md#三引擎-api-对比fjall--slatedb--surrealkv)。
 
@@ -192,7 +195,7 @@ ctx.state.set("history", value)    // 写入对话历史
 
 **为什么是默认推荐**：写入性能与 Fjall 相同（都是 MemTable 攒批），但 S3 处理复制（成本低 20 倍），计算节点无状态，运维最简单。Fjall 仅在不能用 S3 时（私有化、离线）考虑，且在大 Value 场景（KV 分离）、复杂本地事务、极致本地性能方面有结构性优势。Fjall 官方无 S3 支持计划。
 
-**Actor 状态读写**：§2.3 的 `ctx.state` 接口不变。SlateDB 的 Block Cache 命中时延迟仍在 μs 级（热数据），未命中时退化为 ms（S3 Range Get）。Agent 场景的热数据（最近对话）天然驻留 Block Cache，冷数据（历史记录）的 ms 级延迟可接受。
+**Actor 状态读写**：`ctx.store.emit` 指令形态不变。SlateDB 的 Block Cache 命中时延迟仍在 μs 级（热数据），未命中时退化为 ms（S3 Range Get）。Agent 场景的热数据（最近对话）天然驻留 Block Cache，冷数据（历史记录）的 ms 级延迟可接受。
 
 **Durability**：SlateDB 的 WAL 在本地磁盘，节点磁盘丢失时需等 S3 flush 完成才能恢复——flush 前的窗口期存在数据丢失风险。对于 Agent 场景（对话数据可重建），这个风险通常可接受。
 
@@ -214,7 +217,7 @@ ctx.state.set("history", value)    // 写入对话历史
 | `AuraStorage` trait + FjallEngine / SlateEngine | ✅ 已落地 | okm 两实例绑定，引擎可选 |
 | Distribution trait / RaftDist | ❌ 已删除 | ADR-0013：联邦架构内没有通向共识的路径 |
 | 配置加载（aura.kdl 两实例） | ✅ 已落地 | knus 解析，未知引擎启动报错 |
-| Actor 层适配 | 0 | ctx.state 接口不变 |
+| Actor 层适配 | 0 | ctx.store.emit 指令形态不变 |
 
 ### 3.8 用户意志主导的多模态路由机制（User-Driven Polyglot Routing）
 

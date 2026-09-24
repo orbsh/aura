@@ -12,7 +12,8 @@
 
 | 在 ctx 上 | 职责 |
 |:--|:--|
-| `ctx.state` | 本实例状态（KV，Fjall/SlateDB，不走网络路径） |
+| `ctx.store.emit(op)` | 本类型声明的 collections（ADR-0026 §3；寻址绑定类型 ns，跨类型不可表达） |
+| `ctx.interface_schema` | 本类型持久化的 interface_schema 副本（对自身声明形状的反射） |
 | `ctx.invoke()` | 唯一受控调用面——超时、审计、限流、可观测收口于此（§5.13） |
 
 不在 ctx 上的能力与其归属：
@@ -143,16 +144,17 @@ def interface_schema():
 **`returns` 是 Actor 级别的单一返回值声明。** 每个 Actor 有一个入口函数，多个事件映射到多个参数，返回一个值：
 
 ```python
-# Actor 入口函数 — 多事件映射到多参数
+# Actor 入口函数 — 多事件映射到多参数；状态住在本类型声明的 carts collection
 def handle(ctx, add_to_cart=None, remove_from_cart=None):
+    cart = ctx.store.emit(get_document("carts", ctx.self_id.key)) or {"items": []}
     if add_to_cart:
-        ctx.state["items"].append(add_to_cart["item"])
+        cart["items"].append(add_to_cart["item"])
     if remove_from_cart:
-        ctx.state["items"] = [i for i in ctx.state["items"]
-                              if i["id"] != remove_from_cart["item_id"]]
-    emit("cart_updated", {"user_id": ..., "items": ctx.state["items"]})
-    return {"cart_count": len(ctx.state["items"]),
-            "total": sum(i["price"] for i in ctx.state["items"])}
+        cart["items"] = [i for i in cart["items"] if i["id"] != remove_from_cart["item_id"]]
+    ctx.store.emit(put_document("carts", ctx.self_id.key, cart))
+    emit("cart_updated", {"user_id": ..., "items": cart["items"]})
+    return {"cart_count": len(cart["items"]),
+            "total": sum(i["price"] for i in cart["items"])}
 ```
 
 - 声明了 `returns` 的 Actor 支持 `ctx.invoke()` 同步调用——调用者通过 Actor 名获取返回值
@@ -391,16 +393,16 @@ emit("order_created", {"user_id": "A", ...})
 ```python
 from aura import emit
 
-# Actor 入口函数 — 多事件映射到多参数
+# Actor 入口函数 — 多事件映射到多参数；状态住在本类型声明的 carts collection
 def handle(ctx, add_to_cart=None, remove_from_cart=None):
+    cart = ctx.store.emit(get_document("carts", ctx.self_id.key)) or {"items": []}
     if add_to_cart:
-        ctx.state["items"].append(add_to_cart["item"])
-        # 已落盘（WAL + memtable）
+        cart["items"].append(add_to_cart["item"])
     if remove_from_cart:
-        ctx.state["items"] = [i for i in ctx.state["items"]
-                              if i["id"] != remove_from_cart["item_id"]]
-        # 已落盘（WAL + memtable）
-    emit("cart_updated", {"user_id": ..., "items": ctx.state["items"]})
+        cart["items"] = [i for i in cart["items"] if i["id"] != remove_from_cart["item_id"]]
+    ctx.store.emit(put_document("carts", ctx.self_id.key, cart))
+    # 已落盘（WAL + memtable）
+    emit("cart_updated", {"user_id": ..., "items": cart["items"]})
 ```
 
 ```scheme
@@ -414,12 +416,12 @@ def handle(ctx, add_to_cart=None, remove_from_cart=None):
                                       'item (hash 'type "object"))
                   'required '("user_id" "item"))))
   (lambda (ctx data)
-    (ctx-update! ctx "items"
-      (lambda (items) (append items (list (hash-ref data "item")))))
-    ;; 已落盘（WAL + memtable）
+    ;; 状态经 ctx.store.emit 写本类型声明的 collections（ADR-0026 §3）
+    (ctx_store_emit (hash "collection" "carts" "op" "put_document"
+                          "key" (hash "user" (hash-ref data "user_id"))
+                          "doc" (hash "items" (append items (list (hash-ref data "item"))))))
     (emit "cart_updated"
-      (list (cons "user_id" (hash-ref data "user_id"))
-            (cons "items" (ctx-ref ctx "items"))))))
+      (list (cons "user_id" (hash-ref data "user_id"))))))
 
 (on "remove_from_cart"
   (schema
@@ -710,7 +712,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 **持久队列（4.5c step 2b 裁决）**：事件投递的存储形态是 okm 内嵌持久分区，不是内存 broadcast——
 
 ```
-[mq-data][event][part_id][time]      ← 事件被动落盘（emit 即持久，与 ctx.state 主动保存同引擎）
+[mq-data][event][part_id][time]      ← 事件被动落盘（emit 即持久，与 Actor 状态的主动保存同引擎）
 [mq-cursor][event][part_id][actor]   ← 每订阅实例一个游标
 ```
 
@@ -719,7 +721,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 - **跳到最新（skip-to-now）向下兼容**：积压过多时，消费端可按消息时间把游标直接推到最新——丢弃陈旧积压、立即处理新事件。兜底阀门，让「消费不及时」可以选择性放弃而不必逐条消化
 - **多订阅者零复制**：N 个 Actor 监听同一事件 = 一个队列分区 + N 个游标；旧的 per-actor mailbox 模型下同一事件存 N 份的冗余从结构上消失
 - **保留 = 活跃订阅者的最小水位线**：一个 [ev][part] 队列只保留所有活跃订阅者游标仍需要的范围——最小游标之前的数据在写入路径 compaction 时删除。水位线的分母来自**路由注册表**（4.5b 持久化的 @on 元数据），不是原始 cursor 键：已永久退出的 actor 的陈旧游标不得把水位线钉死——注销 actor 时同步删其 cursor 行，它的积压随后跌破水位线、随普通 compaction 消失，无需独立回收器。**积压深度是 mq-data 前缀上的实时 okm reduce 计数**（写入 +1，水位线 compaction -1 unfold）——零扫描的运维面，skip-to-now 的决策直接读它
-- **诚实语义代价**：队列是缓冲不是存储——at-least-once 仅在「所有订阅者保持注册且在消费」期间成立。被永久注销且尚有未消费积压的订阅者，积压随之消失。与分层一致：ctx_state 是 durable truth，队列只保证「活着就能追上」
+- **诚实语义代价**：队列是缓冲不是存储——at-least-once 仅在「所有订阅者保持注册且在消费」期间成立。被永久注销且尚有未消费积压的订阅者，积压随之消失。与分层一致：Actor 状态（类型 collections）是 durable truth，队列只保证「活着就能追上」
 
 因果一致是甜区：保证逻辑正确性（因先于果），不需要全序的共识开销。进程内事件天然因果有序（同一线程内的 emit 序列）；同节点并发 Actor 的事件用向量时钟标记 happened-before 关系。元数据不跨节点复制（每节点独立），跨节点次序问题在单写入点模型下不存在。
 
@@ -750,7 +752,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 
 ### 5.9.1 tellus 状态机建模的可借鉴之处
 
-tellus 的核心立场是**「actor 是状态机，而不是带可变字段的对象」**——`State` 作为关联类型按值传入 `receive(state, msg) -> Control::Continue(next)/Stop`，可变数据全塞进 State 跨消息传递，actor 值本身只是 unit struct。这与 Aura 的 `ctx.state`（统一状态树、handler 内原地可变）是两个极端。Aura 不照搬其按值传递（多语言脚本 + KV 持久化下状态是跨语言 blob，无法也不应在 handler 间整体 move）。逐条权衡：
+tellus 的核心立场是**「actor 是状态机，而不是带可变字段的对象」**——`State` 作为关联类型按值传入 `receive(state, msg) -> Control::Continue(next)/Stop`，可变数据全塞进 State 跨消息传递，actor 值本身只是 unit struct。这与 Aura 的 `ctx.store.emit`（状态以 document 形式住在本类型声明的 collections 里，handler 经存储指令读写）是两个极端。Aura 不照搬其按值传递（多语言脚本 + KV 持久化下状态是跨语言 blob，无法也不应在 handler 间整体 move）。逐条权衡：
 
 **错误建模（tellus 的 `Error` 关联类型）——不引入第二条错误通道。**
 
@@ -844,7 +846,7 @@ Actor "一直存在"（逻辑上），按需激活/驱逐（物理上）。开�
 | InventoryActor | product_id | reserve_stock, release_stock | stock_reserved, out_of_stock |
 | PaymentActor | payment_id | charge, refund | payment_confirmed, payment_failed |
 
-跨聚合的交互通过场域事件完成，聚合内部直接操作 ctx.state。
+跨聚合的交互通过场域事件完成，聚合内部直接操作本类型 collections（ADR-0026 §3，经 ctx.store.emit）。
 
 ### 5.12 跨 Partition 查询
 
@@ -856,7 +858,7 @@ Actor 实例的状态是隔离的——CartActor #A 看不到 CartActor #B 的�
 | **Arrow HTAP** | Fjall KV blob 导出为列式格式，Polars 执行 ad-hoc 查询 | 中（列式扫描） | 任意维度临时查询 |
 | **Scatter-gather**（不推荐） | emit 查询事件，各实例响应后汇总 | 高（等最慢的实例） | 实例数已知且少的场景 |
 
-**投影 Actor**：一个独立的 Actor（如 DeptStatsActor），按 dept_id 分片，`on("cart_updated")` 持续把用户级数据聚合到部门级 ctx.state。查询时直接读该 Actor 的状态。这是场域模型的自然延伸——投影 Actor 就是一个普通的事件接收 Actor，不需要额外基础设施。原理与反应式架构的流计算预聚合一致：不查询时计算，而是持续监听事件流维护聚合状态。
+**投影 Actor**：一个独立的 Actor（如 DeptStatsActor），按 dept_id 分片，`on("cart_updated")` 持续把用户级数据聚合到部门级状态。查询时直接读该 Actor 的状态。这是场域模型的自然延伸——投影 Actor 就是一个普通的事件接收 Actor，不需要额外基础设施。原理与反应式架构的流计算预聚合一致：不查询时计算，而是持续监听事件流维护聚合状态。**ADR-0026 §3 后投影 Actor 只剩跨类型聚合一个用途**：同类型实例间的聚合 = 类型 ns 内的普通 scan/reduce，不再需要专门的投影 Actor。
 
 **Arrow HTAP**：[Arrow 大一统 HTAP 引擎](https://github.com/orbsh/wiki/blob/main/arrow-unified-htap-engine.md) 解决了 ad-hoc 查询问题——Fjall 的 KV blob 可以通过 Arrow 列式化 + Polars 执行多维度扫描、过滤、聚合。适合报表、BI、后台管理等无法预先定义的查询场景。
 
@@ -917,9 +919,11 @@ async def handle(ctx, add_to_cart=None):
         # 调用场域内 Actor（同步等待返回值）
         charge = await ctx.invoke("charge_processor", {"user_id": add_to_cart["user_id"], "amount": 100})
 
-        ctx.state["items"].append(add_to_cart["item"])
+        cart = ctx.store.emit(get_document("carts", ctx.self_id.key)) or {"items": []}
+        cart["items"].append(add_to_cart["item"])
+        ctx.store.emit(put_document("carts", ctx.self_id.key, cart))
         # 已落盘（WAL + memtable）
-        emit("cart_updated", {"user_id": add_to_cart["user_id"], "items": ctx.state["items"]})
+        emit("cart_updated", {"user_id": add_to_cart["user_id"], "items": cart["items"]})
 ```
 
 `ctx.invoke()` 是同步语义——`await` 期间当前 Actor 实例阻塞（串行语义符合预期），其他实例不受影响。HTTP 和 Actor 调用在调用者视角完全一致：`ctx.invoke(name, data)` 拿到结果。

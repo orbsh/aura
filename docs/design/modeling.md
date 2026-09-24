@@ -37,19 +37,20 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 - **一个队列多个订阅者**是结构性的：多个 Actor 类型可监听同一事件（如 `order.created` 同时被 `inventory` 和 `audit` 消费），各自有独立 cursor，互不干扰。
 - **直接调用（`ctx_invoke`）是例外路径**：用于请求-响应形态，载荷必须声明目标 `{type, key, handler, args}`——能用事件表达的协作不用直接调用，事件留下投递记录且天然多订阅。
 
-## 第三步：状态只放实例级
+## 第三步：状态是本类型的 collections
 
-`ctx.state` 是本实例的 KV 状态（`ctx_state_get/set/delete`），按字段独立落盘、随激活/休眠整体载入写回。建模约束：
+状态存储在类型层（ADR-0026 §3）：每个 Actor 类型占一个真实 okm ns，类型声明自己的 collections（schema 随 interface_schema 上传持久化），实例是类型 ns 内的 document；handler 经 `ctx.store.emit(op)` 读写。建模约束：
 
-- **只放本实例恒等归属的数据**：购物车实例放条目列表；群聊实例放成员表、最近消息。把其它实例的数据复制进来会产生第二真相源。
-- **跨实例读取不可表达**：这是设计而非限制——跨实例的数据协作走事件（对方 Actor 处理后 emit 结果），或直接调用取回。
-- **实例状态不跨节点复制**（联邦裁决 ADR-0013）：数据跟随所属节点；节点级部署选择见 partitioning.md §5。
+- **collection 里只放本类型恒等归属的数据**：购物车类型放条目 document；群聊类型放成员表、最近消息。把别的类型的数据复制进来会产生第二真相源。
+- **跨类型读取不可表达**：这是设计而非限制——存储寻址在注册时绑定类型 ns，跨类型的数据协作走事件（对方 Actor 处理后 emit 结果），或直接调用取回。
+- **同类型跨实例读取是普通 scan/reduce**：同类型的 collections 对全部实例可见——这正是类型级隔离的用意（该类型的代码是受信逻辑）。
+- **状态不跨节点复制**（联邦裁决 ADR-0013）：数据跟随所属节点；节点级部署选择见 partitioning.md §5。
 
 ## 第四步：跨实例聚合走投影 Actor
 
 跨分区查询（统计部门所有用户的购物车、某用户在哪些群）不能 JOIN 也不该全扫——用**投影 Actor**：
 
-- 一个普通的事件接收 Actor，按自己的维度分区（如按 dept_id 或 user_id），`@on` 监听上游实例 emit 的事件，持续把事件聚合进自己的 ctx.state。
+- 一个普通的事件接收 Actor，按自己的维度分区（如按 dept_id 或 user_id），`@on` 监听上游实例 emit 的事件，持续把事件聚合进自己的 collections。**同类型实例间的聚合不再需要投影**（ADR-0026 §3：类型 ns 内的普通 scan/reduce）；投影只剩跨类型预计算一个用途。
 - 查询时直接读投影实例的状态（直接调用）——原理与流计算预聚合一致：不查询时计算。
 - 投影是**可重建的衍生数据**：源头事件流是真相，投影状态丢失可从事件回放重建（mq 队列保留活跃订阅者水位线之上的数据）。
 
@@ -58,7 +59,7 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 ("cart","u2") ──emit cart_updated──►    │
                                         ▼
                         ("dept_stats", "d7")  ← 按 dept_id 分区的投影
-                        ctx.state: { dept_total, ... }
+                        dept_totals collection: { dept_total, ... }
                                         ▲
                             查询：ctx_invoke(dept_stats, "d7")
 ```
@@ -75,7 +76,7 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 
 ## 高频状态形态：游戏房间（fjall 直写 vs session 内存）
 
-实时游戏房间是状态频率的极端案例，它逼出一个此前不明确的边界——**ctx.state 直写 fjall 能扛到什么频率，超过之后才需要 session 内存**。
+实时游戏房间是状态频率的极端案例，它逼出一个此前不明确的边界——**collection 直写 fjall 能扛到什么频率，超过之后才需要 session 内存**。
 
 先算账：100 玩家 × 20Hz tick = 2000 字段写/s/房间。fjall 直写（进程内，无序列化协议往返、无 socket、无 RTT）单条成本 ~1µs，一个房间占单核 ~0.2%——**fjall 直写在休闲/中度房间规模下完全可行**。对比外置 Redis（同量级写要付 ~100µs RTT + 全部房间排队在一个单线程 event loop 上），进程内引擎快两个量级；这是「层级是物理约束」的又一层应用：状态消费方（handler）和存储在同一个进程里时，跨进程存储（Redis/Kafka）结构性劣势，不是调优问题。
 
@@ -88,16 +89,16 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 
 ```
 fjall 直写（默认，休闲/中度）              session 内存（重度：更高 tick / 更多字段）
-  每帧整帧快照 put 进 ctx.state             热状态活在 resident session（进程内存）
+  每帧整帧快照 put 进 collection             热状态活在 resident session（进程内存）
   = 单次原生编码写，~µs 级                  = 零序列化、零编码，内存数组访问
   崩溃恢复免费（状态永远在引擎里）           崩溃恢复走事件回放（MQ 分区回放输入流
-  无双权威问题                              重建）或低频 checkpoint 进 ctx.state（丢 N 秒）
+  无双权威问题                              重建）或低频 checkpoint 进 collection（丢 N 秒）
 ```
 
 选择判据（按优先序）：
 
 1. **默认 fjall 直写**——它是结构上更干净的形态：单一真相源（状态永远在引擎）、崩溃恢复免费、运维面为零。先确认预算（写频率 × 字段数 × 房间数 vs 0.2%/房间的实测），不要凭直觉跳到内存方案。
-2. **session 内存只在 fjall 直写预算超限时切**——且切过去要同步引入恢复方案（事件回放优先：输入事件已在 MQ 分区里持久化，回放 = 现有 backlog scan + cursor，snapshot 只是回放加速），并接受双权威边界（session 内存是热权威、ctx.state 是低频真相）。
+2. **session 内存只在 fjall 直写预算超限时切**——且切过去要同步引入恢复方案（事件回放优先：输入事件已在 MQ 分区里持久化，回放 = 现有 backlog scan + cursor，snapshot 只是回放加速），并接受双权威边界（session 内存是热权威、collection 是低频真相）。
 3. **无论哪种形态，输入事件按 tick 合帧**（客户端 20Hz 上行、服务端同 tick 输入合并成一条事件落 MQ）——这是实时网游的 input sampling 标准做法，MQ 持久写路径的量级由此决定。
 
 踩线判据一句话：**fjall 直写是默认；session 内存是为「帧预算超限 + 已有回放/检查点方案」准备的升级，不是起点**。

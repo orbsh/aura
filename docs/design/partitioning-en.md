@@ -112,27 +112,30 @@ segments (the okm key discipline — no textual separators):
   mq/state)
 - **slot (1 byte)**: access-method discriminator within the table
   (0 = primary entry); all index entries of one table share its ns segment
-- **Instance state fields**: each ctx_state field is one independent KV
-  entry, the field name encoded at the tail of the key
-  (`ctx_state_get/set/delete` are point reads/writes over this keyspace)
+- **Actor state**: instance state is NOT one flat document per instance —
+  the type declares its collections inside its own ns (schema persisted
+  with the interface_schema at upload), and handlers read/write through
+  `ctx.store.emit(op)` carrying okm Collection instructions
+  (put/get_document, fields, scan, reduce); same-type cross-instance
+  aggregation is an ordinary scan/reduce inside the type's ns.
 
-Cross-instance (Actor-instance, not okm-instance) isolation: user
-namespaces wrap the shared engine in a `PrefixStore` that prepends
-`[2B len][ns]` at the outermost byte — different users' keyspaces within
-one physical engine are structurally separated, and cross-namespace access
-is not expressible at the type level.
+User namespaces (Phase 3.6) are orthogonal to type nss: the namespace
+prefix wraps the outermost layer (`MqStore::namespaced`), the type nss
+live inside — different users' keyspaces within one physical engine are
+structurally separated, and cross-namespace access is not expressible at
+the type level.
 
 ## 4. Serialization boundary: load on activation, flush on sleep
 
 An instance in memory is a live object (a Rust handler or a script); **the
 lifecycle of partition state is decoupled from instance residency**:
 
-- **Activation (on_wake)**: all fields for that `(actor_type, key)` are
-  bulk-read back from the StateStore, rebuilding the in-memory state
-- **Sleep (on_sleep/evict)**: in-memory state is written back to the
-  StateStore and the resident released — scale-to-zero drops the resident,
-  not the data (locked by acceptance tests: script-actor state survives
-  eviction)
+- **Activation (on_wake)**: after the resident is released the data
+  remains in the type's collections; the next touch reactivates the
+  instance and reads/writes on demand
+- **Sleep (on_sleep/evict)**: the resident is released — scale-to-zero
+  drops the resident, not the data (locked by acceptance tests:
+  script-actor state over a declared collection survives eviction)
 - Phase 6.5's resident window optimizes this boundary: within the retention
   window, consecutive same-partition calls flow through in-memory oneshots
   with zero persistence; state is flushed and the resident released only at

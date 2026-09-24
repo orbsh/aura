@@ -83,11 +83,13 @@ values — never a panic.
 **Host functions** (the ctx bridge, Phase 2.5): scripts may call the
 following — each takes one JSON argument and returns a JSON value:
 
-- `ctx_state_get(field)` → `{"present": bool, "value": ...}` (reads this
-  instance's state field; **this instance only** — cross-instance access
-  is not expressible)
-- `ctx_state_set({"field": ..., "value": ...})` → `{"ok": true}`
-- `ctx_state_delete(field)` → `{"ok": true}`
+- `ctx_store_emit(op)` → the operation's result (one storage instruction:
+  collection name + operation + arguments, over **the type's declared
+  collections** — ADR-0026 §3; storage addressing is bound to the type's
+  ns, cross-type access is not expressible; a type that declares no
+  storage schema errors — there is no ctx.store surface)
+- `ctx_interface_schema(arg)` → the type's persisted interface_schema copy
+  (handlers reflecting over their own declared shape)
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
   Actor's return value (blocking wait through the unified call model;
   timeout = failure value)
@@ -121,10 +123,11 @@ it becomes the type definition's metadata source.
 @on("add_to_cart", key="user_id")
 def add(args):
     # args: the decoded JSON value (dict/list/...), not a string
-    ctx_state_set('{"field": "visits", "value": 1}')   # host fns take a JSON string
-    got = ctx_state_get('{"field": "visits"}')
+    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+                               "key": {"id": 1}, "doc": {"visits": 1}}))   # host fns take a JSON string
+    got = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
     echo = ctx_invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
-    return {"stored": got["value"], "echo": echo["x"]}
+    return {"stored": got["visits"], "echo": echo["x"]}
 
 @on("remove_from_cart")
 def remove(args):
@@ -167,10 +170,11 @@ Notes:
 ;; singleton), handler.
 (on "add_to_cart" "user_id"
   (lambda (args)
-    (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
-    (let* ((got (ctx_state_get "{\"field\": \"visits\"}"))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" 1) "doc" (hash "visits" 1)))
+    (let* ((got (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
            (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
-      (hash "visits" (hash-ref got "value")
+      (hash "visits" (hash-ref got "visits")
             "echo" (hash-ref echoed "x")))))
 
 (on "order.*" "" (lambda (args) #t))   ;; wildcard → wildcard_receives

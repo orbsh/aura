@@ -38,19 +38,20 @@ Events are the only collaboration channel between actors (field pub/sub, see act
 - **One queue, many subscribers** is structural: several actor types may consume the same event (e.g. `order.created` feeds both `inventory` and `audit`), each with its own cursor, mutually independent.
 - **Direct calls (`ctx_invoke`) are the exception path**: for request-response shapes; the payload must declare the target `{type, key, handler, args}`. Prefer events when they can express the collaboration — events leave a delivery record and admit multiple subscribers by nature.
 
-## Step 3: keep state instance-scoped
+## Step 3: state lives in the type's collections
 
-`ctx.state` is the instance's own KV state (`ctx_state_get/set/delete`), durable per field, loaded/written wholesale with wake/sleep. Modeling constraints:
+State is stored at the TYPE level (ADR-0026 §3): each actor type occupies one real okm ns, the type declares its collections (schema persisted with the interface_schema at upload), and instances are documents inside the type's ns; handlers read/write through `ctx.store.emit(op)`. Modeling constraints:
 
-- **Only data the instance standingly owns**: a cart instance holds its line items; a channel instance holds its member table and recent messages. Copying another instance's data in creates a second source of truth.
-- **Cross-instance reads are inexpressible**: by design, not limitation — cross-instance collaboration goes through events (the other actor processes and emits the result), or a direct call fetches the answer.
-- **Instance state does not replicate across nodes** (federation ruling ADR-0013): data follows its home node; node-level deployment choices are in partitioning-en.md §5.
+- **Collections hold only data the type standingly owns**: the cart type holds its line-item documents; the channel type holds its member table and recent messages. Copying another type's data in creates a second source of truth.
+- **Cross-type reads are inexpressible**: by design, not limitation — storage addressing binds to the type's ns at registration; cross-type collaboration goes through events (the other actor processes and emits the result), or a direct call fetches the answer.
+- **Same-type cross-instance reads are an ordinary scan/reduce**: the type's collections are visible to all its instances — that is what type-level isolation is FOR (the type's code is trusted logic).
+- **State does not replicate across nodes** (federation ruling ADR-0013): data follows its home node; node-level deployment choices are in partitioning-en.md §5.
 
 ## Step 4: cross-instance aggregation goes through projection actors
 
 Cross-partition queries (aggregate every user's cart in a department; which channels a user is in) cannot JOIN and must not full-scan — use a **projection actor**:
 
-- An ordinary event-receiving actor, partitioned along its own dimension (dept_id or user_id), `@on`-subscribed to events the upstream instances emit, continuously aggregating them into its own ctx.state.
+- An ordinary event-receiving actor, partitioned along its own dimension (dept_id or user_id), `@on`-subscribed to events the upstream instances emit, continuously aggregating them into its own collections. **Same-type instance aggregation no longer needs a projection** (ADR-0026 §3: an ordinary scan/reduce inside the type's ns); projections remain only for cross-type precomputation.
 - Queries read the projection instance's state directly (direct call) — the same principle as stream pre-aggregation: computed when not queried.
 - A projection is **rebuildable derived data**: the upstream event stream is the truth; a lost projection state can be rebuilt by replaying events (mq queues retain the range above active subscribers' watermarks).
 
@@ -59,7 +60,7 @@ Cross-partition queries (aggregate every user's cart in a department; which chan
 ("cart","u2") ──emit cart_updated──►      │
                                           ▼
                           ("dept_stats", "d7")  ← projection partitioned by dept_id
-                          ctx.state: { dept_total, ... }
+                          dept_totals collection: { dept_total, ... }
                                           ▲
                         query: ctx_invoke(dept_stats, "d7")
 ```
@@ -76,7 +77,7 @@ The criterion in one sentence: **stay resident when the money saved (activation 
 
 ## High-frequency state shape: game rooms (direct fjall writes vs session memory)
 
-A real-time game room is the extreme case of state frequency, and it forces a boundary that was previously implicit — **how far direct ctx.state writes into fjall scale, and when session memory becomes necessary**.
+A real-time game room is the extreme case of state frequency, and it forces a boundary that was previously implicit — **how far direct collection writes into fjall scale, and when session memory becomes necessary**.
 
 The arithmetic first: 100 players × 20Hz tick = 2,000 field writes/s per room. A direct fjall write (in-process, no wire protocol round trip, no socket, no RTT) costs ~1µs, so a room consumes ~0.2% of one core — **direct fjall writes comfortably cover casual and mid-scale rooms**. Compare an external Redis at the same write rate: ~100µs RTT per write plus every room queued behind a single-threaded event loop. The in-process engine is two orders of magnitude faster; this is the "hierarchy is a physical constraint" principle applied again — when the state's consumer (the handler) and the storage live in the same process, out-of-process storage (Redis/Kafka) is a structural disadvantage, not a tuning problem.
 
@@ -90,18 +91,19 @@ Beyond that scale (denser ticks, more fields, more rooms), switch to the **sessi
 ```
 Direct fjall writes (default, casual/mid-scale)    Session memory (heavy: denser ticks / more fields)
   One whole-frame snapshot put per tick into        Hot state lives in the resident session
-  ctx.state = one native-encoded write, ~µs          (process memory) = zero serialization,
+  the collection = one native-encoded write,          (process memory) = zero serialization,
+  ~µs                                                 plain memory-array access
   Crash recovery for free (state is always in        plain memory-array access
   the engine), no dual-authority problem             Crash recovery via event replay (the MQ
                                                       partition replays the input stream) or
-                                                      low-frequency checkpoints into ctx.state
-                                                      (lose N seconds)
+                                                      low-frequency checkpoints into the
+                                                      collection (lose N seconds)
 ```
 
 Decision criteria, in priority order:
 
 1. **Default to direct fjall writes** — the structurally cleaner shape: single source of truth (state is always in the engine), free crash recovery, zero ops surface. Confirm the budget first (write rate × field count × room count against the ~0.2%/room measurement); do not jump to memory on instinct.
-2. **Session memory only when the direct-write budget is exceeded** — and switching brings its recovery plan with it (event replay first: input events are already persisted in the MQ partition; replay = the existing backlog scan + cursor; a snapshot is merely a replay accelerator) and accepts the dual-authority boundary (session memory is the hot authority, ctx.state the low-frequency truth).
+2. **Session memory only when the direct-write budget is exceeded** — and switching brings its recovery plan with it (event replay first: input events are already persisted in the MQ partition; replay = the existing backlog scan + cursor; a snapshot is merely a replay accelerator) and accepts the dual-authority boundary (session memory is the hot authority, the collection the low-frequency truth).
 3. **Either way, frame-merge the input events** (clients sample at 20Hz; the server merges all inputs within one tick into a single event before it lands in the MQ) — standard input sampling for real-time multiplayer; it is what bounds the MQ write path.
 
 One-line criterion: **direct fjall writes are the default; session memory is an upgrade for "frame budget exceeded AND a replay/checkpoint plan exists", never the starting point.**

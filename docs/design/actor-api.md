@@ -49,9 +49,8 @@ def audit(args): ...
 
 **Host 函数**（ctx bridge，Phase 2.5）：脚本内可调用以下名字的函数——每个接受一个 JSON 参数，返回 JSON 值：
 
-- `ctx_state_get(field)` → `{"present": bool, "value": ...}`（读本实例状态字段；**只能读本实例**——跨实例访问不可表达）
-- `ctx_state_set({"field": ..., "value": ...})` → `{"ok": true}`
-- `ctx_state_delete(field)` → `{"ok": true}`
+- `ctx_store_emit(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
+- `ctx_interface_schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标 Actor 的返回值（阻塞等待，走统一调用模型，超时=失败值）
 
 **语言能力差异**：
@@ -76,10 +75,11 @@ def audit(args): ...
 @on("add_to_cart", key="user_id")
 def add(args):
     # args: 解码后的 JSON 值（dict/list/...），非字符串
-    ctx_state_set('{"field": "visits", "value": 1}')   # host 函数传 JSON 字符串
-    got = ctx_state_get('{"field": "visits"}')
+    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+                               "key": {"id": 1}, "doc": {"visits": 1}}))   # host 函数传 JSON 字符串
+    got = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
     echo = ctx_invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
-    return {"stored": got["value"], "echo": echo["x"]}
+    return {"stored": got["visits"], "echo": echo["x"]}
 
 @on("remove_from_cart")
 def remove(args):
@@ -111,10 +111,11 @@ def interface_schema(args=None):
 ;; 参数：事件名、key 字段（空字符串 = 单例）、handler
 (on "add_to_cart" "user_id"
   (lambda (args)
-    (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
-    (let* ((got (ctx_state_get "{\"field\": \"visits\"}"))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" 1) "doc" (hash "visits" 1)))
+    (let* ((got (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
            (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
-      (hash "visits" (hash-ref got "value")
+      (hash "visits" (hash-ref got "visits")
             "echo" (hash-ref echoed "x")))))
 
 (on "order.*" "" (lambda (args) #t))   ;; 通配符 → wildcard_receives

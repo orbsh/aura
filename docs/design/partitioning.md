@@ -33,7 +33,7 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 
 - **注册**：`engine.register(ActorType::simple("echo", handler))` 或 `ActorType::script("py-ctx", "python", source, entry)`——类型名在这里定，body（Rust handler 或脚本）挂在类型上，所有实例共享同一份代码
 - **路由**：`router.on("order.created", "cart", "user_id")` 的事件投递目标是 `(类型, 从事件提取的 key)`；`ctx_invoke` 也用 `{type, key}` 定位目标
-- **状态布局**：实例状态的键编码第一段就是 type（`[4B len(type)][type][4B len(key)][key][field]`）——同类型的实例键空间聚在一起，前缀扫描能按类型枚举实例
+- **状态布局**：存储隔离在类型层（ADR-0026 §3）——每个 Actor 类型占一个真实 okm ns，类型声明自己的 collections，实例是其中的 document；实例键只回答「谁串行处理这条消息」，不再决定存储布局
 - **分片归属**：`(actor_type, key)` 合起来构成完整的分区标识；单看 key 不够（"alice" 在 `cart` 和 `session` 里是两个无关实例）
 
 本质是**类与实例的关系**：actor_type 是部署和代码分发的单位（热更新按类型换定义），实例是串行化和状态归属的单位（按 `(type, key)` 寻址、分片、恢复）。
@@ -59,16 +59,16 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 
 - **ns（2 字节）**：okm 层的表/边表 namespace，单一 okm 实例内统一编址（ADR-0025 后 actor 定义与数据同实例：ActorDef ns 41 与 mq/state 并列）
 - **slot（1 字节）**：实例内访问方法判别（0 = 主条目），同一张表的全部索引条目共享 ns 段
-- **实例状态字段**：Actor 的 ctx_state 每个字段是一个独立 KV 条目，字段名直接编进键尾（`ctx_state_get/set/delete` 即对这段键空间的点读写）
+- **Actor 状态**：实例状态不是每实例一份平铺 document——类型在自己的 ns 内声明 collections（schema 随 interface_schema 上传持久化），handler 经 `ctx.store.emit(op)` 以 okm Collection 指令读写（put/get_document、fields、scan、reduce）；同类型跨实例聚合 = 类型 ns 内的普通 scan/reduce。
 
-跨实例（Actor 实例，非 okm 实例）隔离：用户 namespace 用 `PrefixStore` 嵌套前缀 `[2B len][ns]` 加在最外层——同一物理引擎内不同用户的键空间结构性分离，跨 namespace 的访问在类型上就不可表达。
+用户 namespace（Phase 3.6）与类型 ns 正交：namespace 前缀加在最外层（`MqStore::namespaced`），类型 ns 在其内——同一物理引擎内不同用户的键空间结构性分离，跨 namespace 的访问在类型上就不可表达。
 
 ## 4. 序列化边界：激活时载入，休眠时写回
 
 实例在内存中是活对象（Rust handler 或脚本），**分区状态的生命周期与实例驻留解耦**：
 
-- **激活（on_wake）**：从 StateStore 批量读回该 `(actor_type, key)` 的全部字段，重建内存态
-- **休眠（on_sleep/evict）**：内存态写回 StateStore，驻留释放——scale-to-zero 丢的是驻留，不丢数据（验收测试锁定：脚本 Actor 状态跨 eviction 存活）
+- **激活（on_wake）**：驻留释放后数据仍在类型的 collections 里，下次触发重新激活、按需读写
+- **休眠（on_sleep/evict）**：驻留释放——scale-to-zero 丢的是驻留，不丢数据（验收测试锁定：声明 collection 的脚本 Actor 状态跨 eviction 存活）
 - Phase 6.5 的驻留窗口是这条边界上的优化：retention 窗口内同一 partition 的连续调用全走内存 oneshot，零持久化；窗口结束才落盘释放
 
 ## 5. 集群层：分片映射与路由不变性（Phase 5，未实施）

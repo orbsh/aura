@@ -111,15 +111,30 @@ fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
         }
         serde_json::Value::String(s) => Value::Str(s.clone()),
         serde_json::Value::Array(items) => {
-            // Bytes arrive as arrays of small ints — the JSON view of
-            // FixedBytes key fields.
-            let bytes: Result<Vec<u8>, _> = items.iter().map(|i| i.as_u64().map(|x| x as u8).ok_or_else(|| "array element not a byte".to_string())).collect();
+            // All-byte arrays are the JSON view of FixedBytes key fields;
+            // anything else is a heterogeneous composite (legitimate in
+            // the dynamic segment — schema-declared paths reject it).
+            let bytes: Result<Vec<u8>, _> = items.iter().map(|i| i.as_u64().map(|x| x as u8).ok_or_else(|| "not a byte".to_string())).collect();
             match bytes {
                 Ok(b) => Value::Bytes(b),
-                Err(_) => return Err("nested arrays are not storage values".into()),
+                Err(_) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for i in items {
+                        out.push(json_to_value(i)?);
+                    }
+                    Value::Array(out)
+                }
             }
         }
-        serde_json::Value::Object(_) => return Err("objects are documents, not field values".into()),
+        serde_json::Value::Object(map) => {
+            // Nested object: legitimate as a dynamic-segment field value;
+            // schema-declared fixed-width paths reject it downstream.
+            let mut m = ValueMap::new();
+            for (k, v) in map {
+                m.insert(k.clone(), json_to_value(v)?);
+            }
+            Value::Obj(m)
+        }
     })
 }
 
@@ -144,6 +159,8 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Null => serde_json::Value::Null,
         Value::Bytes(b) => serde_json::Value::Array(b.iter().map(|&x| serde_json::json!(x)).collect()),
         Value::Str(s) => serde_json::json!(s),
+        Value::Obj(m) => map_to_json(m),
+        Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
     }
 }
 
@@ -207,8 +224,42 @@ pub fn execute(
             coll.delete(&k)?;
             Ok(serde_json::json!({ "ok": true }))
         }
-        StoreOpKind::PutFields { .. } | StoreOpKind::GetFields { .. } | StoreOpKind::DeleteFields { .. } => {
-            Err("field-level ops land with the dynamic-segment bridge on DynamicCollection (pending)".into())
+        // Field-level ops ride the DYNAMIC segment (okm-dynamic's
+        // put/get/delete_fields): name-keyed values outside the schema's
+        // declared vocabulary, whole-map replace on write. Scalar values
+        // only — an object is a document, not a field value.
+        StoreOpKind::PutFields { key, fields } => {
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            coll.put_fields(&k, &json_map(fields, "fields")?)?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        StoreOpKind::GetFields { key, fields } => {
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            match coll.get_fields(&k)? {
+                Some(m) => {
+                    if fields.is_empty() {
+                        return Ok(map_to_json(&m));
+                    }
+                    let mut out = serde_json::Map::new();
+                    for name in fields {
+                        match m.get(name) {
+                            Some(v) => {
+                                out.insert(name.clone(), value_to_json(v));
+                            }
+                            // Absent name: omitted from the result (the
+                            // caller distinguishes by key presence).
+                            None => {}
+                        }
+                    }
+                    Ok(serde_json::Value::Object(out))
+                }
+                None => Ok(serde_json::Value::Null),
+            }
+        }
+        StoreOpKind::DeleteFields { key } => {
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            coll.delete_fields(&k);
+            Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::Scan { index, value, limit } => {
             let slots = plan.indexes.get(&op.collection).ok_or_else(|| format!("collection `{}` declares no indexes", op.collection))?;
@@ -472,6 +523,131 @@ mod scan_tests {
         assert_eq!(rg("peak", 2), serde_json::json!(20u64));
         // Absent group → null.
         assert!(rg("n", 99).is_null());
+    }
+
+    #[test]
+    fn field_level_ops_through_emit() {
+        let store = MqStore::mem();
+        let plan = StorePlan::from_schema(720, &serde_json::json!({
+            "storage": { "collections": { "notes": schema_json() } }
+        }))
+        .unwrap();
+        let put = |id: u64| StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::PutDocument {
+                key: serde_json::json!({ "id": id }),
+                doc: serde_json::json!({ "count": 1 }),
+            },
+        };
+        execute(&store, &plan, &put(1)).unwrap();
+
+        // Field write + read-back (whole map).
+        execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::PutFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: serde_json::json!({ "note": "hello", "weight": 9 }),
+            },
+        }).unwrap();
+        let get_all = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: vec![],
+            },
+        }).unwrap();
+        assert_eq!(get_all["note"], "hello");
+        assert_eq!(get_all["weight"], 9);
+
+        // Selective read: present names returned, absent omitted.
+        let get_some = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: vec!["note".into(), "ghost".into()],
+            },
+        }).unwrap();
+        assert_eq!(get_some.as_object().unwrap().len(), 1);
+        assert_eq!(get_some["note"], "hello");
+
+        // Whole-map replace: `note` is gone.
+        execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::PutFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: serde_json::json!({ "weight": 10 }),
+            },
+        }).unwrap();
+        let get_all = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: vec![],
+            },
+        }).unwrap();
+        assert_eq!(get_all.as_object().unwrap().len(), 1, "replace drops absent fields");
+
+        // Field map is independent of the primary document (dynamic
+        // segment REPLACES the slot-1 entry only; declared fields RMW).
+        let doc = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 1 }) },
+        }).unwrap();
+        assert_eq!(doc["count"], 1);
+
+        // Delete drops the whole field entry; document survives.
+        execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::DeleteFields { key: serde_json::json!({ "id": 1 }) },
+        }).unwrap();
+        let gone = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: vec![],
+            },
+        }).unwrap();
+        assert!(gone.is_null(), "no dynamic entry = null");
+        let doc = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 1 }) },
+        }).unwrap();
+        assert_eq!(doc["count"], 1, "primary document untouched by delete_fields");
+
+        // Composite values (nested object / heterogeneous array) round-trip
+        // through the dynamic segment.
+        execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::PutFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: serde_json::json!({
+                    "meta": { "depth": 2, "kind": "auto" },
+                    "tags": ["a", 3]
+                }),
+            },
+        }).unwrap();
+        let comp = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 1 }),
+                fields: vec![],
+            },
+        }).unwrap();
+        assert_eq!(comp["meta"]["depth"], 2);
+        assert_eq!(comp["meta"]["kind"], "auto");
+        assert_eq!(comp["tags"][0], "a");
+        assert_eq!(comp["tags"][1], 3);
+
+        // Distinct keys have distinct field maps.
+        execute(&store, &plan, &put(2)).unwrap();
+        let empty = execute(&store, &plan, &StoreOp {
+            collection: "notes".into(),
+            op: StoreOpKind::GetFields {
+                key: serde_json::json!({ "id": 2 }),
+                fields: vec![],
+            },
+        }).unwrap();
+        assert!(empty.is_null(), "other documents have no dynamic entry");
     }
 }
 

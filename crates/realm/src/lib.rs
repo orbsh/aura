@@ -321,7 +321,7 @@ impl Realm {
             let mut subs: Vec<(String, String, bool)> = Vec::new();
             if let Some(actor) = self.types.get(&id.actor_type) {
                 for route in self.router.routes_of(&id.actor_type) {
-                    let partition = if route.partition_key_field.is_empty() {
+                    let partition = if route.instance_key_field.is_empty() {
                         mq::SINGLETON.to_string()
                     } else {
                         id.key.clone()
@@ -834,10 +834,10 @@ impl Realm {
             // Queue identity: @on-declared key → per-(event, partition);
             // no key → per-event singleton queue. The key comes from the
             // event data (wiki §5.4), not the emitter.
-            let partition = if route.partition_key_field.is_empty() {
+            let partition = if route.instance_key_field.is_empty() {
                 mq::SINGLETON.to_string()
             } else {
-                data.get(&route.partition_key_field)
+                data.get(&route.instance_key_field)
                     .and_then(|v| v.as_str())
                     .unwrap_or("__default__")
                     .to_string()

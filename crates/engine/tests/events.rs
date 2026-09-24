@@ -1,5 +1,5 @@
 //! Phase 3 acceptance, as executable documentation: emit routing (the
-//! event name IS the reference), partition key from event data, wildcard
+//! event name IS the reference), instance key from event data, wildcard
 //! singleton routing, emits whitelist as the Realm boundary, dead events.
 
 use aura_actor::{ActorType, InstanceId};
@@ -31,7 +31,7 @@ fn counter_of(name: &'static str, events: &[&'static str]) -> ActorType {
 }
 
 #[tokio::test]
-async fn exact_route_partition_key_from_event_data() {
+async fn exact_route_instance_key_from_event_data() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(counter_of("cart", &["add_to_cart"])).await;
     {

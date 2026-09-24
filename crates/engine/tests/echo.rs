@@ -81,7 +81,7 @@ async fn unknown_actor_type_is_error_value() {
 }
 
 #[tokio::test]
-async fn partition_key_activates_distinct_instances() {
+async fn instance_key_activates_distinct_instances() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(echo_type()).await;
 
@@ -600,10 +600,10 @@ def audit(args):
     let routes = realm.router.matches("add_to_cart");
     assert_eq!(routes.len(), 1, "add_to_cart routed to cart");
     assert_eq!(routes[0].actor_type, "cart");
-    assert_eq!(routes[0].partition_key_field, "user_id");
+    assert_eq!(routes[0].instance_key_field, "user_id");
     let routes = realm.router.matches("remove_from_cart");
     assert_eq!(routes.len(), 1, "remove_from_cart routed (no key → singleton)");
-    assert_eq!(routes[0].partition_key_field, "");
+    assert_eq!(routes[0].instance_key_field, "");
     let routes = realm.router.matches("order.created");
     assert_eq!(routes.len(), 1, "order.* wildcard routed");
     assert!(realm.router.matches("unrelated").is_empty());

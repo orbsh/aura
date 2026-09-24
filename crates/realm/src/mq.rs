@@ -130,7 +130,7 @@ pub struct EventRoute {
     /// Mirror of the key's actor segment — index fields must be payload
     /// fields (the key is not one), so the by_actor scan reads this.
     pub actor_id: u32,
-    /// Empty = singleton subscription (no partition key); a wildcard
+    /// Empty = singleton subscription (no instance key); a wildcard
     /// subscription carries the PREFIX here (matching is the emit path's
     /// job) and `wildcard` is set.
     pub key_field: String,
@@ -365,7 +365,7 @@ pub fn append(
     let seq = time;
     t.put(&MqDataKey { event_id, part_id, time }, &MqData {});
     // Payload → dynamic segment, fully native. The emit chain guarantees
-    // an object top (routing reads the partition key from data fields;
+    // an object top (routing reads the instance key from data fields;
     // handlers receive objects) — no wrapping convention exists here or
     // in okm's set_object (its input type IS a map).
     let map = match payload {

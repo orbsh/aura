@@ -75,7 +75,7 @@ pub struct ActorType {
 }
 
 /// One event subscription: an event name (or wildcard pattern) + the
-/// partition key field it binds (empty = singleton consumer).
+/// instance key field it binds (empty = singleton consumer).
 #[derive(Clone, Debug)]
 pub struct ReceiveDecl {
     pub event: String,
@@ -108,7 +108,7 @@ impl ActorType {
         }
     }
 
-    /// Declare an event subscription on this type (exact event + partition
+    /// Declare an event subscription on this type (exact event + instance
     /// key field; empty key = singleton consumer).
     pub fn on(mut self, event: impl Into<String>, key_field: impl Into<String>) -> Self {
         self.receives.push(ReceiveDecl {
@@ -166,7 +166,7 @@ pub mod futures_boxed {
 /// Per-instance context. ADR-0011: exactly state / metadata / invoke.
 /// Metadata lands with Openraft (Phase 5); the surface reserves the name.
 pub struct Ctx {
-    /// This instance's identity: (actor type, partition key).
+    /// This instance's identity: (actor type, instance key).
     pub self_id: InstanceId,
     /// Instance state, backed by the runtime's StateStore. Reads hit the
     /// store; writes are per-field durable units.

@@ -2,10 +2,10 @@
 //!
 //! Design (wiki §5): the event name IS the reference. Actors never address
 //! each other directly — `emit(name, data)` reaches whoever registered
-//! `on(name)`; the partition key is extracted from event data, not from
+//! `on(name)`; the instance key is extracted from event data, not from
 //! the emitter's identity. Two routing layers:
 //!
-//! - exact: event name → routes (actor_type + partition_key_field)
+//! - exact: event name → routes (actor_type + instance_key_field)
 //! - wildcard: prefix `foo.` → singleton instance routes
 //!
 //! `emits` is a whitelist: an actor may only emit names it declared.
@@ -15,12 +15,12 @@
 use serde_json::Value;
 
 /// One registration: which actor type handles this event, and which field
-/// of the event payload carries the partition key.
+/// of the event payload carries the instance key.
 #[derive(Clone, Debug)]
 pub struct Route {
     pub actor_type: String,
     /// Field name in the event payload; empty = singleton instance.
-    pub partition_key_field: String,
+    pub instance_key_field: String,
     /// The event name as the handler sees it (kept so multi-event actors
     /// can dispatch; script actors receive a map keyed by event name once
     /// Phase 2.5 lands).
@@ -41,11 +41,11 @@ use std::collections::HashMap;
 
 impl EventRouter {
     /// Register a precise subscription: `on("order_created", key="user_id")`.
-    pub fn on(&mut self, event: impl Into<String>, actor_type: &str, partition_key_field: &str) {
+    pub fn on(&mut self, event: impl Into<String>, actor_type: &str, instance_key_field: &str) {
         let name = event.into();
         self.exact.entry(name.clone()).or_default().push(Route {
             actor_type: actor_type.into(),
-            partition_key_field: partition_key_field.into(),
+            instance_key_field: instance_key_field.into(),
             event: name,
         });
     }
@@ -58,7 +58,7 @@ impl EventRouter {
             prefix,
             Route {
                 actor_type: actor_type.into(),
-                partition_key_field: String::new(),
+                instance_key_field: String::new(),
                 event: pattern.to_string(),
             },
         ));

@@ -65,7 +65,7 @@ collection 及其键/索引声明搭乘既有的 Phase 4.5b upload 生命周期�
 
 ## Consequences
 
-- 现在（设计已接受，未实现）：`InstanceState` document 模型、`StateDocumentStore` seam、字段级 ctx bridge host fns 计划由类型化 ns 接口面取代。实施序列落为 PLAN Phase 4.9（op 集收窄、registry→ns 分配、InstanceState 退役、各语言 schema 声明、ctx.interface_schema 读取）。术语：okm 的 collection/document 取代旧的表/行措辞，本 ADR 与其 PLAN 条目通篇如此。
+- 已落地（2026-09-24，probe bbefac8 + aura 7828031）：退役完成——`realm/src/state.rs`（`StateDocumentStore`/`InstanceState`）整体删除；aura-actor 的 `StateStore` trait、`SharedStore`、`Ctx.state` 移除；`ctx_state_get/set/delete` host fns 及其 wire 臂（`HostOp::State`）从 engine 与 probe-protocol 删除。`ctx.store` 恰好暴露 `ctx.store.emit(op)` + `ctx.interface_schema`，作用于声明的 collections。**不留向后兼容糖**：退役的理由是模型裁决（点 document 被 collection 接口面取代），不是迁移成本核算——"已有外部用户"与"还没有外部用户"一样，都不是保留旧接口面的论据；模型正确性是唯一输入。`register_in` 与 `register` 走同一条内省+持久化路径，namespaced 类型得以解析出 ctx.store plan。Remote-probe actor 在 wire 上只保留 invoke（执行节点不持状态；`ctx_store_emit` 需要已解析的 plan = 4.5b）。Phase 4.9 余项：各语言 schema 声明、docs/wiki 清扫。
 - 串行化、instance 路由、timer、mq 语义均不动——本裁决只移动存储隔离。
 - projection actor 恰好保留在它一贯正当的位置：跨类型预计算。同类型聚合成为类型 ns 内的普通 scan。
 - prism 协议命名（`ev`、无方向）随 prism 侧连接平面工作落地（Phase 8）；aura 侧仅是文档。

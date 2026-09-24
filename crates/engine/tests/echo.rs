@@ -371,9 +371,9 @@ def interface_schema(args):
 def execute(args):
     cur = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
     ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
-                               "key": {"id": 1}, "doc": {"color": "blue"}}))
+                               "key": {"id": 1}, "doc": {"count": 1}}))
     echo = ctx_invoke(json.dumps({"type": "echo", "key": "ttl3", "handler": "execute", "args": {"ok": 7}}))
-    stored = "blue" if cur is None else (cur.get("color") or "blue")
+    stored = 1 if cur is None else (cur.get("count") or 1)
     return {"stored": stored, "echo": echo["ok"]}
 "#,
         ))
@@ -387,7 +387,7 @@ def execute(args):
         )
         .await
         .unwrap();
-    assert_eq!(out, serde_json::json!({"stored": "blue", "echo": 7}));
+    assert_eq!(out, serde_json::json!({"stored": 1, "echo": 7}));
 }
 
 // Residency is EPHEMERAL: idle eviction drops the VM with the instance
@@ -405,12 +405,12 @@ async fn idle_eviction_drops_the_resident_session() {
             r#"
 memory = 0
 
+@on("tick")
 def bump(args):
     global memory
     memory = memory + 1
     return {"memory": memory}
 "#,
-            Some("bump".into()),
         ))
         .await;
 
@@ -664,14 +664,6 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
         .expect("register store-keeper");
 
     let target = aura_actor::InstanceId { actor_type: "store-keeper".into(), key: "k".into() };
-
-    // DEBUG: introspect directly to see what schema comes back.
-    let src = r#"
-(define (interface_schema args)
-  (hash "storage" (hash "collections" (hash "notes" (hash "schema" (hash "key_len" 8))))))
-"#;
-    // probe with the FULL source from the registered actor
-
 
     // The type's plan resolved at registration: ctx.store is available.
     engine

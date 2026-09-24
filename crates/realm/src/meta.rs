@@ -257,6 +257,9 @@ mod ns_schema_tests {
     #[test]
     fn big_schema_roundtrip() {
         let meta = MqStore::mem();
+        // Shape matrix over the dynamic-segment codec: the nested-composite
+        // shapes (Obj inside Array etc.) are exactly what broke the persisted
+        // interface_schema before okm 0c2a354 threaded the name resolver.
         for probe in [
             serde_json::json!({"a": [{"c": 0}]}),
             serde_json::json!({"a": [[1]]}),

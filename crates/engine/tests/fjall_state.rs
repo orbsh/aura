@@ -19,12 +19,26 @@ mod fjall_tests {
         }
     }
 
+    // Counter into the type's declared collection (ADR-0026 §3). Reads go
+    // through the `count` handler (the actor's observable output).
     const COUNTER: &str = r#"
+(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
+(define (count args)
+  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1)))))
+    (hash "count" (if (void? cur) 0 (hash-ref cur "count" 0)))))
 (define (execute args)
-  (let* ((got (ctx_state_get "count"))
-         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
-    (ctx_state_set (hash "field" "count" "value" (+ n 1)))
-    (hash "count" (+ n 1))))
+  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+         (c (if (void? cur) 0 (hash-ref cur "count"))))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" 1) "doc" (hash "count" (+ c 1))))
+    (hash "count" (+ c 1))))
 "#;
     fn counter() -> ActorType {
         ActorType::script("counter", "steel", COUNTER)

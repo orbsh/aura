@@ -6,6 +6,7 @@ use aura_realm::{Realm, SharedRealm};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Engine {
     /// The system/default namespace realm (back-compat: single-node tests,
     /// CLI echo). User-facing surfaces use `namespaces` instead.
@@ -96,6 +97,18 @@ impl Engine {
     /// the engine: introspection is a pure function the host calls,
     /// direction is host ← script.
     pub async fn register(&self, mut actor: ActorType) -> anyhow::Result<()> {
+        self.register_inner(actor, &self.realm).await
+    }
+
+    /// Shared registration body: introspection + definition persistence +
+    /// type registration, against the caller's realm handle (the engine's
+    /// own realm, or a namespace's). register_in rides the same path so a
+    /// namespaced type gets the same ctx.store plan (ADR-0026 §3).
+    async fn register_inner(
+        &self,
+        mut actor: ActorType,
+        realm: &aura_realm::SharedRealm,
+    ) -> anyhow::Result<()> {
         // Phase 4.5c: derive delivery routes from the introspected schema —
         // `receives` (event → key field) seeds the router per @on
         // declaration; empty key = singleton (per-event queue consumer).
@@ -128,10 +141,10 @@ impl Engine {
         // outlive the process, one okm instance for everything.
         if let Some(mut def) = aura_actor::persist::PersistedActor::from_type(&actor) {
             def.schema = introspected.clone();
-            let realm = self.realm.lock().await;
-            aura_realm::meta::persist(&realm.mq, &def)?;
+            let r = realm.lock().await;
+            aura_realm::meta::persist(&r.mq, &def)?;
         }
-        self.realm.lock().await.register_type(actor);
+        realm.lock().await.register_type(actor);
         Ok(())
     }
 
@@ -174,7 +187,10 @@ impl Engine {
     /// namespace is derived from the user credential at registration.
     pub async fn register_in(&self, namespace: &str, actor: ActorType) {
         let ns = self.namespaces.realm_of(namespace).await;
-        ns.realm().lock().await.register_type(actor);
+        // Same introspection + persistence path as register() (ADR-0026 §3:
+        // the ctx.store plan resolves from the persisted interface_schema —
+        // a namespaced type without it has no ctx.store surface).
+        let _ = self.register_inner(actor, &ns.realm()).await;
     }
 
     /// Namespaced call: target resolution = user namespace + node alias +

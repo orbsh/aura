@@ -8,12 +8,11 @@ pub mod mq;
 pub mod timer;
 pub mod meta;
 pub mod value;
-pub mod state;
 pub mod namespace;
 pub mod store_exec;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
-use aura_actor::{ActorType, Instance, InstanceId, Job, SharedStore};
+use aura_actor::{ActorType, Instance, InstanceId, Job};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,8 +58,6 @@ pub struct Realm {
     instances: HashMap<(String, String), Instance>,
     /// Queue capacity per instance.
     queue_capacity: usize,
-    /// Instance state store (in-memory now; Fjall in Phase 4).
-    pub store: SharedStore,
     /// The mq byte engine (ADR-0018 step 1): the event-queue tables bind
     /// to a byte store — the okm `FjallStore` keyspace on fjall, the
     /// in-memory byte stand-in otherwise. NEVER the JSON state store.
@@ -108,24 +105,12 @@ pub struct Realm {
 }
 
 impl Realm {
-    /// Back-compat constructor during the ADR-0018 migration: the
-    /// passed-in JSON store is no longer the state engine (state rides
-    /// the document model over the mq engine); callers should move to
-    /// `with_mq`.
-    pub fn new(store: SharedStore) -> Self {
-        let _ = store;
-        Self::with_mq(mq::MqStore::mem())
-    }
-
-    /// Full constructor (ADR-0018 step 2): actor state IS a document
-    /// store over the same okm engine the mq tables ride — one engine,
-    /// two tables namespaces (mq ns 30-33, state ns 34), JSON only at
-    /// the ctx seam. The engine's meta plane keeps its own SharedStore
-    /// (PersistedActor records — JSON there is a API-currency record,
-    /// not a storage value; its migration is a separate concern).
+    /// Full constructor (ADR-0018 step 2): mq tables and the meta plane
+    /// ride the ONE okm engine (ADR-0025 Plan A). Actor state has no
+    /// document store — instances persist through their type's declared
+    /// collections (ADR-0026 §3, the ctx.store.emit surface).
     /// Wrap a freshly constructed realm into its shared handle and spawn
     /// the timer driver against it. Call exactly once at construction.
-    /// the timer driver against it, and install the handle. Call exactly
     /// once at construction.
     pub async fn shared_async(self) -> SharedRealm {
         let arc = Arc::new(tokio::sync::Mutex::new(self));
@@ -140,7 +125,6 @@ impl Realm {
             instances: HashMap::new(),
             queue_capacity: 64,
             mq: mq_store.clone(),
-            store: std::sync::Arc::new(state::StateDocumentStore::new(mq_store)),
             idle_ttl: Duration::from_secs(30),
             router: event::EventRouter::default(),
             sessions: probe_runtime::carrier::session::Sessions::new(),
@@ -223,7 +207,6 @@ impl Realm {
     /// invoke routed through the realm's dispatch.
     fn ctx_for(
         self_arc: SharedRealm,
-        store: aura_actor::SharedStore,
         store_engine: mq::MqStore,
         plan: Option<&store_exec::StorePlan>,
         schema: Option<serde_json::Value>,
@@ -240,7 +223,6 @@ impl Realm {
         let dispatch_realm = Arc::downgrade(&self_arc);
         let mut ctx = aura_actor::Ctx::new(
             id.clone(),
-            store,
             Arc::new(move |target, handler: &str, args| {
                 let realm = dispatch_realm.clone();
                 let handler = handler.to_string();
@@ -288,53 +270,18 @@ impl Realm {
 
     /// Host functions exposed to script actors (Phase 2.5 ctx bridge).
     /// Contract: one JSON-string argument in, one JSON value out — the
-    /// carrier marshals; the host owns semantics. `ctx_state_get` /
-    /// `ctx_state_set` / `ctx_state_delete` hit the instance's own state
-    /// (the store scopes reads/writes to self_id — no cross-instance
-    /// reach); `ctx_invoke` blocks on the unified call model.
+    /// carrier marshals; the host owns semantics. `ctx_store_emit`
+    /// carries the type's declared collections (ADR-0026 §3);
+    /// `ctx_invoke` blocks on the unified call model.
     fn host_bridge_for(
         ctx: &aura_actor::Ctx,
     ) -> std::collections::BTreeMap<String, probe_runtime::carrier::HostFn> {
         use probe_runtime::carrier::HostFn;
 
-        let self_id = ctx.self_id.clone();
-        let store = ctx.state_store();
-        let get_id = self_id.clone();
-        let get_store = store.clone();
-        let set_id = self_id.clone();
-        let set_store = store.clone();
-        let del_id = self_id.clone();
-        let del_store = store;
         let dispatch = ctx.invoke_handle();
         let handle = tokio::runtime::Handle::current();
 
         let mut fns: std::collections::BTreeMap<String, HostFn> = Default::default();
-        fns.insert(
-            "ctx_state_get".into(),
-            Arc::new(move |arg: serde_json::Value| {
-                let field = json_str_field(&arg)?;
-                match get_store.get(&get_id, &field)? {
-                    Some(v) => Ok(serde_json::json!({ "present": true, "value": v })),
-                    None => Ok(serde_json::json!({ "present": false })),
-                }
-            }) as HostFn,
-        );
-        fns.insert(
-            "ctx_state_set".into(),
-            Arc::new(move |arg: serde_json::Value| {
-                let (field, value) = json_field_value(&arg)?;
-                set_store.set(&set_id, &field, value)?;
-                Ok(serde_json::json!({ "ok": true }))
-            }) as HostFn,
-        );
-        fns.insert(
-            "ctx_state_delete".into(),
-            Arc::new(move |arg: serde_json::Value| {
-                let field = json_str_field(&arg)?;
-                del_store.delete(&del_id, &field)?;
-                Ok(serde_json::json!({ "ok": true }))
-            }) as HostFn,
-        );
         fns.insert(
             "ctx_invoke".into(),
             Arc::new(move |arg: serde_json::Value| {
@@ -405,7 +352,6 @@ impl Realm {
                 if let Some(on_wake) = actor.on_wake.clone() {
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
-                        self.store.clone(),
                         self.mq.clone(),
                         self.plan_of(&id.actor_type),
                         self.schema_of(&id.actor_type).cloned().flatten(),
@@ -530,7 +476,6 @@ impl Realm {
         let body = actor.body.clone();
         let ctx = Self::ctx_for(
             self_arc.clone(),
-            realm.store.clone(),
             realm.mq.clone(),
             realm.plan_of(&id.actor_type),
             realm.schema_of(&id.actor_type).cloned().flatten(),
@@ -643,7 +588,6 @@ impl Realm {
             if let Some(on_sleep) = actor.on_sleep.clone() {
                 let ctx = Self::ctx_for(
                     realm.clone(),
-                    locked.store.clone(),
                     locked.mq.clone(),
                     locked.plan_of(&id.actor_type),
                     locked.schema_of(&id.actor_type).cloned().flatten(),
@@ -891,7 +835,6 @@ impl Realm {
                 if let Some(on_sleep) = actor.on_sleep.clone() {
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
-                        self.store.clone(),
                         self.mq.clone(),
                         self.plan_of(&key.0),
                         self.schema_of(&key.0).cloned().flatten(),
@@ -905,9 +848,10 @@ impl Realm {
                 }
             }
             // The resident session dies WITH the instance: the VM/PTY
-            // holds no durable truth (ctx_state_* wrote through to the
-            // store), so eviction is a plain drop. The next activation
-            // cold-starts a fresh session and reloads the source.
+            // holds no durable truth (durable state lives in the type's
+            // declared collections, ADR-0026 §3), so eviction is a plain
+            // drop. The next activation cold-starts a fresh session and
+            // reloads the source.
             self.sessions.evict(&format!("{}/{}", key.0, key.1));
             evicted.push(inst.id);
         }

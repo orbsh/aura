@@ -6,24 +6,51 @@ use aura_actor::{ActorType, InstanceId};
 use aura_engine::Engine;
 use aura_realm::Realm;
 
-// Steel counter (4.5a): count events + record the last payload per event
-// name. Field names as bare strings; payloads as values.
-// The handler fn is named after the EVENT it serves (multi-entry model:
-// the @on collector binds functions under the event name; no execute
-// fallback). One script per event name.
+// Steel counter (ADR-0026): per-user count into the type's declared
+// collection. The handler fn is named after the EVENT it serves (multi-entry
+// model). The collection key is the APPLICATION's choice — the counter is
+// keyed by the event's user_id (identity rides payload metadata; the
+// instance key answers who serializes, modeling.md §2.1). Tests read the
+// count back by invoking the `count` handler with the same user_id — the
+// actor's observable output, not the retired instance-document model.
 fn counter_script(events: &[&'static str]) -> String {
-    // One handler fn per event name, identical body (the multi-entry
-    // model binds handlers under their event names; a wildcard
-    // subscriber serves several events, so it declares several names).
+    let common = r#"(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
+(define (count args)
+  (let* ((n (user-n (hash-ref args "user_id")))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+    (if (void? cur) (hash "count" 0) (hash "count" (hash-ref cur "count")))))
+"#;
+    // user-doc maps user_id → a fixed U64 id (the collection's key fields
+    // are fixed-width; string user ids hash — here the tests use small
+    // numeric user_ids, so the map is trivial).
     let body = |name: &str| format!(
         r#"(define ({name} args)
-  (let* ((got (ctx_state_get "events"))
-         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
-    (ctx_state_set (hash "field" "events" "value" (+ n 1)))
-    (ctx_state_set (hash "field" (string-append "last:" (hash-ref args "event")) "value" args))
-    n))"#
+  (let* ((uid (hash-ref args "user_id"))
+         (n (user-n uid))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (c (if (void? cur) 0 (hash-ref cur "count"))))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                       "key" (hash "id" n) "doc" (hash "count" (+ c 1))))
+    (+ c 1)))"#
     );
-    events.iter().map(|e| body(e)).collect::<Vec<_>>().join("\n")
+    // user-doc: alice→1, bob→2, u1→3, __singleton__→4 (the shapes the
+    // tests emit).
+    let userdoc = r#"(define (user-n uid)
+  (if (string=? uid "alice") 1
+  (if (string=? uid "bob") 2
+  (if (string=? uid "u1") 3
+  (if (string=? uid "__singleton__") 4
+  9)))))
+(define (user-doc uid) (hash "n" (user-n uid)))
+"#;
+    format!("{common}{userdoc}{}", events.iter().map(|e| body(e)).collect::<Vec<_>>().join("\n"))
 }
 
 fn counter_of(name: &'static str, events: &[&'static str]) -> ActorType {
@@ -51,14 +78,18 @@ async fn exact_route_instance_key_from_event_data() {
     // Fire-and-forget: yield until handlers drain.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let read = |k: &str| {
-        let realm = engine.realm.try_lock().unwrap();
-        realm.store.get(
-            &InstanceId { actor_type: "cart".into(), key: k.into() }, "events"
-        ).unwrap()
+    let read = async |uid: &str| {
+        engine
+            .invoke(
+                InstanceId { actor_type: "cart".into(), key: format!("cart/{uid}") },
+                "count",
+                serde_json::json!({ "user_id": uid }),
+            )
+            .await
+            .unwrap()
     };
-    assert_eq!(read("alice"), Some(serde_json::json!(1)));
-    assert_eq!(read("bob"), Some(serde_json::json!(1)));
+    assert_eq!(read("alice").await, serde_json::json!({"count": 1}));
+    assert_eq!(read("bob").await, serde_json::json!({"count": 1}));
 }
 
 #[tokio::test]
@@ -80,13 +111,17 @@ async fn wildcard_route_goes_to_singleton() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let realm = engine.realm.try_lock().unwrap();
-    let events = realm.store.get(
-        &InstanceId { actor_type: "audit".into(), key: "__singleton__".into() }, "events"
-    ).unwrap();
-    assert_eq!(events, Some(serde_json::json!(2)));
+    let count = engine
+        .invoke(
+            InstanceId { actor_type: "audit".into(), key: "__singleton__".into() },
+            "count",
+            serde_json::json!({ "user_id": "u1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count, serde_json::json!({"count": 2}));
     // Unmatched event landed in dead letters.
-    assert_eq!(realm.dead_events.len(), 1);
+    assert_eq!(engine.realm.lock().await.dead_events.len(), 1);
 }
 
 #[tokio::test]
@@ -141,16 +176,22 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let realm = engine.realm.try_lock().unwrap();
     // Exact: keyed instance got it.
     assert_eq!(
-        realm.store.get(&InstanceId { actor_type: "cart".into(), key: "alice".into() }, "events").unwrap(),
-        Some(serde_json::json!(1))
+        engine.invoke(
+            InstanceId { actor_type: "cart".into(), key: "alice".into() },
+            "count", serde_json::json!({ "user_id": "alice" }),
+        ).await.unwrap(),
+        serde_json::json!({"count": 1})
     );
-    // Wildcard: singleton got it too.
+    // Wildcard: singleton got it too (the stats handler counted under the
+    // event's own user_id — same key the exact-route instance wrote).
     assert_eq!(
-        realm.store.get(&InstanceId { actor_type: "stats".into(), key: "__singleton__".into() }, "events").unwrap(),
-        Some(serde_json::json!(1))
+        engine.invoke(
+            InstanceId { actor_type: "stats".into(), key: "__singleton__".into() },
+            "count", serde_json::json!({ "user_id": "alice" }),
+        ).await.unwrap(),
+        serde_json::json!({"count": 1})
     );
 }
 
@@ -194,15 +235,20 @@ async fn one_event_multiple_subscriber_types() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let realm = engine.realm.try_lock().unwrap();
     // Both subscriber types received the same event, independently.
     assert_eq!(
-        realm.store.get(&InstanceId { actor_type: "cart".into(), key: "alice".into() }, "events").unwrap(),
-        Some(serde_json::json!(1))
+        engine.invoke(
+            InstanceId { actor_type: "cart".into(), key: "alice".into() },
+            "count", serde_json::json!({ "user_id": "alice" }),
+        ).await.unwrap(),
+        serde_json::json!({"count": 1})
     );
     assert_eq!(
-        realm.store.get(&InstanceId { actor_type: "stats".into(), key: "alice".into() }, "events").unwrap(),
-        Some(serde_json::json!(1))
+        engine.invoke(
+            InstanceId { actor_type: "stats".into(), key: "alice".into() },
+            "count", serde_json::json!({ "user_id": "alice" }),
+        ).await.unwrap(),
+        serde_json::json!({"count": 1})
     );
 }
 

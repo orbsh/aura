@@ -28,11 +28,8 @@ async fn remote_probe_roundtrip() {
             language: "steel".into(),
             source: r#"
 (define (double args)
-  (ctx_state_set (hash "field" "visits" "value" 1))
-  (let* ((prev (ctx_state_get "visits"))
-         (echoed (ctx_invoke (hash "type" "echo" "key" "e1" "handler" "execute" "args" (hash "x" 1)))))
+  (let* ((echoed (ctx_invoke (hash "type" "echo" "key" "e1" "handler" "execute" "args" (hash "x" 1)))))
     (hash "doubled" (* 2 (hash-ref args "n"))
-          "visited" (hash-ref prev "present")
           "echo" (hash-ref echoed "x"))))
 "#
             .into(),
@@ -78,17 +75,16 @@ async fn remote_probe_roundtrip() {
         .unwrap();
     assert_eq!(
         out,
-        serde_json::json!({"doubled": 8, "visited": true, "echo": 1}),
-        "ctx state + invoke resolved over the wire"
+        serde_json::json!({"doubled": 8, "echo": 1}),
+        "ctx invoke resolved over the wire"
     );
 
-    // State written by the probe landed on the remote instance's own fields.
-    let realm = engine.realm.try_lock().unwrap();
-    let visits = realm.store.get(
-        &InstanceId { actor_type: "remote-counter".into(), key: "k".into() },
-        "visits",
-    ).unwrap();
-    assert_eq!(visits, Some(serde_json::json!(1)));
+    // A remote execution node holds NO state: the ctx bridge over the wire
+    // carries ctx_invoke only (persistence goes through ctx_store_emit,
+    // which needs a resolved storage plan — remote types are not
+    // introspected; that path is the 4.5b upload lifecycle's, not this
+    // test's). The retired instance-document assertions are gone with the
+    // model (ADR-0026 §3).
 
     probe.abort();
 }

@@ -2,23 +2,62 @@
 //! isolation. A NamespacedRealm handle is bound at construction —
 //! cross-namespace delivery is not expressible, not merely checked.
 
-use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
+use aura_actor::{ActorType, InstanceId};
 use aura_engine::Engine;
-use std::sync::Arc;
+use aura_realm::Realm;
 
+// Counter into the type's declared collection (ADR-0026 §3). Keyed by the
+// payload's user_id (identity rides payload metadata, modeling.md §2.1);
+// tests read the count back by INVOKING the `count` handler — the actor's
+// observable output, not the retired instance-document model.
 const COUNTER: &str = r#"
+(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
+(define (user-n uid)
+  (if (string=? uid "alice") 1
+  (if (string=? uid "bob") 2
+  9)))
+(define (count args)
+  (let* ((n (user-n (hash-ref args "user_id")))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+    (hash "count" (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0)))))
 (define (execute args)
-  (let* ((got (ctx_state_get "count"))
-         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
-    (ctx_state_set (hash "field" "count" "value" (+ n 1)))
-    (hash "count" (+ n 1))))
+  (let* ((n (user-n (hash-ref args "user_id")))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (c (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0))))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" n) "doc" (hash "count" (+ c 1))))
+    (hash "count" (+ c 1))))
 "#;
 const LISTENER: &str = r#"
+(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "seen" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
+(define (user-n uid)
+  (if (string=? uid "u1") 3
+  9))
+(define (count args)
+  (let* ((n (user-n (hash-ref args "user_id")))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+    (hash "seen" (if (void? cur) 0 (if (hash-contains? cur "seen") (hash-ref cur "seen") 0)))))
 (define (order.created args)
-  (let* ((got (ctx_state_get "seen"))
-         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
-    (ctx_state_set (hash "field" "seen" "value" (+ n 1)))
-    n))
+  (let* ((n (user-n (hash-ref args "user_id")))
+         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (c (if (void? cur) 0 (if (hash-contains? cur "seen") (hash-ref cur "seen") 0))))
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" n) "doc" (hash "seen" (+ c 1))))
+    (+ c 1)))
 "#;
 
 fn counter() -> ActorType {
@@ -33,20 +72,31 @@ async fn same_type_key_isolated_per_namespace() {
     engine.register_in("bob", counter()).await;
 
     let target = InstanceId { actor_type: "counter".into(), key: "k".into() };
-    engine.call_in("alice", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
-    engine.call_in("alice", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
-    engine.call_in("bob", target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+    engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
+    engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
+    engine.call_in("bob", target.clone(), "execute", serde_json::json!({"user_id": "bob"})).await.unwrap();
 
-    // alice's count is 2, bob's is 1 — the namespaces never mixed.
-    let alice = engine.namespaces.realm_of("alice").await;
-    let bob = engine.namespaces.realm_of("bob").await;
+    // alice's count is 2, bob's is 1 — the namespaces never mixed. Read
+    // back through the `count` handler (the actor's observable output).
+    let read = |ns: String, uid: String| {
+        let engine_ns = engine.namespaces.clone();
+        let target = target.clone();
+        async move {
+            let realm = engine_ns.realm_of(&ns).await;
+            let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": uid})).await.unwrap().wait().await.unwrap();
+            match waited {
+                aura_actor::call::Waited::Done(v) => v.unwrap(),
+                aura_actor::call::Waited::Pending(_) => panic!("count read went cold"),
+            }
+        }
+    };
     assert_eq!(
-        alice.realm().lock().await.store.get(&target, "count").unwrap(),
-        Some(serde_json::json!(2))
+        read("alice".into(), "alice".into()).await,
+        serde_json::json!({"count": 2})
     );
     assert_eq!(
-        bob.realm().lock().await.store.get(&target, "count").unwrap(),
-        Some(serde_json::json!(1))
+        read("bob".into(), "bob".into()).await,
+        serde_json::json!({"count": 1})
     );
 }
 
@@ -76,17 +126,28 @@ async fn events_do_not_cross_namespaces() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let alice = engine.namespaces.realm_of("alice").await;
-    let bob = engine.namespaces.realm_of("bob").await;
     let target = InstanceId { actor_type: "listener".into(), key: "u1".into() };
+    // Read back through the `count` handler (the actor's observable output).
+    let read = |ns: String| {
+        let engine_ns = engine.namespaces.clone();
+        let target = target.clone();
+        async move {
+            let realm = engine_ns.realm_of(&ns).await;
+            let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": "u1"})).await.unwrap().wait().await.unwrap();
+            match waited {
+                aura_actor::call::Waited::Done(v) => v.unwrap(),
+                aura_actor::call::Waited::Pending(_) => panic!("count read went cold"),
+            }
+        }
+    };
     assert_eq!(
-        alice.realm().lock().await.store.get(&target, "seen").unwrap(),
-        Some(serde_json::json!(1)),
+        read("alice".into()).await,
+        serde_json::json!({"seen": 1}),
         "alice's listener must have seen the event"
     );
     assert_eq!(
-        bob.realm().lock().await.store.get(&target, "seen").unwrap(),
-        None,
+        read("bob".into()).await,
+        serde_json::json!({"seen": 0}),
         "bob's listener must NOT see alice's event"
     );
 }

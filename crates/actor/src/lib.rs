@@ -168,11 +168,11 @@ pub mod futures_boxed {
 /// Per-instance context. ADR-0011: exactly state / metadata / invoke.
 /// Metadata lands with Openraft (Phase 5); the surface reserves the name.
 pub struct Ctx {
-    /// This instance's identity: (actor type, instance key).
+    /// This instance's identity: (actor type, instance key). Answers who
+    /// serially processes this message (ADR-0026) — storage addressing
+    /// lives in the type's declared collections (the store_emit handle),
+    /// never in this struct.
     pub self_id: InstanceId,
-    /// Instance state, backed by the runtime's StateStore. Reads hit the
-    /// store; writes are per-field durable units.
-    pub state: State,
     /// Call surface — the single controlled path (ADR-0011).
     invoke: Invoke,
     /// Type-scoped storage executor (ADR-0026 §3): one entry carrying okm
@@ -192,55 +192,6 @@ pub struct InstanceId {
     /// Partition key: instance identity within the type (session_id,
     /// node_id, ...).
     pub key: String,
-}
-
-/// Per-instance field storage: the actor-visible state contract. The store
-/// owns namespacing (`state:{actor_id}:{field}`); handlers never see keys.
-/// Writes are per-field durable units (wiki §状态落盘的原子化).
-pub trait StateStore: Send + Sync {
-    /// The store's own key encoding for (instance, field). Opaque to
-    /// callers; nesting wrappers prepend their prefix to THESE bytes
-    /// (okm nesting rule: the wrapper knows only its prefix, the engine
-    /// encoding stays opaque).
-    fn key_for(&self, id: &InstanceId, field: &str) -> Vec<u8>;
-    fn get(&self, id: &InstanceId, field: &str) -> anyhow::Result<Option<Value>>;
-    fn set(&self, id: &InstanceId, field: &str, value: Value) -> anyhow::Result<()>;
-    fn delete(&self, id: &InstanceId, field: &str) -> anyhow::Result<()>;
-    /// Full inner keys sharing a byte prefix — the primitive the nesting
-    /// wrapper uses for `fields` (scan own prefix, strip, delegate).
-    fn scan_keys(&self, key_prefix: &[u8]) -> anyhow::Result<Vec<Vec<u8>>>;
-    /// Raw-key operations: the nesting wrapper's entire surface. The
-    /// wrapper composes `prefix + inner.key_for(...)` and calls these —
-    /// the inner engine never learns about namespaces.
-    fn get_raw(&self, key: &[u8]) -> anyhow::Result<Option<Value>>;
-    fn set_raw(&self, key: Vec<u8>, value: Value) -> anyhow::Result<()>;
-    fn del_raw(&self, key: &[u8]) -> anyhow::Result<()>;
-}
-
-/// Shared handle to the runtime's store.
-pub type SharedStore = std::sync::Arc<dyn StateStore>;
-
-/// Instance state view over the shared StateStore. Field-scoped: handlers
-/// touch named fields, the store owns namespacing.
-pub struct State {
-    id: InstanceId,
-    store: SharedStore,
-}
-
-impl State {
-    pub fn new(id: InstanceId, store: SharedStore) -> Self {
-        Self { id, store }
-    }
-
-    pub fn get(&self, field: &str) -> anyhow::Result<Option<Value>> {
-        self.store.get(&self.id, field)
-    }
-    pub fn set(&self, field: &str, value: Value) -> anyhow::Result<()> {
-        self.store.set(&self.id, field, value)
-    }
-    pub fn delete(&self, field: &str) -> anyhow::Result<()> {
-        self.store.delete(&self.id, field)
-    }
 }
 
 /// Invoke capability: held privately, exposed via `Ctx::invoke`. Target
@@ -278,9 +229,8 @@ impl Invoke {
 }
 
 impl Ctx {
-    pub fn new(self_id: InstanceId, store: SharedStore, dispatch: dispatch_handle::DispatchHandle) -> Self {
+    pub fn new(self_id: InstanceId, dispatch: dispatch_handle::DispatchHandle) -> Self {
         Self {
-            state: State::new(self_id.clone(), store),
             self_id,
             invoke: Invoke { dispatch },
             store_emit: None,
@@ -322,12 +272,6 @@ impl Ctx {
     /// The single controlled call surface (ADR-0011).
     pub async fn invoke(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
         (self.invoke.dispatch.clone())(target, handler, args).await
-    }
-
-    /// The instance's state store handle. Used by the script ctx bridge to
-    /// build sync host functions over this instance's own state.
-    pub fn state_store(&self) -> SharedStore {
-        self.state.store.clone()
     }
 
     /// The invoke dispatch handle, for sync wrappers around `invoke`.

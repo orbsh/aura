@@ -8,7 +8,7 @@
 //! only (ADR-0026 Honest semantic cost).
 //!
 //! JSON is the wire encoding here (the host bridge's currency, matching
-//! `ctx_state_*` / `ctx_invoke`); the realm converts to `DynamicValue` at
+//! `ctx_invoke`); the realm converts to `DynamicValue` at
 //! its seam (`realm/src/value.rs`).
 
 use serde::{Deserialize, Serialize};

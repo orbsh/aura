@@ -100,17 +100,28 @@ async fn instance_key_activates_distinct_instances() {
 
 // ---------------------------------------------------------------- Phase 1 --
 
-// ctx.state writes persist across eviction: the instance is dropped, the
-// data is not. on_sleep/on_wake run around the boundary.
+// Declared-collection writes persist across eviction: the instance is
+// dropped, the data is not. on_sleep/on_wake run around the boundary.
+// (The ctx_state_* point model is retired — ADR-0026 §3: state rides the
+// type's declared collections through ctx.store.emit.)
 #[tokio::test]
 async fn state_survives_scale_to_zero() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    // RMW via the ctx bridge: read, bump, write — per-field durable units.
+    // RMW via the ctx bridge: read the whole field map, merge, write back.
     const COUNTER: &str = r#"
+(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
 (define (execute args)
-  (let* ((got (ctx_state_get "{\"field\": \"count\"}"))
-         (n (if (hash-ref got "present") (hash-ref got "value") 0)))
-    (ctx_state_set (string-append "{\"field\": \"count\", \"value\": " (number->string (+ n 1)) "}"))
+  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+         (n (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0)))
+         (put (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                                    "key" (hash "id" 1) "doc" (hash "count" (+ n 1))))))
     (hash "count" (+ n 1))))
 "#;
     engine.register(
@@ -280,12 +291,13 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 // ------------------------------------------------- Phase 2.5 (ctx bridge) --
 //
 // Script actors reach the host through named functions: one JSON argument
-// in, one JSON value out. `ctx_state_*` touch the instance's own state
-// (scoped to self_id — cross-instance reach is not expressible);
-// `ctx_invoke` rides the unified call model (Phase 3.5).
+// in, one JSON value out. Storage rides `ctx_store_emit` (the type's
+// declared collections, ADR-0026 §3); `ctx_invoke` rides the unified call
+// model (Phase 3.5).
 
-// Steel script: set a counter field, read it back, and invoke another
-// actor through ctx_invoke.
+// Steel script: one RMW into the type's declared collection, read back,
+// and invoke another actor through ctx_invoke. The storage declaration is
+// the interface_schema `storage` block (same shape as events.rs).
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn steel_script_ctx_bridge() {
@@ -298,12 +310,21 @@ async fn steel_script_ctx_bridge() {
             "steel-ctx",
             "steel",
             r#"
+(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
+  (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+(define (interface_schema args) (schema))
 (define (execute args)
-  (ctx_state_set "{\"field\": \"visits\", \"value\": 1}")
-  (let* ((got (ctx_state_get "\"visits\""))
+  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
          (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"ttl2\", \"handler\": \"execute\", \"args\": {\"hello\": true}}")))
-    (hash "present" (hash-ref got "present") "visits" (hash-ref got "value") "echo" (hash-ref echoed "hello")))
-)"#,
+    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+                          "key" (hash "id" 1) "doc" (hash "count" 1)))
+    (hash "present" (if (void? cur) #f #t) "visits" (if (void? cur) 1 (+ 1 (hash-ref cur "count"))) "echo" (hash-ref echoed "hello"))))
+"#,
         ))
         .await;
 
@@ -317,11 +338,13 @@ async fn steel_script_ctx_bridge() {
         .unwrap();
     assert_eq!(
         out,
-        serde_json::json!({"present": true, "visits": 1, "echo": true})
+        serde_json::json!({"present": false, "visits": 1, "echo": true})
     );
 }
 
-// Python script: same bridge surface — state + invoke.
+// Python script: same bridge surface — collection RMW + invoke. The
+// explicit `interface_schema` half merges into the derived one (python.rs
+// field-wise merge), so the storage block reaches the persisted schema.
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn python_script_ctx_bridge() {
@@ -334,11 +357,24 @@ async fn python_script_ctx_bridge() {
             r#"
 import json
 
+def interface_schema(args):
+    return {"storage": {"collections": {"counters": {"schema": {
+        "key_len": 8,
+        "key_fields": [{"name": "id", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
+        "layout_version": 1, "hot_width": 8, "payload_header_len": 3,
+        "hot_fields": [{"name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
+        "cold_fields": [],
+        "slots": {"primary": 0, "dynamic": 1, "dict_id": 2, "dict_name": 3,
+                  "declared_index_base": 4096, "declared_reduce_base": 8192,
+                  "junction_base": 12288}}}}}}
+
 def execute(args):
-    ctx_state_set(json.dumps({"field": "color", "value": "blue"}))
-    got = ctx_state_get(json.dumps("color"))
+    cur = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
+    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+                               "key": {"id": 1}, "doc": {"color": "blue"}}))
     echo = ctx_invoke(json.dumps({"type": "echo", "key": "ttl3", "handler": "execute", "args": {"ok": 7}}))
-    return {"stored": got["value"], "echo": echo["ok"]}
+    stored = "blue" if cur is None else (cur.get("color") or "blue")
+    return {"stored": stored, "echo": echo["ok"]}
 "#,
         ))
         .await;
@@ -354,39 +390,10 @@ def execute(args):
     assert_eq!(out, serde_json::json!({"stored": "blue", "echo": 7}));
 }
 
-// State written through the bridge persists across eviction: the script
-// actor's field survives scale-to-zero.
-#[cfg(feature = "steel")]
-#[tokio::test]
-async fn script_state_survives_eviction() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine
-        .register(aura_actor::ActorType::script(
-            "steel-counter",
-            "steel",
-            r#"
-(define (execute args)
-  (let* ((prev (ctx_state_get "\"count\""))
-         (n (if (hash-ref prev "present") (+ 1 (hash-ref prev "value")) 1)))
-    (ctx_state_set (string-append "{\"field\": \"count\", \"value\": " (number->string n) "}"))
-    (hash "count" n))
-)"#,
-        ))
-        .await;
-
-    let target = InstanceId { actor_type: "steel-counter".into(), key: "c1".into() };
-    let out = engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
-    assert_eq!(out, serde_json::json!({"count": 1}));
-
-    engine.realm.lock().await.evict_idle(engine.realm.clone()).await;
-
-    let out = engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
-    assert_eq!(out, serde_json::json!({"count": 2}));
-}
-
 // Residency is EPHEMERAL: idle eviction drops the VM with the instance
 // (Phase 2.6 wiring). In-session memory state (module globals) restarts;
-// store state (ctx_state_*) survives — durable truth is only the store.
+// store state (declared collections) survives — durable truth is only the
+// store.
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn idle_eviction_drops_the_resident_session() {

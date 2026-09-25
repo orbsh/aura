@@ -142,7 +142,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - each actor TYPE occupies one real okm ns (bounded declared vocabulary — satisfies the closed-vocabulary ns ruling; events/partitions stay registry+hash); low ns block reserved for aura (mq 30–35, meta/state 40–41), actor types allocate from a fixed base; allocation = `register_type` side effect via the type registry (the existing type_id assigner); ids never reused
     - instances are documents inside the type's ns (okm collection/document terminology; the type's ns plays a SQL-schema role): the `InstanceState` one-document-per-instance isolation shape is superseded; cross-instance aggregation inside one type = ordinary scan/reduce over the type's ns — projection actors retire for same-type aggregation, remain for cross-type precomputation
     - ctx.store rises to okm capability level: put / get / scan / reduce over the type's declared tables (exact op names set at implementation); field-level get/set/delete point model replaced; handles structurally bound to the type's ns at registration (cross-type access not expressible); nested invoke resolves target ns through the type registry, never caller-supplied keys
-    - per-user namespace isolation (Phase 3.6 PrefixStore) stays, orthogonal — it prefixes the whole engine beneath the type nss
+    - per-user realm isolation (Phase 3.6 mechanism — the axis ADR-0028 renamed namespace → realm; PrefixStore since retired, `MqStore::for_realm` is the layer) stays, orthogonal — it prefixes the whole engine beneath the type nss
     - serialization/partition routing/timer/mq semantics untouched; existing instance-state bytes discarded, no migration (ADR-0018 precedent)
   - Schema declaration (rides the 4.5b upload lifecycle; execution path never regenerates):
     - python: decorator over the okm type definitions derives the schema, merged into `interface_schema` (same implicit+explicit merge as @on)
@@ -160,19 +160,37 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [x] wasm schema path (LANDED 2026-09-25, probe actor-guest crate + aura raw emit arm): okm compiles INTO the module — `actor-guest` provides `EmitStore` (VirtualStorage whose every primitive is one `aura_host.emit` host round trip carrying okm-wire OpFrame/OpResponse bytes; no new wire format) + `collection_entry::<K,R>()` serializing the compiled CollectionSchema into the interface_schema storage block at upload; `counter_actor` example is the rustc-compiled fixture. Carrier: `WasmSession` gains the `emit` RAW-BYTE host arm (request/reply skip the CBOR value marshal; JSON number-array carries the bytes losslessly) and `carrier::introspect`'s wasm branch satisfies the import with a STUB emit (steel register_ctx_stubs precedent — the schema export is pure, the plan doesn't exist at introspection). aura: `MqStore::ns_raw(inner, ns)` (2-byte type-ns prefix raw handle) + `host_bridge_for` gains `wasm_raw` — the emit arm executes OpFrames against the type's RAW ns engine plane (no Collection-op layer; the trusted static-mode writer IS the module, no-bypass-guard ruling). e2e: register → introspect persists compiled schema → in-module Collection RMW through the bridge → document survives eviction (aura wasm_guest_storage.rs); probe wasm_guest_storage.rs runs the same bytes against TestStore
     - [x] `ctx.interface_schema` read of the persisted copy (LANDED with the ctx-bridge item 2026-09-24, see that entry — echo.rs `store_emit_roundtrip_and_interface_schema_read` locks it)
     - [ ] docs: storage.md/partitioning.md rewrite LANDED 2026-09-24 (018ff00 — instance-document passages superseded across actor-api/storage/partitioning/realm/modeling en+zh); remaining: prism-facing `ev` naming noted in ADR-0017's prism-side scope (wiki aura-architecture.md synced 2026-09-25 — per-field state keys / meta okm instance / partition-key wording swept to the collection surface)
-- [~] **Phase 4.10 — Probe affinity + namespace demotion (PRIORITY after 4.9; companion to ADR-0026)**
+- [x] **Phase 4.10 — Probe affinity + realm demotion (PRIORITY after 4.9; companion to ADR-0026; the axis ADR-0028 renamed namespace → realm)** (CLOSED 2026-09-25 — the ADR-0015 dependency resolved by attribution, not by building a second trust plane in aura)
   - Ruling: the probe is an actor's EXECUTION portion — it follows the actor, not the user. The tenant assumption (users exist) leaked into the base layer and is removed
     - probe binding is actor-TYPE affinity (the 2.6 registry already records actor→probe bindings; affinity is metadata, not a routing hop): an actor type names its execution capacity; the probe never asks "which user"
     - node trust is deployment-level and rides ADR-0015 (ed25519 node identity): "may this machine execute" is separate from "whose user is this" — the 3.6 user-credential derivation pointed the wrong way
     - user separation is the APPLICATION's concern: gravity distinguishes users through its own mechanism (user-organized types/instances, or sender metadata in the payload per the ADR-0017 amendment — identity rides payload metadata, never Ctx). The framework neither provides nor presupposes a user dimension
     - no-user applications are first-class: an intranet distributed-compute deployment puts one probe per node, registers affinity, and the actor side shards tasks — no user concept appears
-  - Namespace demotion (amends Phase 3.6): the `PrefixStore` mechanism survives as an APPLICATION-AVAILABLE namespace primitive (construction-time prefix isolation — the structural guarantee is the value), but its binding dimension is the application's choice — gravity may bind user, a compute project binds nothing; "probe registration credential = user credential → namespace derived" is superseded
+  - Realm demotion (amends Phase 3.6): the prefix-isolation mechanism survives as an APPLICATION-AVAILABLE realm primitive (construction-time prefix isolation — the structural guarantee is the value), but its binding dimension is the application's choice — gravity may bind user, a compute project binds nothing; "probe registration credential = user credential → realm derived" is superseded
   - Consistency with ADR-0026: after type-scoped nss, multi-tenant user isolation (when an application wants it) is the application organizing types/keys — the framework's isolation units are exactly two: type ns (storage) and instance serialization (routing); user is not among them
   - Work items
-    - [x] probe registry: type-affinity records ARE the binding surface (verified — `Body::RemoteProbe { node_alias, .. }` rides the ActorType, the type definition IS the binding record; no new table needed); the user-credential→namespace path at registration does not exist in code (the gateway register arm discards credentials, `register_in` takes an explicit namespace string) — the only credential-derivation trace was a stale lib.rs doc comment, rewritten
-    - [x] `register_in`/`call_in`/`emit_in` surfaces re-documented: doc comments rewritten (namespace = explicit application decision, binding dimension the app's choice; `Namespaces` module header + engine field comment aligned); partitioning.md §3 key-layout namespace passage + en twin, storage.md federation line, ADR-0026 §1 en+zh line updated to the demoted/landed shape; ADR-0013 got an errata note (decision archive, body untouched); wiki stateless-agent probe-adapter paragraphs swept to affinity + node-identity trust
-    - [ ] ADR-0015 dependency: node identity handshake lands before this phase's trust story is complete (registration currently discards credentials)
-    - [x] docs: partitioning.md namespace passages + wiki probe-adapter wording swept; 0026 §1 line updated to the demoted shape (LANDED 2026-09-25, e7c1939 + follow-up)
+    - [x] probe registry: type-affinity records ARE the binding surface (verified — `Body::RemoteProbe { node_alias, .. }` rides the ActorType, the type definition IS the binding record; no new table needed); the user-credential→namespace path at registration does not exist in code (the gateway register arm discards credentials, `register_in` takes an explicit realm string) — the only credential-derivation trace was a stale lib.rs doc comment, rewritten
+    - [x] `register_in`/`call_in`/`emit_in` surfaces re-documented: doc comments rewritten (realm = explicit application decision, binding dimension the app's choice; realm_set module header + engine field comment aligned); partitioning.md §3 key-layout realm passage + en twin, storage.md federation line, ADR-0026 §1 en+zh line updated to the demoted/landed shape; ADR-0013 got an errata note (decision archive, body untouched); wiki stateless-agent probe-adapter paragraphs swept to affinity + node-identity trust
+    - [x] ADR-0015 dependency RESOLVED BY ATTRIBUTION (2026-09-25): the trust story's aura residue (replacement discipline + startup disclosure) is LANDED (see 遗留节 ADR-0015 条目); the handshake/registry/endpoints ride the prism gateway (prism PLAN Phase 1.8) — registration discards credentials by design until that mounts, and this phase's rulings do not wait on it
+    - [x] docs: partitioning.md realm passages + wiki probe-adapter wording swept; 0026 §1 line updated to the demoted shape (LANDED 2026-09-25, e7c1939 + follow-up)
+
+- [x] **Phase 4.11 — Content-addressed code delivery (ADR-0027, docs/adr/0027-content-addressed-code-delivery.md en+zh)**
+  - Ruling: one payload shape — `CodePayload` enum deleted, `ToolCall.code: CodeRef { url, sha256 }`; `version` dropped (hash URL is its own invalidation policy), sha256 asserted by the frame (never parsed from the URL). `CodeBlob` (ns 42) lives in meta.rs beside ActorDef — pure content rows (key = 32B hash, value = bytes; no name/version/FK); ActorDef.source → code_sha256 (the content hash IS the version identity — no second counter). Probe caches by hash (discardable hot layer, same tier as the resident session); serving endpoint `GET /code/{sha256}` = prism's static surface (immutable, no auth by default — the hash is the capability; confidentiality = deployment choice, never a new code ACL)
+  - Work items (LANDED 2026-09-25 — probe + aura coordinated, protocol is a path dep)
+    - [x] probe-protocol: CodePayload enum deleted; `ToolCall.code: CodeRef { url, sha256 }` (version dropped; hash asserted by the frame). probe remote.rs: `CodeCache` per-hash fetch cache (hits==1 across repeat calls locked by remote.rs::code_ref_fetch_verify_cache_and_mismatch_rejection); in-process paths unchanged
+    - [x] aura: CodeBlob (ns 42, meta.rs — pure content rows, Bytes payload field) + ActorDef.code_sha256 (key-discipline fixed [u8;32]); persist() writes blob BEFORE publishing the definition pointer; boot reload hydrates source by hash and ERRORS on a missing blob (definition without content = corruption, not empty program). RemoteProbe types: put_blob at register (no definition row — 4.5b scope is script actors; the blob is their bytes' only home). `PersistedActor` seam unchanged (source at the seam, hash at the row)
+    - [x] config: `code_base_url` in the `node {}` KDL block (Option — absent = remote delivery answers an error VALUE; RealmSet carries the prefix into every lazily created realm; engine assembly is the one injection site)
+    - [x] tests: remote_probe e2e boots with a test-local HTTP source; remote_code_travels_as_reference asserts blob-at-register + reference round-trip; both remote e2es exercise the real fetch path (locked wire shape = production shape)
+    - [x] prism PLAN: Phase 1.9 — `GET /code/{sha256}` export entry (no auth default; signed URL + cache-key normalization as the deployment option)
+    - dependency note: remote types are unusable in production until a source serves the blobs (prism endpoint or private static deployment); Inline retirement means there is no fallback arm — recorded in ADR-0027 Honest semantic cost
+
+- [x] **Phase 4.12 — Realm-set terminology (ADR-0028, LANDED 2026-09-25)**: the outer
+  isolation axis renames namespace → realm (`RealmSet`/`NamedRealm`/`MqStore::for_realm`,
+  `node { realm }`, `register_in`/`call_in`/`emit_in` take a realm name); the okm key
+  segment keeps `ns` — "ns" now means exactly one thing. No compatibility aliases
+  (correctness-of-model rule, 0026 §3). Code + design docs + PLAN live passages + wiki
+  swept in the same pass; PLAN 3.6/4.5/4.9 historical entries keep landing-time wording
+  (log rule); ADR-0026 twins got dated Update notes.
 
 ## Milestone B — Agent base
 
@@ -249,8 +267,12 @@ callslot deadline 属 feature 组合误判——见下）。
       handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建
       pending marker + 事件重进入 = 给不存在的消费者铺管道，且 gravity 落地时
       形态会变（终态前提纪律）。实施时 probe 不改：marker 是数据非新协议帧。
-- [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
-      登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
+- [ ] ADR-0015 三步实施：归属已按 2026-09-25 修订拆分（见 ADR-0015 Update 节）——
+      ①的 aura 残余（顶替必须可见 + 启动如实披露）已落地（replacement 事件点名
+      alias 与新旧 peer、PresenceGuard 身份核对，alias_takeover.rs 锁）；identity
+      模式开关、密钥对握手、节点登记表、四端点、并入账号——全部住 **prism**
+      （prism PLAN Phase 1.8），aura 不重复建设（同一决定两个家 = 第二真相源）。
+      `credential_env` 删除随 prism 握手线落地时执行（probe 仓，同一协调提交）。
       身份归属修订（2026-09-22）：认证数据住 **prism**，aura 只在投递载荷里收到
       sender 元数据（Ctx 不变）——与 ADR-0017 §3/§5/§7 修订一起在 prism 侧执行
       （aura 侧无远程挂载改造——ADR-0025 的 Plan B 已否决，2026-09-23）。

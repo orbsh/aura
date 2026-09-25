@@ -6,7 +6,7 @@
 
 ## 1. Partition unit: the Actor instance; the instance key decides placement
 
-The smallest partitioning unit is neither a table nor a namespace — it is
+The smallest partitioning unit is neither a table nor a realm — it is
 the **Actor instance**. `InstanceId = (actor_type, key)`, where `key` is the
 instance key (session_id, channel_id, order_id, ...). Placement rules:
 
@@ -107,7 +107,7 @@ segments (the okm key discipline — no textual separators):
 [ns 2B BE][slot 1B][field encodings…][pkey]
 ```
 
-- **ns (2 bytes)**: the okm-level table/edge-table namespace, addressed
+- **ns (2 bytes)**: the okm-level table/edge-table number, addressed
   uniformly within the single okm instance (post ADR-0025, actor
   definitions share the data plane's instance: ActorDef ns 41 beside
   mq/state)
@@ -120,15 +120,15 @@ segments (the okm key discipline — no textual separators):
   (put/get_document, fields, scan, reduce); same-type cross-instance
   aggregation is an ordinary scan/reduce inside the type's ns.
 
-Namespace isolation (the Phase 3.6 mechanism) is orthogonal to type
-nss: the namespace prefix wraps the outermost layer
-(`MqStore::namespaced`), the type nss live inside — different
-namespaces' keyspaces within one physical engine are structurally
-separated, and cross-namespace access is not expressible at the type
-level. WHAT the namespace binds (user, project, or nothing) is an
-application decision (the PLAN 4.10 demotion) — the framework's
-isolation units are exactly two: type ns (storage) and instance
-serialization (routing); user is not among them.
+Realm isolation (the Phase 3.6 mechanism, renamed namespace → realm by
+ADR-0028) is orthogonal to type nss: the realm prefix wraps the
+outermost layer (`MqStore::for_realm`), the type nss live inside —
+different realms' keyspaces within one physical engine are structurally
+separated, and cross-realm access is not expressible at the type level.
+WHAT a realm binds (user, project, or nothing) is an application
+decision (the PLAN 4.10 demotion) — the framework's isolation units are
+exactly two: type ns (storage) and instance serialization (routing);
+user is not among them.
 
 ## 4. Serialization boundary: load on activation, flush on sleep
 

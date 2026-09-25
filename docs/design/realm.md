@@ -38,7 +38,7 @@
 ### 5.2 场域拓扑
 
 ```
-┌─────────────── Event Realm (namespace: default) ───────────────┐
+┌──────────────── Event Realm (realm: default) ────────────────┐
 │                                                                │
 │  Ingress（入口）                                                │
 │  ┌──────────┐                                                  │
@@ -706,7 +706,7 @@ Realm 分发时，对每个匹配的 Route 按 mode 分别处理：On 直接投�
 | 维度 | 选择 | 说明 |
 |------|------|------|
 | **可靠性** | at-least-once | 事件持久化在 okm 队列分区，消费端游标推进——不丢，可能重复。消费端需幂等 |
-| **命名空间** | namespace（默认 "default"） | 场域按 namespace 隔离，跨 namespace 的事件不投递 |
+| **realm** | realm 名（默认 "default"） | 场域按 realm 隔离，跨 realm 的事件不投递（ADR-0028 改名） |
 | **顺序保证** | 因果一致性 | 如果 e1 因果先于 e2（e1 的处理导致 e2 的发射），则任何订阅者收到 e1 必在 e2 之前。无因果关系的并发事件可乱序 |
 
 **持久队列（4.5c step 2b 裁决）**：事件投递的存储形态是 okm 内嵌持久分区，不是内存 broadcast——
@@ -1116,7 +1116,7 @@ impl RealmHost {
 }
 ```
 
-HTTP 响应和 Actor return 值走同一个 `resolve_call` 通道——call 的响应不污染事件命名空间。
+HTTP 响应和 Actor return 值走同一个 `resolve_call` 通道——call 的响应不混入事件流。
 
 **Python 桥接**：Python 的 `await ctx.invoke()` 通过 PyO3 桥接为 Rust future。`await` 时 Python coroutine 挂起并释放 GIL，Tokio runtime 调度其他 task。oneshot 解锁 → Rust future 完成 → Python coroutine 恢复。
 

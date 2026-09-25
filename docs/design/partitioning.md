@@ -5,7 +5,7 @@
 
 ## 1. 分区单位：Actor 实例，instance key 定归属
 
-分区的最小单位不是表、不是 namespace，而是 **Actor 实例**。`InstanceId = (actor_type, key)`，其中 `key` 就是 instance key（如 session_id、channel_id、order_id）。归属规则：
+分区的最小单位不是表、不是 realm，而是 **Actor 实例**。`InstanceId = (actor_type, key)`，其中 `key` 就是 instance key（如 session_id、channel_id、order_id）。归属规则：
 
 - **同 key 串行**：同一 instance key 的所有消息进同一个实例的 queue，单消费者逐条处理——状态一致性不靠锁，靠队列串行
 - **异 key 并行**：不同 key 的实例完全独立，互不阻塞
@@ -57,11 +57,11 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 [ns 2B BE][slot 1B][字段编码…][pkey]
 ```
 
-- **ns（2 字节）**：okm 层的表/边表 namespace，单一 okm 实例内统一编址（ADR-0025 后 actor 定义与数据同实例：ActorDef ns 41 与 mq/state 并列）
+- **ns（2 字节）**：okm 层的表/边表编号，单一 okm 实例内统一编址（ADR-0025 后 actor 定义与数据同实例：ActorDef ns 41 与 mq/state 并列）
 - **slot（1 字节）**：实例内访问方法判别（0 = 主条目），同一张表的全部索引条目共享 ns 段
 - **Actor 状态**：实例状态不是每实例一份平铺 document——类型在自己的 ns 内声明 collections（schema 随 interface_schema 上传持久化），handler 经 `ctx.store.emit(op)` 以 okm Collection 指令读写（put/get_document、fields、scan、reduce）；同类型跨实例聚合 = 类型 ns 内的普通 scan/reduce。
 
-namespace 隔离（Phase 3.6 机制）与类型 ns 正交：namespace 前缀加在最外层（`MqStore::namespaced`），类型 ns 在其内——同一物理引擎内不同 namespace 的键空间结构性分离，跨 namespace 的访问在类型上就不可表达。namespace 绑定什么维度（用户、项目、或不绑）是应用的决定（PLAN 4.10 降级裁决）——框架的隔离单元只有两个：类型 ns（存储）与实例串行（路由），用户不在其中。
+realm 隔离（Phase 3.6 机制，ADR-0028 由 namespace 改名而来）与类型 ns 正交：realm 前缀加在最外层（`MqStore::for_realm`），类型 ns 在其内——同一物理引擎内不同 realm 的键空间结构性分离，跨 realm 的访问在类型上就不可表达。realm 绑定什么维度（用户、项目、或不绑）是应用的决定（PLAN 4.10 降级裁决）——框架的隔离单元只有两个：类型 ns（存储）与实例串行（路由），用户不在其中。
 
 ## 4. 序列化边界：激活时载入，休眠时写回
 

@@ -70,3 +70,13 @@ Protocol and concept layer carry ONLY `event`. The wire field is `ev` — in bot
 - Projection actors remain exactly where they were always justified: cross-type precomputation. Same-type aggregation becomes an ordinary scan inside the type's ns.
 - Prism protocol naming (`ev`, direction-free) lands on the prism side with its connection-plane work (Phase 8); aura's side is documentation only.
 - Wiki sync (`~/.hermes/wiki/aura-architecture.md`) is due when the implementation lands, together with the storage.md/partitioning.md rewrites — this ADR supersedes the "instance state is one document" passages there.
+
+## Update — terminology (2026-09-25, ADR-0028)
+
+ADR-0028 renamed the outer isolation axis `namespace` → `realm` (the axis named "ns"/`#[kv_ns]`
+inside the okm key model is untouched — it keeps the `ns` spelling). This ADR's body keeps its
+landing-time wording (§1's "Namespace isolation … `MqStore::namespaced`", Consequences'
+"namespaced types" describe what was true at 2026-09-24 — the decision-archive/log rule); the
+current surfaces read `MqStore::for_realm`, `RealmSet`, `NamedRealm`. The ruling is unchanged:
+realm isolation is an orthogonal outer prefix, the binding dimension is the application's
+choice, the framework's isolation units remain exactly two (type ns, instance serialization).

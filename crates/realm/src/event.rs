@@ -1,4 +1,4 @@
-//! Event namespace (Phase 3): emit routing, emits whitelist, dead events.
+//! Event routing (Phase 3): emit routing table, dead-event ring.
 //!
 //! Design (wiki §5): the event name IS the reference. Actors never address
 //! each other directly — `emit(name, data)` reaches whoever registered

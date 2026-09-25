@@ -7,7 +7,7 @@ fn parses_two_plane_storage() {
     let text = r#"
 node {
     id "home-node"
-    namespace "default"
+    realm "default"
 }
 
 data {
@@ -27,7 +27,7 @@ fn converts_to_engine_config() {
     let text = r#"
 node {
     id "n1"
-    namespace "default"
+    realm "default"
 }
 
 data {
@@ -51,7 +51,7 @@ fn unknown_engine_is_rejected() {
     let text = r#"
 node {
     id "n1"
-    namespace "default"
+    realm "default"
 }
 
 data {
@@ -72,7 +72,7 @@ fn slate_engine_shape_parses_with_s3_block() {
     let text = r#"
 node {
     id "n1"
-    namespace "default"
+    realm "default"
 }
 
 data {

@@ -70,3 +70,11 @@ collection 及其键/索引声明搭乘既有的 Phase 4.5b upload 生命周期�
 - projection actor 恰好保留在它一贯正当的位置：跨类型预计算。同类型聚合成为类型 ns 内的普通 scan。
 - prism 协议命名（`ev`、无方向）随 prism 侧连接平面工作落地（Phase 8）；aura 侧仅是文档。
 - wiki 同步（`~/.hermes/wiki/aura-architecture.md`）随实现落地时执行，连同 storage.md/partitioning.md 重写——本 ADR 取代其中「实例状态是一个 document」的段落。
+
+## 更新 — 术语（2026-09-25，ADR-0028）
+
+ADR-0028 把外层隔离轴由 `namespace` 改名为 `realm`（okm 键模型内名为 "ns"/`#[kv_ns]` 的那个
+轴不动，保留 ns 拼写）。本 ADR 正文保持落地当时的措辞（§1 的「Namespace isolation …
+`MqStore::namespaced`」、Consequences 的 "namespaced types" 记录的是 2026-09-24 为真之事——
+决策档案/日志规则）；当前公共面读作 `MqStore::for_realm`、`RealmSet`、`NamedRealm`。裁决不变：
+realm 隔离是正交的外层前缀，绑定维度是应用的决定，框架的隔离单元依旧恰好两个（类型 ns、实例串行）。

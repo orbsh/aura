@@ -7,7 +7,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
 - [x] Phase 0 — Workspace skeleton: `crates/{engine,actor,realm,storage,config,cli}`; single-binary start, no external deps (no Docker / etcd / DB). Echo Actor: define → invoke → return.
 - [x] Phase 1 — Actor runtime: Rust host + Tokio MPSC pipeline; per-Actor context (in-memory modify, on-disk sleep) — ctx surface per ADR-0011 (state/metadata/invoke only; emit/on, contracts, hooks stay off ctx); partition key routing; on_sleep/on_wake scale-to-zero (state → Fjall).
 - [x] Phase 2 — Embedded languages: implemented by importing the probe runtime's carriers (steel/python/wasmtime/nushell, feature-forwarded) instead of an in-tree Polyglot Bridge — one carrier implementation serves the remote actuator and embedded actors. `ActorType::script(language, source, entry)`; script bodies run via spawn_blocking.
-- [~] Phase 2.5 — Script-actor ctx bridge
+- [x] Phase 2.5 — Script-actor ctx bridge (CLOSED 2026-09-25: all four carriers bridge now — the nushell PTY file bridge landed, see 遗留节同题条目; ctx_state_* were later retired by ADR-0026 §3 — the bridge carries ctx_invoke / ctx_store_emit / ctx_interface_schema)
   - [x] Host functions exposed into carrier scripts: probe-runtime gains `HostBridge`/`HostFn` (`ExecRequest.host`); carriers marshal one JSON arg in / native value out
     - steel: builtins via `register_fn`, native hash/number marshal
     - python: `PyCFunction::new_closure` closures
@@ -19,7 +19,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - MqData sort key: [event_id][part_id][time] — LOGICAL time (ms) monotonic per partition via the MqHead row (max(now_ms, last+1)), append O(1) (the max-scan is gone), skip-to-now reads the head; wall truth rides the payload
     - part_id: FNV-1a hash retained (partition values are user-data scale — a registry would grow unbounded); 0 RESERVED for the singleton partition (part_id_of; hash collision maps to 1)
     - not landed (deferred until a real one-to-many consumer appears): index-scan-based fan-out where key VALUES enter index entries (PLAN:19's original sketch) — the current MqData primary key IS the access method for per-event/per-partition scans; cursor-per-subscriber already covers one-to-many delivery
-- [~] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)**
+- [x] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)** (CLOSED 2026-09-25 — acceptance items all test-locked: shared in-VM globals + VM drop on evict = echo.rs::idle_eviction_drops_the_resident_session; state survives eviction = state_survives_scale_to_zero; probe disconnect flips presence + in-flight fails as error value = remote_probe.rs::remote_probe_roundtrip extended with the abort/unregister/not-connected assertion)
   - Problem: spawn-per-job — every message re-loads source, builds a fresh VM, runs the entry, drops it
     - script globals never survive between messages
     - idle_ttl eviction loses nothing → per-type TTL / retention-window semantics meaningless for script actors
@@ -70,17 +70,17 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - [x] Two-instance okm model: data and metadata are TWO separate okm instances, engines independently selectable (fjall | slate); single-node runs both on fjall in different directories; ns isolation per-instance → ns reuse never collides, okm needs zero changes
   - [x] Fjall data-plane (`FjallStateStore`, per-field native LSM writes, boot error on feature mismatch — never silent fallback; acceptance: state survives engine restart)
   - [ ] Remaining: slate engine option on both planes
-- [ ] **Phase 4.5 — Platform actor model (PRIORITY): Actor definitions live on the data plane, never the compile plane**
+- [x] **Phase 4.5 — Platform actor model (PRIORITY): Actor definitions live on the data plane, never the compile plane** (CLOSED 2026-09-25 — all work items landed; the platform's actor forms are script source + wasm artifact, definitions persist via the 4.5b upload lifecycle)
   - Ruling: the engine ships NO in-process Rust actor
     - framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
     - k10r/gravity-class Rust services ship as `.wasm` artifacts uploaded at runtime (`set(lang="wasm", bytes)`)
     - compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework
   - Work items
     - [x] wasm carrier completion (LANDED 2026-09-23): `WasmSession` (probe-runtime `carrier/wasmtime.rs`) — resident session, module compiled at spawn; CBOR over linear memory (host writes args via the guest's `aura_alloc`, calls `handler(ptr, len) -> i64`, unpacks `(ptr:u32)<<32|len:u32`); handlers = function exports named after their events; `interface_schema` explicit export wins else export-list derivation; ctx-bridge host imports under `aura_host` namespace, uniform `(i32, i32) -> i64` packed ABI, undeclared import = instantiation failure (capability refusal); source = WAT text or base64 `.wasm`; `ResidentSession` gained `as_any` for carrier-specific introspection. Tests: probe `tests/wasm_session.rs` (WAT fixtures, 7 tests)
-    - [x] metadata declaration unified on the type: `ActorType.receives` (ReceiveDecl: event + key_field + wildcard) with `.on(event, key_field)` / `.on_wildcard(pattern)` builders; introspection writes onto the type at register; `register_type` assembles routes as a side effect — one declaration surface per type (emits: none, per ADR-0012). Hot-swap route updates still pending (needs a set() versioning path)
+    - [x] metadata declaration unified on the type: `ActorType.receives` (ReceiveDecl: event + key_field + wildcard) with `.on(event, key_field)` / `.on_wildcard(pattern)` builders; introspection writes onto the type at register; `register_type` assembles routes as a side effect — one declaration surface per type (emits: none, per ADR-0012). Hot-swap = replacement semantics LANDED 2026-09-25 (see 遗留节 热替换条目)
     - [x] remove the Rust-closure actor form (`ActorType::simple`) from the public API — deleted; cli demo + all engine tests migrated to script actors (steel; nushell for the slow handler). Body::Rust remains in the enum with no public constructor (framework-internal future use)
       - rewrite cli echo demo + engine tests onto script actors (wasm/steel/python) as the acceptance path
-    - [~] NUSHELL RESOLVED → PTY residency (ruled 2026-09-15, prototype-verified)
+    - [x] NUSHELL RESOLVED → PTY residency (ruled 2026-09-15, prototype-verified; ctx bridge + residency fully landed 2026-09-25)
       - resident session: one PTY per actor instance running a long-lived `nu` REPL (`--no-config-file`); idle_ttl eviction = close the PTY
       - multi-entry: `use 'operation.nu' *` imports all exports; delivery addresses the handler by event name (exported fn names = event names)
       - session state: `$env` variables persist across calls within the resident process — the memory tier (vanishes at eviction); durable state goes through the ctx bridge (landed 2026-09-25, see below)
@@ -255,7 +255,17 @@ callslot deadline 属 feature 组合误判——见下）。
       sender 元数据（Ctx 不变）——与 ADR-0017 §3/§5/§7 修订一起在 prism 侧执行
       （aura 侧无远程挂载改造——ADR-0025 的 Plan B 已否决，2026-09-23）。
 - [ ] Phase 4 Remaining：slate engine option on both planes（无压力）。
-- [ ] 热替换路由更新（4.5）：needs a set() versioning path。
+- [x] 热替换路由更新（4.5，LANDED 2026-09-25）：register_type 改替换语义——同名类型
+      再注册 = 先在内存 router（drop_actor）与持久 EventRoute 表（routes_drop_actor）
+      丢弃旧路由再按新 receives 装配，并回收该类型全部驻留实例/session（旧 source
+      不再应答，下条消息按新代码冷启动；实例表是可丢弃热缓存，无数据损失）。审计顺
+      带修出的真 bug：routes_drop_actor 原实现把 actor_id 拼在主键 [event_id][actor_id]
+      的 event 段做前缀扫——只有 id 恰好相等才删对行，会误删他人路由（旧测试侥幸通过
+      纯属 id 相撞）；改为走 by_actor 索引，错开 id 的回归锁 =
+      mq_okm.rs::routes_drop_actor_targets_only_its_own_rows（旧代码红、新代码绿验过）。
+      引擎侧锁 = echo.rs::re_register_replaces_routes（路由无重复、退役事件停止投递、
+      持久表与 router 一致、执行换到 v2 代码）。PLAN:80 "needs a set() versioning path"
+      以替换语义解决（同 ns 的 ActorDef put = 最新版本赢，无需版本链）。
 
 ### 跨仓备忘（prism 侧）
 

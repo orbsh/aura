@@ -228,3 +228,22 @@ of config that is legible in review.
 
 Until step 2 is configured for a deployment, that deployment runs in `open` mode and its
 protection is the network boundary; the config says so, and the startup log says so.
+
+## Update — implementation attribution (2026-09-25)
+
+The decision stands; its landing split follows ADR-0017 §5/§7 (auth data lives in the
+connection plane, Prism). Building the `identity` mode switch, the node registry, and the
+approval endpoints inside aura would give the same decision two homes — a second source of
+truth that dies the day the Prism gateway lands. Attribution per surface:
+
+- **Prism (connection plane)**: the `identity` config field (no default), `open`/`required`
+  answers, the `unauthenticated` reply, the keypair handshake, the node registry and its four
+  endpoints, account folding. Lands with Prism's gateway work — the `GET /nodes` and friends
+  ride Prism's routing surface (`/admin/...`).
+- **Aura (this repo, LANDED 2026-09-25)**: the residue that is the gateway's own correctness
+  regardless of who configures it — the replacement discipline. An alias takeover stays
+  permitted in the open posture (a restarted container must reclaim its name) but is never
+  silent: the gateway logs the event naming the alias and both peer addresses; the presence
+  guard is identity-checked so the displaced connection cannot unregister the new holder.
+  Startup disclosure of the unauthenticated posture prints where the current truth lives
+  (the log), and moves to Prism when the mount does.

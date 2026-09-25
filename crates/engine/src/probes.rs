@@ -20,18 +20,31 @@ pub async fn serve_probes_listener(
     realm: SharedRealm,
     listener: tokio::net::TcpListener,
 ) -> anyhow::Result<()> {
+    // Honest disclosure (ADR-0015 §7): registrations here are unauth-
+    // enticated — whoever can reach this port may claim any alias. The
+    // trust-mode switch and the keypair handshake ride the prism gateway
+    // (connection plane); this line states the CURRENT posture where it
+    // is visible (the log), not only in some config file.
+    eprintln!(
+        "probe gateway: registrations are unauthenticated — the network is the boundary \
+         (node identity: ADR-0015, prism gateway plane)"
+    );
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer) = listener.accept().await?;
         let realm = realm.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(realm, stream).await {
+            if let Err(e) = handle_connection(realm, stream, peer).await {
                 eprintln!("probe connection error: {e:#}");
             }
         });
     }
 }
 
-async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) -> anyhow::Result<()> {
+async fn handle_connection(
+    realm: SharedRealm,
+    stream: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+) -> anyhow::Result<()> {
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
 
@@ -49,12 +62,21 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
     // Writer channel: realm calls push frames; this task owns the sink.
     // A clone stays with the reader so it can answer host calls.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
+    let entry = aura_realm::ProbeConn { sender: tx.clone(), peer };
     {
         let mut r = realm.lock().await;
-        if let Some(old) = r.probes.insert(node_alias.clone(), tx.clone()) {
-            // Re-registration (reconnect): the old writer channel dies with
-            // this insert — its reader task exits on send failure.
-            let _ = old;
+        if let Some(old) = r.probes.insert(node_alias.clone(), entry.clone()) {
+            // Alias replacement (in `open` posture a restarted container
+            // must be able to reclaim its name from a stale registration).
+            // Allowed — but never silent (ADR-0015 §7 replacement
+            // discipline): the event names the alias and BOTH peers, so
+            // an operator can always see where their calls actually go.
+            eprintln!(
+                "probe gateway: alias '{node_alias}' REPLACED — old peer {} displaced by new peer {peer:?}",
+                old.peer
+            );
+            // The old writer channel dies when its sender is dropped by
+            // the map overwrite; its reader task exits on send failure.
         }
     }
     // Presence must flip when this connection's task ENDS — by any path,
@@ -141,7 +163,7 @@ impl Drop for PresenceGuard {
         let channel = self.channel.clone();
         tokio::spawn(async move {
             let mut r = realm.lock().await;
-            if r.probes.get(&alias).is_some_and(|tx| tx.same_channel(&channel)) {
+            if r.probes.get(&alias).is_some_and(|conn| conn.sender.same_channel(&channel)) {
                 r.probes.remove(&alias);
             }
         });

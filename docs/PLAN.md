@@ -316,28 +316,14 @@ channel 一实例。
   `cargo update` okm-core 并补 `scan_range` 转发；`MaxInstanceId` 等待 okm
   ADR-0023 预置组合子落地后收缩为 `MaxKeep` 声明（镜像字段随之退役）。
 
-### krystallizer（~/world/krystallizer）——已暂存未提交
+### krystallizer（~/world/krystallizer）——已完成
 
-- [ ] ADR-0008 unified channel log + ADR-0009 multi-party participation（en+zh）；
+- [x] ADR-0008 unified channel log + ADR-0009 multi-party participation（en+zh）；
       ADR-0001/0002/0006 dated Update；PLAN Phase 2 重写 + 2.5/2.6/2.7。
-      提交建议（一个提交）：`docs(adr): 0008 unified channel log + 0009
-      multi-party participation; amends 0001/0002/0006; PLAN phases 2.x`
+      已按建议单提交落地（krystallizer 3660597）。
 
-### 遗留待办（未动）
+### 备注
 
-- [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
-      函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
-- [ ] cold call over the wire（依赖 Phase 6，勿单独实施）：重进入路径的前提是
-      调用方有挂起/恢复契约——gravity 的 transcript 持久化 + 脚本侧约定 resume
-      handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建
-      pending marker + 事件重进入 = 给不存在的消费者铺管道，且 gravity 落地时
-      形态会变（终态前提纪律）。实施时 probe 不改：marker 是数据非新协议帧。
-- [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
-      登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
-      身份归属修订（2026-09-22）：认证数据（用户注册表、device↔user 绑定、节点
-      登记）住 **prism**，aura 只在投递载荷里收到 sender 元数据（Ctx 不变）——
-      与 ADR-0017 §3/§5/§7 修订一起在 prism 侧执行（aura 侧无远程挂载改造——
-      ADR-0025 的 Plan B 已否决，2026-09-23）。
 - 规则留存位置：okm ADR-0018（EN+中文）＋ `okm-project-conventions` 技能（细则在
   `references/storage-value-model.md`）＋ `aura-dev` 技能；两仓 PLAN 有对应条目。
 - 明确不做（本会话记录）：内部时间 epoch（okm）、补偿性 cron 连跑、无标签回归

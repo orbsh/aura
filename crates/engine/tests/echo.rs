@@ -544,7 +544,8 @@ async fn script_actor_definition_survives_restart() {
 // Phase 4.5b (c): nushell introspection — interface_schema() declared in
 // the script is callable at registration through the same generated
 // wrapper (one spawn, call schema, done). Nu actors declare TTL in
-// script like python/steel; ctx host fns remain unavailable.
+// script like python/steel; ctx host fns ride the PTY file bridge (see
+// nushell_store_emit_roundtrip below).
 #[cfg(feature = "nushell")]
 #[tokio::test]
 async fn nushell_interface_schema_declares_idle_ttl() {
@@ -688,4 +689,60 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
 
     // A type without a storage declaration has no ctx.store surface:
     // registering one and calling ctx_store_emit errors as a value.
+}
+
+// The nushell PTY ctx bridge end to end (PLAN 2.5/2.6 tail): a nu actor
+// with a hand-written storage literal writes and reads through
+// `ctx-store-emit` — the file-round-trip bridge (nu writes req-*.json,
+// the Rust call loop sweeps it against the real realm store, resp-*.json
+// returns the value). Locks the aura side: the realm's plan resolution +
+// store_exec behind the bridge, not just the carrier's file protocol
+// (probe's nu_bridge.rs locks that layer with a fixture HostBridge).
+#[cfg(feature = "nushell")]
+#[tokio::test]
+async fn nushell_store_emit_roundtrip() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(aura_actor::ActorType::script(
+            "nu-keeper",
+            "nushell",
+            r#"
+export def interface_schema [args] {
+    { storage: { collections: { notes: { schema: {
+        key_len: 8,
+        key_fields: [{ name: "id", ty: "U64", width: 8, offset: 0, tag: 0 }],
+        layout_version: 1,
+        hot_width: 8,
+        payload_header_len: 3,
+        hot_fields: [{ name: "count", ty: "U64", width: 8, offset: 0, tag: 0 }],
+        cold_fields: [],
+        slots: { primary: 0, dynamic: 1, dict_id: 2, dict_name: 3,
+                 declared_index_base: 4096, declared_reduce_base: 8192, junction_base: 12288 }
+    } } } } }
+}
+
+export def put-note [args] {
+    ctx-store-emit { collection: "notes", op: "put_document",
+                     key: { id: 7 }, doc: { count: 42 } }
+    { ok: true }
+}
+
+export def get-note [args] {
+    ctx-store-emit { collection: "notes", op: "get_document", key: { id: 7 } }
+}
+"#,
+        ))
+        .await
+        .expect("register nu-keeper");
+
+    let target = aura_actor::InstanceId { actor_type: "nu-keeper".into(), key: "k".into() };
+    engine
+        .invoke(target.clone(), "put-note", serde_json::json!({}))
+        .await
+        .expect("put through the nu ctx bridge");
+    let got = engine
+        .invoke(target.clone(), "get-note", serde_json::json!({}))
+        .await
+        .expect("get through the nu ctx bridge");
+    assert_eq!(got["count"], 42, "nu handler round-tripped the realm store: {got}");
 }

@@ -580,12 +580,9 @@ impl Realm {
                 // instance, loaded once, called per event. Cross-call
                 // state lives in the session (module globals / $env);
                 // eviction drops it. spawn_blocking so host fns may block
-                // on the async ctx. Nushell (PTY REPL) cannot call back —
-                // no bridge there.
-                let pure_nushell = language == "nushell";
-                let host = if pure_nushell {
-                    None
-                } else {
+                // on the async ctx. Nushell carries the bridge too now —
+                // host fns ride the session dir's request/response files.
+                let host = {
                     // Wasm full-power raw surface: the type's resolved
                     // plan carries its ns; the raw engine handle rides
                     // the mq clone the ctx already holds.

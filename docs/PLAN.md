@@ -238,8 +238,11 @@ callslot deadline 属 feature 组合误判——见下）。
       时才值得（Windmill 判据）。
 - [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
       函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
-- [ ] cold call over the wire：probe 不必改，缺的是 aura 侧 `resolve_call`
-      重进入路径 + gravity 的持久化。
+- [ ] cold call over the wire（依赖 Phase 6，勿单独实施）：重进入路径的前提是
+      调用方有挂起/恢复契约——gravity 的 transcript 持久化 + 脚本侧约定 resume
+      handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建
+      pending marker + 事件重进入 = 给不存在的消费者铺管道，且 gravity 落地时
+      形态会变（终态前提纪律）。实施时 probe 不改：marker 是数据非新协议帧。
 - [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
       登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
       身份归属修订（2026-09-22）：认证数据住 **prism**，aura 只在投递载荷里收到
@@ -286,8 +289,11 @@ channel 一实例。
 
 - [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
       函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
-- [ ] cold call over the wire：probe 不必改，缺的是 aura 侧 `resolve_call`
-      重进入路径 + gravity 的持久化。
+- [ ] cold call over the wire（依赖 Phase 6，勿单独实施）：重进入路径的前提是
+      调用方有挂起/恢复契约——gravity 的 transcript 持久化 + 脚本侧约定 resume
+      handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建
+      pending marker + 事件重进入 = 给不存在的消费者铺管道，且 gravity 落地时
+      形态会变（终态前提纪律）。实施时 probe 不改：marker 是数据非新协议帧。
 - [ ] ADR-0015 三步实施：①声明式身份开关 + 如实披露（无密码学）②`probe keygen`
       登记表 ③并入账号体系；`credential_env` 现标注「未校验」。
       身份归属修订（2026-09-22）：认证数据（用户注册表、device↔user 绑定、节点

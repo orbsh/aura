@@ -54,9 +54,10 @@ ActorType "cart"                ← blueprint: state schema + handler + subscrip
 - **Routing**: `router.on("order.created", "cart", "user_id")` delivers to
   `(type, key extracted from the event)`; `ctx_invoke` addresses targets the
   same way with `{type, key}`
-- **State layout**: the first segment of an instance's state key is the type
-  (`[4B len(type)][type][4B len(key)][key][field]`) — instances of one type
-  cluster in the keyspace, so a prefix scan enumerates them by type
+- **State layout**: storage isolation lives at the type level (ADR-0026 §3) —
+  each actor type occupies one real okm ns and declares its own collections;
+  instances are documents inside it. The instance key only answers "who
+  serially processes this message"; it no longer decides storage layout
 - **Shard identity**: `(actor_type, key)` together form the full partition
   identity; the key alone is not enough ("alice" under `cart` and under
   `session` are two unrelated instances)
@@ -158,7 +159,7 @@ lifecycle of partition state is decoupled from instance residency**:
   independence is the ruling, not a defect. Moving to a logical
   single-cluster architecture wholesale would be a new ruling overturning
   ADR-0013, not an extension point within this one
-- **Routing invariant**: the partition-key → shard mapping is stable, and
+- **Routing invariant**: the instance key → shard mapping is stable, and
   **requests follow the data** — every turn of a session routes to the
   machine hosting its partition; history never "goes missing", it just is
   not where a misrouted request looks

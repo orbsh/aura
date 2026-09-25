@@ -79,7 +79,7 @@ set(<lang>, <script/wasm>)
 
 提交或更新一个 Actor **定义**（类型）。`lang` ∈ {Steel, Python, Wasm}。脚本内以 `@on` 装饰器（或 steel `on` 函数 / wasm 导出约定）声明多入口 handler（事件名映射为函数参数），`interface_schema` 由装饰器推导（手写可覆盖 lifecycle）。名字为 `execute` 的 handler 是直接调用通道（`ctx.invoke`）的目标，无特权。运行时调用 `set()` 可热替换 Actor 实现——不仅换行为，还换语言。
 
-`set()` 定义的是类型，不是实例。Actor 实例由 Realm 根据 partition key 按需激活（详见 [§5.11](#511-actor-实例化与分片)）。
+`set()` 定义的是类型，不是实例。Actor 实例由 Realm 根据 instance key 按需激活（详见 [§5.11](#511-actor-实例化与分片)）。
 
 **脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在数据面 okm 实例的 **ActorDef 表**（ns 41，与 mq/state 并列——ADR-0025 方案 A；实现为 `actor/src/persist.rs`），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
 
@@ -101,7 +101,7 @@ meta instance, partition: "actor_defs"
 
 `interface_schema()` 是 Actor 的**统一契约**——声明接收事件，以及可选的发射事件清单。
 
-**核心洞察：事件名就是引用。** 当 `interface_schema()` 声明 Actor B 接收 `"charge"` 事件时，任何人 emit `"charge"` 就是在引用 B。事件名 = 引用，partition key = 实例定位。不需要单独的 `invoke` / `direct_send` 原语——emit 本身就是引用调用。
+**核心洞察：事件名就是引用。** 当 `interface_schema()` 声明 Actor B 接收 `"charge"` 事件时，任何人 emit `"charge"` 就是在引用 B。事件名 = 引用，instance key = 实例定位。不需要单独的 `invoke` / `direct_send` 原语——emit 本身就是引用调用。
 
 ```python
 def interface_schema():
@@ -138,7 +138,7 @@ def interface_schema():
 
 **`receives` 中每个事件声明：**
 - `mode`：触发模式——`on`（单事件）、`on_join`（多事件收齐）、`on_batch`（同类打包）、`on_debounce`（去抖）。详见 [§5.6 事件组合原语](#56-事件组合原语)
-- `key`：partition key 字段——Realm 按此字段值路由到 Actor 实例
+- `key`：instance key 字段——Realm 按此字段值路由到 Actor 实例
 - `params`：入参 JSON Schema
 
 **`returns` 是 Actor 级别的单一返回值声明。** 每个 Actor 有一个入口函数，多个事件映射到多个参数，返回一个值：
@@ -189,7 +189,7 @@ Route { target: "analytics", events: ["payment", "inventory"], mode: Join(5s) }
 Host 启动时调用 `interface_schema()`，构建事件路由表：
 
 ```
-事件名 → partition key 字段 → params schema → returns? → Actor 定义 → on handler
+事件名 → instance key 字段 → params schema → returns? → Actor 定义 → on handler
 ```
 
 当 A emit `"add_to_cart"` 时：
@@ -264,7 +264,7 @@ def handle_order_events(ctx, data):
     emit("dept_stats_updated", aggregate(data))
 ```
 
-通配符声明和精确声明可以共存——事件同时匹配通配符参数和精确参数，各自独立路由到入口函数的对应参数。通配符声明不指定 partition key（它监听一类事件，不绑定具体实体），路由到场域中该 Actor 的单例实例。
+通配符声明和精确声明可以共存——事件同时匹配通配符参数和精确参数，各自独立路由到入口函数的对应参数。通配符声明不指定 instance key（它监听一类事件，不绑定具体实体），路由到场域中该 Actor 的单例实例。
 
 **通配符声明**：通配符参数不在 `interface_schema()` 的 `receives` 中声明具体事件名，而是用 `wildcard_receives` 列表：
 
@@ -292,7 +292,7 @@ pub struct EventRouter {
 
 struct Route {
     actor_type: String,
-    partition_key_field: String,              // 从事件数据中取哪个字段作为 key
+    instance_key_field: String,              // 从事件数据中取哪个字段作为 key
     handler: HandlerRef,
 }
 
@@ -300,7 +300,7 @@ struct WildcardRoute {
     prefix: String,                           // "order."（去掉 .* 后的前缀）
     actor_type: String,
     handler: HandlerRef,
-    // 无 partition_key_field —— 通配符 handler 是单例实例
+    // 无 instance_key_field —— 通配符 handler 是单例实例
 }
 ```
 
@@ -325,10 +325,10 @@ impl Realm {
             // 队列身份：@on 声明了 key → (route 事件, partition)；
             // 未声明 key → (route 事件, "__singleton__")。
             // partition 值来自事件数据（key 字段取值），不来自发射者。
-            let partition = if route.partition_key_field.is_empty() {
+            let partition = if route.instance_key_field.is_empty() {
                 "__singleton__".to_string()
             } else {
-                data.get(&route.partition_key_field)
+                data.get(&route.instance_key_field)
                     .and_then(|v| v.as_str())
                     .unwrap_or("__default__").to_string()
             };
@@ -377,14 +377,14 @@ impl Realm {
 
 **通配订阅的具体名展开**：router 层保存模式串（`"order.*"`），但队列身份和 handler 名永远是具体事件名。emit 时以发出的具体名落队列；通配订阅者的消费任务每轮把模式前缀经 `mq::events_matching`（EventName registry 前缀扫描）展开为已注册的具体名集合，逐名读 cursor/backlog，投递 handler = 具体名，每个具体名一条 cursor（有界：只累积实际见过的词汇）。新事件名出现时自动加入下一轮展开——无需订阅者做任何事。
 
-**通配符参数的实例化**：通配符参数不绑定 partition key，路由到固定 key `"__singleton__"` 的实例——整个 Actor 类型只有一个实例。这与投影 Actor 的场景一致：一个 DeptStatsActor 实例监听所有 `order.*` 事件，持续聚合。
+**通配符参数的实例化**：通配符参数不绑定 instance key，路由到固定 key `"__singleton__"` 的实例——整个 Actor 类型只有一个实例。这与投影 Actor 的场景一致：一个 DeptStatsActor 实例监听所有 `order.*` 事件，持续聚合。
 
 **精确 + 通配符同时匹配**：一个事件可以同时命中精确参数和通配符参数，各自独立投递：
 
 ```
 emit("order_created", {"user_id": "A", ...})
 
-→ 精确匹配：CartActor 的 on("order_created")，partition key = "A"
+→ 精确匹配：CartActor 的 on("order_created")，instance key = "A"
 → 通配符匹配：DeptStatsActor 的 on("order.*")，单例实例
 
 两个 Actor 实例各自独立处理，互不阻塞。
@@ -685,7 +685,7 @@ enum RouteMode {
 struct Route {
     actor_type: String,
     mode: RouteMode,
-    partition_key_field: Option<String>,  // on 有，join/batch/debounce 可选
+    instance_key_field: Option<String>,  // on 有，join/batch/debounce 可选
     handler: HandlerRef,
 }
 ```
@@ -772,7 +772,7 @@ tellus 的 `Error` 是单一语言（Rust）类型系统的产物：同一种语
 
 传统 Actor 模型的三根支柱——actor 树（监管层级）、ActorRef 一等收件箱、tell/ask 直发——Aura 都没有（或只有退化形态）：无监管树（仅保留崩溃重启式 supervision，§5.8）、无 ActorRef 一等收件箱（内部的事件队列 + per-subscription cursor 只是路由之下的串行化 + 背压实现细节，不可寻址）、通信靠匿名事件总线而非直发。它不是 CSP：没有显式类型化 channel，也没有同步会合（rendezvous）——`emit` 是 fire-and-forget 的 pub/sub。
 
-Aura 从 actor 保留下来的是**封装性**：state 按 partition key 隔离、单线程串行消费、实例状态自持。真正的新东西是把**事件总线升格为主通信原语**（见第 1 条），用一个共享场域（Event Realm）替代 per-entity 的寻址队列——一片匿名 pub/sub 黑板，不关心谁发射、谁处理。
+Aura 从 actor 保留下来的是**封装性**：state 按 instance key 隔离、单线程串行消费、实例状态自持。真正的新东西是把**事件总线升格为主通信原语**（见第 1 条），用一个共享场域（Event Realm）替代 per-entity 的寻址队列——一片匿名 pub/sub 黑板，不关心谁发射、谁处理。
 
 **1. 事件总线是主通信原语，不是辅助**
 
@@ -802,7 +802,7 @@ MQ 的第三个组件身份消失。任何残留需求（外部投递、审计�
 
 ### 5.11 Actor 实例化与分片
 
-`set()` 定义的是 Actor **类型**（脚本 + interface_schema）。运行时，Realm 根据事件的 partition key 激活对应的 Actor **实例**。
+`set()` 定义的是 Actor **类型**（脚本 + interface_schema）。运行时，Realm 根据事件的 instance key 激活对应的 Actor **实例**。
 
 **问题**：不同用户同时 emit("add_to_cart")，如果一个 Actor 实例串行处理所有请求，用户 B 要等用户 A 处理完——瓶颈。正确做法是按 user_id 分区，每个用户一个实例，互不阻塞。
 
@@ -813,31 +813,31 @@ emit("add_to_cart", {"user_id": "A", "item": "X"})
 emit("add_to_cart", {"user_id": "B", "item": "Y"})
 
 Realm 从 interface_schema 查到 add_to_cart 的 key = "user_id"
-  → 事件 1: partition key = "A" → CartActor 实例 #A
-  → 事件 2: partition key = "B" → CartActor 实例 #B
+  → 事件 1: instance key = "A" → CartActor 实例 #A
+  → 事件 2: instance key = "B" → CartActor 实例 #B
   → 两个实例并行处理，互不阻塞
 
 同一用户后续事件：
 emit("remove_from_cart", {"user_id": "A", "item_id": "X"})
-  → partition key = "A" → 同一个 CartActor 实例 #A（串行，保证状态一致）
+  → instance key = "A" → 同一个 CartActor 实例 #A（串行，保证状态一致）
 ```
 
-- 同一 partition key 的事件始终路由到同一 Actor 实例，保证该实体的状态一致性
-- 不同 partition key 的事件路由到不同实例，并行处理
-- 跨节点：联邦语义（ADR-0013）——partition key 的作用域是节点内部，用户数据跟随所属节点，无全局放置问题
+- 同一 instance key 的事件始终路由到同一 Actor 实例，保证该实体的状态一致性
+- 不同 instance key 的事件路由到不同实例，并行处理
+- 跨节点：联邦语义（ADR-0013）——instance key 的作用域是节点内部，用户数据跟随所属节点，无全局放置问题
 
 **实例生命周期**（Virtual Actor 模式，与 Orleans 一致）：
 
 | 阶段 | 行为 |
 |------|------|
-| **激活** | 事件到达，Realm 按 partition key 查找实例 → 不存在则从 Fjall 恢复状态（或新建空状态）→ 加载脚本和入口函数 |
+| **激活** | 事件到达，Realm 按 instance key 查找实例 → 不存在则从 Fjall 恢复状态（或新建空状态）→ 加载脚本和入口函数 |
 | **运行** | 处理事件，可 emit，状态立即持久化。事件经 (事件, partition) 队列投递到该实例的私有订阅 Receiver，串行消费 |
 | **空闲** | 超时无事件 → 状态落盘 Fjall → 内存驱逐（Scale-to-Zero） |
 | **再激活** | 新事件到达 → 从 Fjall 恢复 → 继续 |
 
 Actor "一直存在"（逻辑上），按需激活/驱逐（物理上）。开发者不显式创建实例——`set()` 定义类型，`emit()` 触发激活。
 
-**领域映射**：DDD 的聚合根天然对应 Actor 类型，聚合根 ID 作为 partition key：
+**领域映射**：DDD 的聚合根天然对应 Actor 类型，聚合根 ID 作为 instance key：
 
 | Actor 类型 | 实例 key | receives | emits |
 |-----------|---------|----------|-------|
@@ -870,7 +870,7 @@ Actor 不直接通过 PyO3 调用外部系统（`httpx.get()` 等）——这绕
 
 **两种通信，分离**：
 
-- **`emit`/`on`**：场域事件，Actor 间的异步通信（fire-and-forget、pub/sub、partition-keyed）。不承担请求-响应语义。
+- **`emit`/`on`**：场域事件，Actor 间的异步通信（fire-and-forget、pub/sub、instance-keyed）。不承担请求-响应语义。
 - **`ctx.invoke()`**：同步调用，阻塞等待返回值。目标可以是外部 HTTP 服务，也可以是场域内的 Actor。
 
 **统一调用注册表（invoke.toml）**：
@@ -897,12 +897,12 @@ timeout = 10000
 [[call]]
 name = "charge_processor"
 target = "actor:charge_processor"
-partition_key = "user_id"  # data 中哪个字段是 partition key
+instance_key = "user_id"  # data 中哪个字段是 instance key
 
 [[call]]
 name = "db_query"
 target = "actor:db_bridge"
-partition_key = "query_id"
+instance_key = "query_id"
 ```
 
 注册表是声明式配置，Fluxora 读取后负责实际路由——HTTP 目标走 Fluxora HTTP 请求，Actor 目标走 Realm 路由。
@@ -932,8 +932,8 @@ async def handle(ctx, add_to_cart=None):
 
 `ctx.invoke("charge_processor", data)` 对 Actor 目标的执行路径：
 
-1. 查 `invoke.toml` → `target = "actor:charge_processor"`，`partition_key = "user_id"`
-2. 从 `data` 中提取 `partition_key` 字段值 → 路由到 `charge_processor` 实例
+1. 查 `invoke.toml` → `target = "actor:charge_processor"`，`instance_key = "user_id"`
+2. 从 `data` 中提取 `instance_key` 字段值 → 路由到 `charge_processor` 实例
 3. Realm emit 事件 + `__reply_to` 到目标实例
 4. 等待入口函数的 `return` 值（reply_to 机制）
 5. 返回给调用者
@@ -964,7 +964,7 @@ async def handle(ctx, add_to_cart=None):
      │◄───────────────────────────────────┘
 ```
 
-`WaitingForResponse` 状态下不消费 queue 中的新事件——保证同一实例的串行语义。其他实例（不同 partition key）不受影响。
+`WaitingForResponse` 状态下不消费 queue 中的新事件——保证同一实例的串行语义。其他实例（不同 instance key）不受影响。
 
 **Host 核心结构**：
 
@@ -991,11 +991,11 @@ enum Responder {
 
 enum CallTarget {
     Http { endpoint: String, method: String, timeout: u64, schema: Option<Schema> },
-    Actor { actor_type: String, partition_key: String, timeout: u64 },
+    Actor { actor_type: String, instance_key: String, timeout: u64 },
 }
 
 struct ActorInstance {
-    partition_key: String,
+    instance_key: String,
     state: Value,                            // CBOR 状态树
     queue: mpsc::Receiver<Event>,
     status: InstanceStatus,
@@ -1054,9 +1054,9 @@ impl Context {
                     deadline,
                 });
             }
-            CallTarget::Actor { actor_type, partition_key, .. } => {
+            CallTarget::Actor { actor_type, instance_key, .. } => {
                 // Actor 目标 → Realm 路由 + reply_to
-                let pk_value = data.get(partition_key)
+                let pk_value = data.get(instance_key)
                     .ok_or(CallError::MissingPartitionKey)?;
                 self.host.router.emit_to_actor(
                     actor_type,

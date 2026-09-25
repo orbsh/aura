@@ -28,7 +28,7 @@ via emits) and forced actors with several handlers to split apart,
 duplicating shared logic.
 
 ```python
-@on("add_to_cart", key="user_id")   # partition key declared on the decorator
+@on("add_to_cart", key="user_id")   # instance key declared on the decorator
 def add(args): ...
 
 @on("remove_from_cart")             # no key → singleton consumer

@@ -3,26 +3,26 @@
 > 综述在 wiki：[Aura 架构 §5](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
 > 本文档描述分区方案从键字节布局到集群拓扑的完整机制。双语版：[English](partitioning-en.md)。
 
-## 1. 分区单位：Actor 实例，partition key 定归属
+## 1. 分区单位：Actor 实例，instance key 定归属
 
-分区的最小单位不是表、不是 namespace，而是 **Actor 实例**。`InstanceId = (actor_type, key)`，其中 `key` 就是 partition key（如 session_id、user_id、order_id）。归属规则：
+分区的最小单位不是表、不是 namespace，而是 **Actor 实例**。`InstanceId = (actor_type, key)`，其中 `key` 就是 instance key（如 session_id、channel_id、order_id）。归属规则：
 
-- **同 key 串行**：同一 partition key 的所有消息进同一个实例的 queue，单消费者逐条处理——状态一致性不靠锁，靠队列串行
+- **同 key 串行**：同一 instance key 的所有消息进同一个实例的 queue，单消费者逐条处理——状态一致性不靠锁，靠队列串行
 - **异 key 并行**：不同 key 的实例完全独立，互不阻塞
 - **通配订阅例外**：`on_wildcard` 的 Actor 绑定单例 `__singleton__`，不参与分区（监听全局事件的观察者天然无状态分片意义）
 
-partition key 的提取方式现在和终态不同：当前是路由表声明 `partition_key_field`（从事件 payload 按字段名取值，取不到落 `__default__` 兜底实例）；终态（动态 schema 落地后）是事件名映射到 okm ns，通过该 ns 的访问方法扫描出 id——扫描天然一对多，一次 emit 可投递多个实例。
+instance key 的提取方式现在和终态不同：当前是路由表声明 `instance_key_field`（从事件 payload 按字段名取值，取不到落 `__default__` 兜底实例）；终态（动态 schema 落地后）是事件名映射到 okm ns，通过该 ns 的访问方法扫描出 id——扫描天然一对多，一次 emit 可投递多个实例。
 
 ## 2. actor_type：类型与实例
 
 ```rust
 pub struct InstanceId {
     pub actor_type: String,  // 类型：哪一种 Actor
-    pub key: String,         // partition key：这一种里的哪一个实例
+    pub key: String,         // instance key：这一种里的哪一个实例
 }
 ```
 
-`actor_type` 是 Actor 的类型名——同一逻辑角色的标识；partition key 是这个类型下的具体实例。
+`actor_type` 是 Actor 的类型名——同一逻辑角色的标识；instance key 是这个类型下的具体实例。
 
 ```
 ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声明
@@ -40,7 +40,7 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 
 ### 2.1 分区设计原则：什么身份选什么键
 
-选 partition key 的判据是**实例的恒等归属**，不是请求的携带字段：
+选 instance key 的判据是**实例的恒等归属**，不是请求的携带字段：
 
 - **身份恒等于归属 → 用身份做键。** 用户级数据（购物车、session）按 user_id 分区：实例身份本身就编码了用户，handler 读 `ctx.self_id.key` 即得身份——这是构造级保证（实例只属于自己的 key），比调用方挂载更强（无需防伪造）。
 - **归属大于身份 → 用归属做键，身份走参数。** 群聊按 channel_id 分区：一个实例服务多个用户，user_id 不是实例的恒等属性。消息**自带 channel_id**（客户端知道发往哪个 channel，无需引擎侧查表），发送者身份作为请求参数携带（handler 内做成员校验、发言归因）。此时把 user_id 挂上 ctx 逻辑冲突——ctx 是 per-instance 的，挂上即意味着「本实例的 user」，而群聊实例没有「本实例的 user」。也不需要中间路由 actor 先按 user_id 查 channel 再转发：那会多一跳、多一份状态，且路由表沦为成员关系的第二真相源。
@@ -74,7 +74,7 @@ namespace 隔离（Phase 3.6 机制）与类型 ns 正交：namespace 前缀加�
 ## 5. 集群层：分片映射与路由不变性（Phase 5，未实施）
 
 - **shard map 住本节点存储**（ADR-0025 后即数据面 okm 实例），单写入点模型：只有一个逻辑写入者（控制平面）写 shard map/Actor 注册表，节点缓存读取——不引入多写共识——联邦内部没有通向共识的路径：多控制面部署是方向性倒退，内部元数据保持控制平面只写面使写入者永远单一；整体转向逻辑单集群是推翻 ADR-0013 的新裁决，不是本架构内的扩展点
-- **路由不变性**：partition key → shard 的映射稳定，**请求跟着数据走**——session 的每个 turn 都路由到持有该分区的机器；历史数据不会"丢失"，只是不被错误路由的请求看到
+- **路由不变性**：instance key → shard 的映射稳定，**请求跟着数据走**——session 的每个 turn 都路由到持有该分区的机器；历史数据不会"丢失"，只是不被错误路由的请求看到
 - **结构性代价，明确接受**：节点故障时该节点的分区冻结直到恢复/迁移，零副本写放大。需要高可用的分片由 FDB/TiKV 承载（wiki 裁决：不自建强一致复制）——分区方案与复制方案解耦，默认路径零复制
 - Actor 定义热更新走本节点存储：写新定义 → 各节点激活时重读
 
@@ -84,4 +84,4 @@ namespace 隔离（Phase 3.6 机制）与类型 ns 正交：namespace 前缀加�
 
 ## 设计要点
 
-这套方案的骨架是**「串行单位 = 分区单位 = 恢复单位」**：partition key 同时决定消息串行化、键空间归属和故障爆炸半径。一致性来自单写者+信箱串行而非共识协议；可用性缺口（节点故障分区冻结）被显式接受并用外部强一致 KV 兜底，而不是内建副本。
+这套方案的骨架是**「串行单位 = 分区单位 = 恢复单位」**：instance key 同时决定消息串行化、键空间归属和故障爆炸半径。一致性来自单写者+信箱串行而非共识协议；可用性缺口（节点故障分区冻结）被显式接受并用外部强一致 KV 兜底，而不是内建副本。

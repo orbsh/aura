@@ -20,7 +20,7 @@
 一个 Actor 类型是**多入口**的：`@on` 装饰器（steel 为 `on` 函数，wasm 为导出约定）声明每个 handler 监听的事件，事件名就是 handler 的寻址名。没有单一入口——单入口模型下 emits 是多出口而入口只有一个，不对称；多个 handler 的事件共享逻辑被迫拆成多个 Actor 复制底层代码。
 
 ```python
-@on("add_to_cart", key="user_id")   # partition key 在装饰器上声明
+@on("add_to_cart", key="user_id")   # instance key 在装饰器上声明
 def add(args): ...
 
 @on("remove_from_cart")             # 无 key → 单例消费者

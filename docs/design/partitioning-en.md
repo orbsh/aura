@@ -4,13 +4,13 @@
 > This document describes the full partitioning mechanism, from key byte
 > layout to cluster topology. Bilingual: [中文](partitioning.md).
 
-## 1. Partition unit: the Actor instance; the partition key decides placement
+## 1. Partition unit: the Actor instance; the instance key decides placement
 
 The smallest partitioning unit is neither a table nor a namespace — it is
 the **Actor instance**. `InstanceId = (actor_type, key)`, where `key` is the
-partition key (session_id, user_id, order_id, ...). Placement rules:
+instance key (session_id, channel_id, order_id, ...). Placement rules:
 
-- **Same key, serial**: all messages for one partition key land in the same
+- **Same key, serial**: all messages for one instance key land in the same
   instance's queue, consumed one at a time by a single consumer — state
   consistency comes from queue serialization, not locks
 - **Different keys, parallel**: instances with different keys are fully
@@ -20,8 +20,8 @@ partition key (session_id, user_id, order_id, ...). Placement rules:
   partitioning (an observer listening to global events has no meaningful
   state shard)
 
-The extraction of the partition key differs between the current state and
-the target state: today the route table declares a `partition_key_field`
+The extraction of the instance key differs between the current state and
+the target state: today the route table declares an `instance_key_field`
 (taken from the event payload by field name; a missing field lands on the
 `__default__` catch-all instance). In the target state (once dynamic schema
 lands), the event name maps to an okm ns and the routing resolves ids
@@ -33,12 +33,12 @@ single emit can deliver to multiple instances.
 ```rust
 pub struct InstanceId {
     pub actor_type: String,  // type: which kind of Actor
-    pub key: String,         // partition key: which instance of that kind
+    pub key: String,         // instance key: which instance of that kind
 }
 ```
 
 `actor_type` is the Actor's type name — the identity of one logical role;
-the partition key identifies a concrete instance within that type.
+the instance key identifies a concrete instance within that type.
 
 ```
 ActorType "cart"                ← blueprint: state schema + handler + subscriptions
@@ -68,7 +68,7 @@ sharded, and recovered by `(type, key)`).
 
 ### 2.1 Partition design principles: which identity picks which key
 
-The criterion for choosing a partition key is the **instance's standing
+The criterion for choosing an instance key is the **instance's standing
 ownership**, not a field the request happens to carry:
 
 - **Identity equals ownership → use the identity as the key.** User-scoped
@@ -93,7 +93,7 @@ ownership**, not a field the request happens to carry:
   maintains its own index — isomorphic to projection aggregation, off the
   delivery hot path.
 
-In one sentence: **the partition key answers "who serially processes this
+In one sentence: **the instance key answers "who serially processes this
 message"; the request parameters answer "who initiated this request"** —
 two questions, answered independently, never mounted onto each other.
 
@@ -187,7 +187,7 @@ contention becomes the bottleneck first. Revisit when both conditions hold.
 ## Design summary
 
 The skeleton of this scheme is **"serialization unit = partition unit =
-recovery unit"**: the partition key simultaneously determines message
+recovery unit"**: the instance key simultaneously determines message
 serialization, keyspace ownership, and the failure blast radius.
 Consistency comes from a single writer plus queue serialization, not
 from a consensus protocol; the availability gap (partitions frozen on node

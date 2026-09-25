@@ -8,13 +8,14 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Engine {
-    /// The system/default namespace realm (back-compat: single-node tests,
-    /// CLI echo). User-facing surfaces use `namespaces` instead.
+    /// The system/default realm (back-compat: single-node tests, CLI
+    /// echo). Multi-realm surfaces use `realm_set` instead.
     pub realm: SharedRealm,
-    /// Namespace map (Phase 3.6 mechanism; binding dimension demoted to an
-    /// application decision per PLAN 4.10): structural isolation — a
-    /// NamespacedRealm handle cannot reach another namespace.
-    pub namespaces: Arc<aura_realm::namespace::Namespaces>,
+    /// The realm set (Phase 3.6 mechanism, ADR-0028 naming; binding
+    /// dimension demoted to an application decision per PLAN 4.10):
+    /// structural isolation — a NamedRealm handle cannot reach another
+    /// realm.
+    pub realm_set: Arc<aura_realm::realm_set::RealmSet>,
 }
 
 impl Engine {
@@ -24,17 +25,21 @@ impl Engine {
     /// boot, never silently falls back).
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
         let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
-        let realm: SharedRealm = Realm::with_mq(mq.clone()).shared_async().await;
+        let realm: SharedRealm = Realm::with_mq(mq.clone())
+            .with_code_base_url(config.code_base_url.clone())
+            .shared_async()
+            .await;
         Realm::spawn_evictor(&realm);
-        // Namespaces share the SAME okm engine (one fjall keyspace); each
-        // namespace derives a prefix-bound handle at realm construction —
+        // Realms share the SAME okm engine (one fjall keyspace); each
+        // realm derives a prefix-bound handle at construction —
         // state documents AND mq tables ride it (ADR-0018 steps 1+2).
-        let namespaces = Arc::new(aura_realm::namespace::Namespaces::with_mq(
+        let realm_set = Arc::new(aura_realm::realm_set::RealmSet::with_mq_and_code_base(
             mq.clone(),
+            config.code_base_url.clone(),
         ));
         // Boot reload (Phase 4.5b): persisted script actors re-register from
         // the meta store — definitions outlive the process.
-        let engine = Self { realm, namespaces };
+        let engine = Self { realm, realm_set };
         // Boot reload (ADR-0025 Plan A): definitions live in the DATA
         // plane's okm instance (actor_defs beside mq/state).
         for def in aura_realm::meta::load_all(&mq)? {
@@ -103,8 +108,8 @@ impl Engine {
 
     /// Shared registration body: introspection + definition persistence +
     /// type registration, against the caller's realm handle (the engine's
-    /// own realm, or a namespace's). register_in rides the same path so a
-    /// namespaced type gets the same ctx.store plan (ADR-0026 §3).
+    /// own realm, or a named one). register_in rides the same path so a
+    /// named-realm type gets the same ctx.store plan (ADR-0026 §3).
     async fn register_inner(
         &self,
         mut actor: ActorType,
@@ -145,6 +150,20 @@ impl Engine {
             let r = realm.lock().await;
             aura_realm::meta::persist(&r.mq, &def)?;
         }
+        // Content addressing covers remote types too (ADR-0027): the
+        // dispatch arm references `sha256(source)`, and the serving
+        // source reads CodeBlob — so the bytes must enter the blob store
+        // at upload. RemoteProbe definitions are not persisted (4.5b
+        // scope: script actors); this write is the blob's only home for
+        // them, deliberately without a definition row.
+        if let aura_actor::Body::RemoteProbe { ref source, .. } = actor.body {
+            let r = realm.lock().await;
+            aura_realm::meta::put_blob(
+                &r.mq,
+                aura_realm::meta::code_hash(source),
+                source.as_bytes(),
+            )?;
+        }
         realm.lock().await.register_type(actor);
         Ok(())
     }
@@ -184,49 +203,49 @@ impl Engine {
             .await
     }
 
-    /// Register an actor type into a namespace (Phase 3.6 mechanism,
-    /// demoted binding per PLAN 4.10). The namespace is an EXPLICIT
-    /// application decision passed at the call site — construction-time
-    /// prefix isolation is the mechanism; what dimension the namespace
-    /// binds (user, project, nothing) is the application's choice. No
-    /// credential derivation exists anywhere on this path.
-    pub async fn register_in(&self, namespace: &str, actor: ActorType) {
-        let ns = self.namespaces.realm_of(namespace).await;
+    /// Register an actor type into a named realm (Phase 3.6 mechanism,
+    /// demoted binding per PLAN 4.10; renamed namespace → realm by
+    /// ADR-0028). The realm is an EXPLICIT application decision passed at
+    /// the call site — construction-time prefix isolation is the
+    /// mechanism; what dimension the realm binds (user, project, nothing)
+    /// is the application's choice. No credential derivation exists
+    /// anywhere on this path.
+    pub async fn register_in(&self, realm: &str, actor: ActorType) {
+        let ns = self.realm_set.realm_of(realm).await;
         // Same introspection + persistence path as register() (ADR-0026 §3:
         // the ctx.store plan resolves from the persisted interface_schema —
-        // a namespaced type without it has no ctx.store surface).
+        // a named-realm type without it has no ctx.store surface).
         let _ = self.register_inner(actor, &ns.realm()).await;
     }
 
-    /// Namespaced call (explicit namespace handle — an application
-    /// decision, not a credential derivation): target resolution =
-    /// namespace + node alias + operation. A namespace handle never sees
-    /// another namespace's types or events — cross-namespace delivery is
-    /// not expressible.
+    /// Realm-scoped call (explicit realm name — an application decision,
+    /// not a credential derivation): target resolution = realm + node
+    /// alias + operation. A realm handle never sees another realm's types
+    /// or events — cross-realm delivery is not expressible.
     pub async fn call_in(
         &self,
-        namespace: &str,
+        realm: &str,
         target: aura_actor::InstanceId,
         handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<aura_actor::call::Waited> {
-        let ns = self.namespaces.realm_of(namespace).await;
+        let ns = self.realm_set.realm_of(realm).await;
         Realm::call(&ns.realm(), None, target, handler, args)
             .await?
             .wait()
             .await
     }
 
-    /// Namespaced emit (explicit namespace — application decision): events
-    /// route only within the namespace.
+    /// Realm-scoped emit (explicit realm — application decision): events
+    /// route only within the realm.
     pub async fn emit_in(
         &self,
-        namespace: &str,
+        realm: &str,
         emitter: Option<&str>,
         event: &str,
         data: serde_json::Value,
     ) -> anyhow::Result<()> {
-        let ns = self.namespaces.realm_of(namespace).await;
+        let ns = self.realm_set.realm_of(realm).await;
         Realm::emit(&ns.realm(), emitter, event, data).await
     }
 

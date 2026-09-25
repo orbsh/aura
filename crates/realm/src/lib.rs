@@ -1,6 +1,6 @@
 //! Realm: the event/call fabric. Phase 1 — virtual-actor registry, runtime
 //! loop driving queuees, idle-TTL eviction (scale-to-zero: on_sleep →
-//! drop, on_wake on reactivation). Event namespace and emit/on arrive in
+//! drop, on_wake on reactivation). Event routing (emit/on) arrives in
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
 pub mod event;
@@ -8,7 +8,7 @@ pub mod mq;
 pub mod timer;
 pub mod meta;
 pub mod value;
-pub mod namespace;
+pub mod realm_set;
 pub mod store_exec;
 
 use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
@@ -65,16 +65,22 @@ pub struct Realm {
     /// Idle TTL: an instance with no job for this long is evicted
     /// (scale-to-zero). State survives via the store; hooks run around it.
     pub idle_ttl: Duration,
-    /// Event namespace: routing table + emits whitelist (Phase 3).
+    /// Event routing: table + emit matching (Phase 3).
     pub router: event::EventRouter,
     /// Resident script sessions (Phase 2.6): per-instance VM/PTY, owned by
     /// the realm — sessions die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
     pub sessions: probe_runtime::carrier::session::Sessions,
-    /// Live probe outbound connections by node alias (Phase 3). Each value
-    /// is the writer half of the probe's WS connection; the reader task
-    /// (serve_probes) correlates Result frames back through pending_remote.
-    pub probes: HashMap<String, tokio::sync::mpsc::UnboundedSender<probe_protocol::Frame>>,
+    /// Live probe outbound connections by node alias (Phase 3). The
+    /// writer half routes realm calls; the peer address exists so a
+    /// takeover names both ends (ADR-0015 §7 replacement discipline —
+    /// silent alias replacement is the behaviour being removed).
+    pub probes: HashMap<String, ProbeConn>,
+    /// Code reference prefix for remote delivery (ADR-0027): a remote
+    /// call carries `CodeRef { url: base + hex(sha256), sha256 }`.
+    /// None = remote types are undeliverable in this realm (the dispatch
+    /// arm answers with an error value; in-process actors never read it).
+    pub code_base_url: Option<String>,
     /// In-flight remote calls awaiting the probe's Result frame. The
     /// instance id scopes the ctx-bridge host calls the probe makes while
     /// executing this call (state fields are the instance's own).
@@ -129,6 +135,7 @@ impl Realm {
             router: event::EventRouter::default(),
             sessions: probe_runtime::carrier::session::Sessions::new(),
             probes: HashMap::new(),
+            code_base_url: None,
             pending_remote: HashMap::new(),
             call_specs: HashMap::new(),
             pending_calls: HashMap::new(),
@@ -210,6 +217,14 @@ impl Realm {
             }
         }
         self.types.insert(actor.name.clone(), actor);
+    }
+
+    /// Attach the code-reference prefix (ADR-0027). Assembly-site
+    /// configuration: the engine and every realm in the set derive from
+    /// the one EngineConfig value.
+    pub fn with_code_base_url(mut self, url: Option<String>) -> Self {
+        self.code_base_url = url;
+        self
     }
 
     /// Static call declaration for an actor type (Phase 3.5): tier +
@@ -554,6 +569,7 @@ impl Realm {
         );
         let sessions = realm.sessions.clone();
         let probes = realm.probes.clone();
+        let probes_base_url = realm.code_base_url.clone();
         drop(realm);
         let result = match body {
             aura_actor::Body::RemoteProbe { node_alias, language, source } => {
@@ -567,6 +583,23 @@ impl Realm {
                         .reply
                         .send(Err(anyhow::anyhow!("probe '{node_alias}' not connected")));
                     return;
+                };
+                // Code travels by reference (ADR-0027): the bytes were
+                // stored under their hash at registration; the frame
+                // carries the address the probe fetches and verifies.
+                let sha = crate::meta::code_hash(&source);
+                let code = match probes_base_url {
+                    Some(base) => probe_protocol::CodeRef {
+                        url: format!("{}/{}", base.trim_end_matches('/'), crate::meta::code_hex(&sha)),
+                        sha256: crate::meta::code_hex(&sha),
+                    },
+                    None => {
+                        let _ = job.reply.send(Err(anyhow::anyhow!(
+                            "remote actor '{node_alias}': no code_base_url configured \
+                             (ADR-0027 — code is content-addressed; set node {{ code_base_url }})"
+                        )));
+                        return;
+                    }
                 };
                 let conn = conn.clone();
                 let call_id = format!("rp-{}", next_seq(&self_arc).await);
@@ -586,9 +619,9 @@ impl Realm {
                     entry: job.handler.clone(),
                     language,
                     args: job.args,
-                    code: probe_protocol::CodePayload::Inline { bytes: source.into_bytes() },
+                    code,
                 };
-                let result = match conn.send(probe_protocol::Frame::Call(call)) {
+                let result = match conn.sender.send(probe_protocol::Frame::Call(call)) {
                     Ok(()) => match rx.await {
                         Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
@@ -1203,6 +1236,16 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 pub struct RemotePending {
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     pub instance: InstanceId,
+}
+
+/// One live probe connection's registry entry: the writer channel plus
+/// the peer address. The address is not decorative — ADR-0015 §7's
+/// replacement discipline requires a takeover event to name the old and
+/// new peers, and a bare channel cannot say where either one came from.
+#[derive(Clone)]
+pub struct ProbeConn {
+    pub sender: tokio::sync::mpsc::UnboundedSender<probe_protocol::Frame>,
+    pub peer: std::net::SocketAddr,
 }
 
 /// Next remote-call correlation id (realm-owned counter, taken under lock).

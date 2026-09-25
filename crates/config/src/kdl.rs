@@ -5,7 +5,7 @@
 //! ```kdl
 //! node {
 //!     id "home-node"
-//!     namespace "default"
+//!     realm "default"
 //! }
 //!
 //! // data plane: actor state
@@ -36,8 +36,15 @@ pub struct RootConfig {
 pub struct NodeConfig {
     #[knus(child, unwrap(argument))]
     pub id: String,
+    /// This node's default realm (ADR-0028; Phase 3.6 mechanism).
     #[knus(child, unwrap(argument))]
-    pub namespace: String,
+    pub realm: String,
+    /// Prefix remote code references are assembled under (ADR-0027):
+    /// prism's `/code/` export or a CDN base. Absent = this node never
+    /// serves remote actors (remote delivery errors as a value; there is
+    /// deliberately no default — pointing code at nobody is a guess).
+    #[knus(child, unwrap(argument))]
+    pub code_base_url: Option<String>,
 }
 
 /// One storage plane. Engine is fjall | slate; slate carries an optional

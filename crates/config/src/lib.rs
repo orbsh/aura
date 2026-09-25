@@ -9,14 +9,18 @@ use serde::{Deserialize, Serialize};
 pub struct EngineConfig {
     /// Node identity (goes to partitioning/raft later).
     pub node_id: String,
-    /// Realm namespace (Phase 3.6 introduces per-user namespaces).
-    pub namespace: String,
+    /// This node's default realm name (Phase 3.6 mechanism, renamed per
+    /// ADR-0028; the binding dimension is an application decision).
+    pub realm: String,
     /// State engine. `memory` = in-process placeholder; `fjall` = local
     /// LSM (requires the `fjall` feature; boot error if absent). The
     /// engine/consistency matrix grows in Phase 4/5 (slate needs raft).
     pub engine: Engine,
     /// Data directory for persistent engines. Ignored by `memory`.
     pub data_dir: Option<std::path::PathBuf>,
+    /// Code reference prefix for remote delivery (ADR-0027). None =
+    /// remote types are undeliverable here (error value at dispatch).
+    pub code_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,9 +37,10 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             node_id: "local".into(),
-            namespace: "default".into(),
+            realm: "default".into(),
             engine: Engine::Memory,
             data_dir: None,
+            code_base_url: None,
         }
     }
 }
@@ -53,9 +58,10 @@ impl TryFrom<crate::kdl::RootConfig> for EngineConfig {
         };
         Ok(Self {
             node_id: root.node.id,
-            namespace: root.node.namespace,
+            realm: root.node.realm,
             engine: parse_engine(&root.data.engine)?,
             data_dir: Some(root.data.path.into()),
+            code_base_url: root.node.code_base_url.clone(),
         })
     }
 }

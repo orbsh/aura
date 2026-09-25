@@ -21,7 +21,7 @@
 use crate::mq::MqStore;
 use aura_actor::PersistedActor;
 use okm_core::document::Collection;
-use okm_core::{Document, DocumentEncode, KeyEncode, ReduceLogic, ReduceCodec};
+use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceLogic, ReduceCodec};
 
 // ---------------------------------------------------------------------------
 // The registry: open-ended type name → id.
@@ -44,7 +44,7 @@ pub struct TypeName {
     /// fold logic payload-shaped; retire both when 0024's key-field
     /// groups land in the derive).
     pub id: u32,
-    /// The type's own storage namespace (ADR-0026): allocated at first
+    /// The type's own storage ns (ADR-0026): allocated at first
     /// registration from the actor base block, never reused.
     pub ns: u32,
     /// Single-group discriminator (always 0): the derive rejects empty
@@ -118,8 +118,69 @@ pub struct ActorDef {
     /// The raw type name (observability; the id is the addressing).
     pub name: String,
     pub language: String,
-    pub source: String,
+    /// Content address of the code (ADR-0027): the definition points at
+    /// its bytes, it no longer carries them. The hash IS the version
+    /// identity — re-registering unchanged code dedups to the same blob;
+    /// changed code is a new hash the new definition version points at.
+    pub code_sha256: [u8; 32],
     pub idle_ttl_secs: u64,
+}
+
+// ---------------------------------------------------------------------------
+// CodeBlob (ADR-0027): content-addressed code bytes, meta plane ns 42.
+// Pure content rows: key = the sha256, value = the bytes. No name, no
+// version, no foreign key — every relational fact lives in ActorDef, the
+// single source of reference. Immutable by construction: a "different
+// content at the same key" is a hash collision, not a state.
+// ---------------------------------------------------------------------------
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct CodeBlobKey {
+    pub sha256: [u8; 32],
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CodeBlobKey)]
+#[ok_ns(42)]
+pub struct CodeBlob {
+    /// Mirrors the key segment (index fields must be payload fields; and
+    /// observability: a raw scan sees its own content address).
+    pub sha256: [u8; 32],
+    pub data: Bytes,
+}
+
+/// sha256 of bytes as fixed-size array (the key form).
+pub fn code_hash(source: &str) -> [u8; 32] {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(source.as_bytes());
+    hasher.finalize().into()
+}
+
+/// Lowercase hex of a code hash (the wire/URL form).
+pub fn code_hex(sha: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for b in sha {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Store the blob if absent (content addressing makes the pre-check a
+/// dedup, never a correctness requirement — same bytes, same row).
+pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<()> {
+    let mut t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
+    if t.get(&CodeBlobKey { sha256: sha }).is_some() {
+        return Ok(());
+    }
+    t.put(&CodeBlobKey { sha256: sha }, &CodeBlob { sha256: sha, data: Bytes(bytes.to_vec()) });
+    Ok(())
+}
+
+/// Read the blob bytes (None = never stored under this hash).
+pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> Option<Vec<u8>> {
+    let mut t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
+    t.get(&CodeBlobKey { sha256: *sha }).map(|row| row.data.0)
 }
 
 /// The dynamic-segment key the schema rides under ("schema" as a dynamic
@@ -134,24 +195,30 @@ impl ActorDef {
             Self {
                 name: def.name.clone(),
                 language: def.language.clone(),
-                source: def.source.clone(),
+                code_sha256: code_hash(&def.source),
                 idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
             },
             def.schema.as_ref().map(crate::value::json_to_dyn),
         )
     }
 
+    /// The row + its dynamic schema segment. `source` is NOT here — the
+    /// bytes are content-addressed (ADR-0027); the loader hydrates them
+    /// from the blob store by `code_sha256`.
     fn into_persisted(
         self,
         schema: Option<okm_core::obj_dynamic::DynamicValue>,
-    ) -> PersistedActor {
-        PersistedActor {
-            name: self.name,
-            language: self.language,
-            source: self.source,
-            idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
-            schema: schema.map(|v| crate::value::dyn_to_json(&v)),
-        }
+    ) -> (PersistedActor, [u8; 32]) {
+        (
+            PersistedActor {
+                name: self.name,
+                language: self.language,
+                source: String::new(), // filled by the blob hydrate below
+                idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
+                schema: schema.map(|v| crate::value::dyn_to_json(&v)),
+            },
+            self.code_sha256,
+        )
     }
 }
 
@@ -179,6 +246,10 @@ pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
     let type_id = resolve_type_id(meta, &actor.name)?;
     let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
     let (row, schema) = ActorDef::of(actor);
+    // The bytes must exist before the pointer to them is published: a
+    // definition whose blob is missing is an unloadable actor (boot
+    // reload errors instead of resurrecting a hash with no content).
+    put_blob(meta, row.code_sha256, actor.source.as_bytes())?;
     t.put(&ActorDefKey { type_id }, &row);
     // Schema rides the dynamic segment (structured nTLV, no JSON text);
     // absent schema = the field is absent (sentinel by absence).
@@ -228,7 +299,23 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
             .get_fields(&key)
             .and_then(|f| f.get(SCHEMA_FIELD).cloned());
         let row = ActorDef::decode_payload(&payload);
-        out.push(row.into_persisted(schema));
+        let (mut def, sha) = row.into_persisted(schema);
+        // Hydrate the source through the row's own content address —
+        // definitions outlive the process, and so does their blob (same
+        // engine). A missing blob is corruption, not an empty program.
+        match get_blob(meta, &sha) {
+            Some(bytes) => {
+                def.source = String::from_utf8(bytes)
+                    .map_err(|_| anyhow::anyhow!(
+                        "actor `{}`: code blob is not valid UTF-8", def.name
+                    ))?;
+            }
+            None => anyhow::bail!(
+                "actor `{}`: no code blob under sha256 {} (definition without content)",
+                def.name, code_hex(&sha)
+            ),
+        }
+        out.push(def);
     }
     Ok(out)
 }

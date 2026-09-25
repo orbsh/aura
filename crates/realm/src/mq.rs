@@ -140,12 +140,12 @@ pub struct EventRoute {
 
 // ---------------------------------------------------------------------------
 // MqStore: the byte engine the mq tables bind to. One handle = optional
-// namespace prefix + a shared ByteStore (the okm FjallStore keyspace, or
+// realm prefix + a shared ByteStore (the okm FjallStore keyspace, or
 // the in-memory byte stand-in for tests). Values are NATIVE BYTES — the
 // base64-in-JSON bridge (`StoreAsVirtual`) is gone (ADR-0018: storage
 // values are native, never serialized text; JSON is the API's currency,
 // never the store's). The prefix segment is bound at construction:
-// namespace escape is not expressible (okm nesting rule, aura Phase 3.6).
+// realm escape is not expressible (okm nesting rule, aura Phase 3.6).
 // ---------------------------------------------------------------------------
 
 /// The engine behind an MqStore. okm picks an engine per assembly site;
@@ -204,9 +204,9 @@ impl okm_core::storage::SharedVirtualStorage for MqEngine {
     }
 }
 
-/// The mq store: an okm engine handle + an optional namespace prefix,
+/// The mq store: an okm engine handle + an optional realm prefix,
 /// itself an okm VirtualStorage (the tables see a clean key space; the
-/// prefix is bound at construction — namespace escape is not expressible,
+/// prefix is bound at construction — realm escape is not expressible,
 /// the okm nesting rule / aura Phase 3.6). Values are NATIVE BYTES — the
 /// base64-in-JSON bridge (`StoreAsVirtual`) is gone (ADR-0018: storage
 /// values are native, never serialized text; JSON is the API's currency,
@@ -230,7 +230,7 @@ impl MqStore {
     fn with_engine(engine: MqEngine) -> Self {
         Self { prefix: Vec::new(), inner: std::sync::Arc::new(std::sync::Mutex::new(engine)) }
     }
-    /// A namespace-qualified handle: every key enters as
+    /// A realm-qualified handle: every key enters as
     /// `[prefix][inner key]`; the inner engine stays untouched.
     /// `PrefixStore`-style 2-byte length discipline for the segment.
     /// A TYPE-NS-raw handle (ADR-0026 §4 wasm storage): prefix = the
@@ -245,9 +245,12 @@ impl MqStore {
         p.extend_from_slice(&inner.prefix);
         Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
     }
-    pub fn namespaced(inner: &Self, namespace: &str) -> Self {
-        let mut prefix = (namespace.len() as u16).to_be_bytes().to_vec();
-        prefix.extend_from_slice(namespace.as_bytes());
+    /// The realm-prefixed handle (ADR-0028: the outer isolation axis is
+    /// a realm, not a "namespace"): `[u16 BE len][realm name]` prepended
+    /// inside the engine handle for every stored key.
+    pub fn for_realm(inner: &Self, name: &str) -> Self {
+        let mut prefix = (name.len() as u16).to_be_bytes().to_vec();
+        prefix.extend_from_slice(name.as_bytes());
         let mut p = prefix.clone();
         p.extend_from_slice(&inner.prefix);
         Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
@@ -271,14 +274,14 @@ impl okm_core::storage::VirtualStorage for MqStore {
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         // okm's suffix contract: the engine scans the QUALIFIED prefix
-        // and returns keys minus it — the namespace segment never leaks
+        // and returns keys minus it — the realm segment never leaks
         // to the caller, and no second strip happens here.
         let full = self.qualified(prefix);
         self.inner.lock().unwrap().scan_suffix(&full)
     }
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
         // Qualified window over the inner engine; the returned keys are
-        // sliced back into the caller's namespace-local space.
+        // sliced back into the caller's realm-local space.
         let full_begin = self.qualified(begin);
         let full_end = end.map(|e| self.qualified(e));
         self.inner
@@ -400,8 +403,8 @@ pub fn append(
 /// 1), so the reserved value is structural, not a hash coincidence.
 pub const SINGLETON_PART: u64 = 0;
 
-/// Partition id: open-ended string → u64. FNV-1a — a key FIELD hash, not a
-/// namespace (ADR-0002's hash rejection is about the ns dictionary, not
+/// Partition id: open-ended string → u64. FNV-1a — a key FIELD hash, not
+/// an ns (ADR-0002's hash rejection is about the ns dictionary, not
 /// payload-level discriminators); collisions only merge two partitions'
 /// backlogs, never lose events, and the consumer's handler re-checks
 /// nothing (partitioning is a delivery fan-out key, not an address). 0 is

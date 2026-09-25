@@ -168,12 +168,36 @@ impl Realm {
             }
         }
         // One declaration surface per type: routes assemble from the
-        // type's own `receives` as a side effect of registration. Two
-        // stores: the in-memory router (matching hot path — rebuilt from
-        // the persisted registry is unnecessary; the registry IS rebuilt
-        // on restart through this same code from boot reload) and the
-        // PERSISTED EventRoute table (mq): subscription facts survive
-        // restart and are readable by ops without introspecting scripts.
+        // type's own `receives` as a side effect of registration. Re-
+        // registration is a REPLACEMENT (hot-swap): drop the type's old
+        // routes in both stores first, so the latest declaration is the
+        // only one — a re-register that pushed would double-deliver every
+        // matched event. Two stores: the in-memory router (matching hot
+        // path — rebuilt from the persisted registry is unnecessary; the
+        // registry IS rebuilt on restart through this same code from boot
+        // reload) and the PERSISTED EventRoute table (mq): subscription
+        // facts survive restart and are readable by ops without
+        // introspecting scripts.
+        self.router.drop_actor(&actor.name);
+        if let Err(e) = mq::routes_drop_actor(&mut self.mq.clone(), &actor.name) {
+            eprintln!("route drop failed for {}: {e}", actor.name);
+        }
+        // Hot replacement reaches execution too: resident sessions hold
+        // the PREVIOUS source, so instances of this type are reclaimed —
+        // the next message cold-starts on the new code. Nothing is lost:
+        // the instance map is a discardable hot cache (state lives in the
+        // type's collections, backlog in the mq queues, replayed by
+        // cursor on re-activation).
+        let stale: Vec<_> = self
+            .instances
+            .keys()
+            .filter(|(t, _)| t == &actor.name)
+            .cloned()
+            .collect();
+        for (t, k) in stale {
+            self.instances.remove(&(t.clone(), k.clone()));
+            self.sessions.evict(&format!("{t}/{k}"));
+        }
         for decl in &actor.receives {
             if decl.wildcard {
                 self.router.on_wildcard(&decl.event, &actor.name);

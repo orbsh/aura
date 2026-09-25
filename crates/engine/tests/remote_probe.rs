@@ -86,7 +86,31 @@ async fn remote_probe_roundtrip() {
     // test's). The retired instance-document assertions are gone with the
     // model (ADR-0026 §3).
 
+    // Phase 2.6 acceptance (c/d): connection drop flips registry presence,
+    // and the call path fails fast with the normal error-value semantics
+    // (residency declared lost, never silently kept). abort → reader sees
+    // EOF → the gateway removes the alias.
     probe.abort();
+    for _ in 0..50 {
+        if !engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let gone = !engine.realm.try_lock().unwrap().probes.contains_key("test-node");
+    assert!(gone, "dropped connection unregisters the node alias");
+    let err = engine
+        .invoke(
+            InstanceId { actor_type: "remote-counter".into(), key: "k".into() },
+            "double",
+            serde_json::json!({"n": 1}),
+        )
+        .await
+        .expect_err("calls to a departed node fail as error values");
+    assert!(
+        err.to_string().contains("not connected"),
+        "fast failure names the departed node: {err}"
+    );
 }
 
 fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {

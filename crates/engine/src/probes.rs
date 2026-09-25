@@ -57,9 +57,23 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
             let _ = old;
         }
     }
+    // Presence must flip when this connection's task ENDS — by any path,
+    // including cancellation (aborted task / connection killed at an
+    // await point): code after the read loop never runs in that case, so
+    // an unregister written as loop epilogue leaks a dead alias and calls
+    // keep routing into a dead writer. A Drop guard fires on every exit
+    // path, abort included. Identity-checked (sender equality): a
+    // reconnect that replaced this alias leaves the new channel alone.
+    let _presence = PresenceGuard {
+        realm: Some(realm.clone()),
+        alias: node_alias.clone(),
+        channel: tx.clone(),
+    };
 
-    // Writer task: drain the channel into the socket.
-    let writer = tokio::spawn(async move {
+    // Writer task: drain the channel into the socket. Ends when the
+    // channel's senders all drop (this function returning + the presence
+    // guard releasing its clone).
+    tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if sink.send(Message::Text(serde_json::to_string(&frame)?)).await.is_err() {
                 break;
@@ -105,13 +119,31 @@ async fn handle_connection(realm: SharedRealm, stream: tokio::net::TcpStream) ->
             other => anyhow::bail!("unexpected frame from probe: {other:?}"),
         }
     }
-    // Connection gone: unregister so calls fail fast with "not connected".
-    // Only remove if the registered channel is still ours (a reconnect may
-    // have replaced it meanwhile).
-    let mut r = realm.lock().await;
-    if r.probes.get(&node_alias).is_some() {
-        r.probes.remove(&node_alias);
-    }
-    writer.abort();
+    // Connection gone (clean EOF): `_presence` drops with the function and
+    // unregisters so calls fail fast with "not connected".
     Ok(())
+}
+
+/// Unregisters the node alias when the connection task ends — see the
+/// presence guard in `handle_connection`. Drop cannot await, so the
+/// lock-taking removal runs in a detached task; the identity check inside
+/// it keeps a reconnect's registration intact.
+struct PresenceGuard {
+    realm: Option<SharedRealm>,
+    alias: String,
+    channel: tokio::sync::mpsc::UnboundedSender<Frame>,
+}
+
+impl Drop for PresenceGuard {
+    fn drop(&mut self) {
+        let Some(realm) = self.realm.take() else { return };
+        let alias = std::mem::take(&mut self.alias);
+        let channel = self.channel.clone();
+        tokio::spawn(async move {
+            let mut r = realm.lock().await;
+            if r.probes.get(&alias).is_some_and(|tx| tx.same_channel(&channel)) {
+                r.probes.remove(&alias);
+            }
+        });
+    }
 }

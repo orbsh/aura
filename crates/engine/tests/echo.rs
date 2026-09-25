@@ -617,6 +617,72 @@ def audit(args):
     assert!(realm.router.matches("unrelated").is_empty());
 }
 
+// Hot-swap re-registration (PLAN 4.5 tail): registering the SAME type
+// REPLACES the version everywhere the old one lived — router routes, the
+// persisted EventRoute registry, and resident execution (the old source
+// in the resident session must not keep answering calls).
+#[cfg(feature = "steel")]
+#[tokio::test]
+async fn re_register_replaces_routes() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let v1 = r#"
+(define (interface_schema args)
+  (hash "receives" (hash "evt.a" (hash "key" "k")
+                         "evt.b" (hash "key" ""))))
+(define (a args) (hash "got" "v1"))
+(define (b args) (hash "got" "b"))
+"#;
+    engine
+        .register(aura_actor::ActorType::script("swapper", "steel", v1))
+        .await
+        .unwrap();
+    {
+        let realm = engine.realm.try_lock().unwrap();
+        assert_eq!(realm.router.matches("evt.a").len(), 1);
+        assert_eq!(realm.router.matches("evt.b").len(), 1);
+    }
+    // Resident on v1 first — the swap must rebuild the session on v2.
+    let out = engine
+        .invoke(
+            aura_actor::InstanceId { actor_type: "swapper".into(), key: "x".into() },
+            "a",
+            serde_json::json!({"k": "x"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["got"], "v1");
+
+    // v2: keep evt.a (now answers v2), drop evt.b.
+    let v2 = r#"
+(define (interface_schema args)
+  (hash "receives" (hash "evt.a" (hash "key" "k"))))
+(define (a args) (hash "got" "v2"))
+"#;
+    engine
+        .register(aura_actor::ActorType::script("swapper", "steel", v2))
+        .await
+        .unwrap();
+    {
+        let realm = engine.realm.try_lock().unwrap();
+        assert_eq!(realm.router.matches("evt.a").len(), 1, "no duplicate after re-register");
+        assert!(realm.router.matches("evt.b").is_empty(), "dropped declaration stops routing");
+        // Persisted registry agrees with the router (same-side durability).
+        let rows = aura_realm::mq::routes_of_actor(&mut realm.mq.clone(), "swapper").unwrap();
+        assert_eq!(rows.len(), 1, "EventRoute table holds only evt.a: {rows:?}");
+    }
+    // Execution rides the NEW source: the v1 session was reclaimed, the
+    // cold start loads v2.
+    let out = engine
+        .invoke(
+            aura_actor::InstanceId { actor_type: "swapper".into(), key: "x".into() },
+            "a",
+            serde_json::json!({"k": "x"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["got"], "v2", "resident session replaced with the new version");
+}
+
 // ADR-0026 §3 + §4: the type declares storage collections through its
 // interface_schema (`storage.collections` — serde CollectionSchema +
 // indexes/reduces); `ctx_store_emit` executes ops against the type's own

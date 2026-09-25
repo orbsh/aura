@@ -57,3 +57,38 @@ fn event_route_registry_persists_and_scans_by_actor() {
     let subs = mq::routes_of_event(&mut vs, "order_created").unwrap();
     assert_eq!(subs.len(), 1, "cart deregistered: {subs:?}");
 }
+
+#[test]
+fn routes_drop_actor_targets_only_its_own_rows() {
+    // The bug this locks: routes_drop_actor once scanned the PRIMARY slot
+    // with the actor_id where the event_id lives, so it deleted any row
+    // whose event_id happened to equal the actor_id — cross-actor damage,
+    // invisible when the ids coincide (as in the test above). Register
+    // several events for one actor AND the same events for others, so the
+    // actor's id collides with a DIFFERENT event's id in another row.
+    let mut vs = mq::MqStore::mem();
+    // event ids allocate in first-seen order: e1=1, e2=2, e3=3.
+    // actor ids: a=1, b=2, c=3.
+    mq::route_put(&mut vs, "e1", "a", "k", false).unwrap(); // (event 1, actor 1)
+    mq::route_put(&mut vs, "e2", "a", "k", false).unwrap(); // (event 2, actor 1)
+    mq::route_put(&mut vs, "e3", "a", "k", false).unwrap(); // (event 3, actor 1)
+    mq::route_put(&mut vs, "e1", "b", "k", false).unwrap(); // (event 1, actor 2)
+    mq::route_put(&mut vs, "e2", "c", "k", false).unwrap(); // (event 2, actor 3)
+
+    // Drop actor "a" (id 1). The old scan would also hit rows whose
+    // EVENT id == 1 (the (e1,b) row), wrongly deleting actor b's route.
+    mq::routes_drop_actor(&mut vs, "a").unwrap();
+
+    assert!(mq::routes_of_actor(&mut vs, "a").unwrap().is_empty(), "a's rows all gone");
+    // b subscribed only e1; that row must SURVIVE a's drop.
+    let b = mq::routes_of_actor(&mut vs, "b").unwrap();
+    assert_eq!(b.len(), 1, "b's e1 route survives: {b:?}");
+    let c = mq::routes_of_actor(&mut vs, "c").unwrap();
+    assert_eq!(c.len(), 1, "c's e2 route survives: {c:?}");
+
+    // Forward lookups agree: e1 still has exactly b, e2 exactly c, e3 none.
+    let e1 = mq::routes_of_event(&mut vs, "e1").unwrap();
+    assert_eq!(e1.len(), 1, "e1 keeps only b: {e1:?}");
+    let e3 = mq::routes_of_event(&mut vs, "e3").unwrap();
+    assert!(e3.is_empty(), "e3 was a's alone: {e3:?}");
+}

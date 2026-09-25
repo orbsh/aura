@@ -556,22 +556,17 @@ pub fn route_put(
 
 /// Drop every subscription row for one actor type (deregistration /
 /// hot-swap): its cursors then fall out of the watermark denominator.
+/// The scan rides the by_actor index — the primary key is
+/// `[event_id][actor_id]`, so an actor-prefixed primary-slot scan would
+/// delete rows belonging to whoever's event id matched the actor id.
 pub fn routes_drop_actor(store: &mut MqStore, actor_type: &str) -> anyhow::Result<()> {
     let actor_id = resolve_actor_id(store, actor_type)?;
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);
-    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
-    prefix.extend_from_slice(&actor_id.to_be_bytes());
-    let mut stale = Vec::new();
-    for suffix in store.scan_suffix(&prefix) {
-        if suffix.len() >= 4 {
-            let mut b = [0u8; 4];
-            b.copy_from_slice(&suffix[suffix.len() - 4..]);
-            stale.push(u32::from_be_bytes(b));
-        }
-    }
+    let stale: Vec<u32> = t
+        .scan::<__OkmIndex_EventRoute_by_actor>(&actor_id.to_be_bytes())
+        .into_iter()
+        .map(|(pk, _row)| pk.decoded.event_id)
+        .collect();
     for event_id in stale {
         t.delete_by_pkey(&EventRouteKey { event_id, actor_id });
     }

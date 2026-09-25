@@ -64,6 +64,16 @@ impl EventRouter {
         ));
     }
 
+    /// Drop every route bound to one actor type (hot-swap re-registration:
+    /// the type's NEW `receives` assembles after this, so the version that
+    /// wins is the latest declaration — no duplicates, no stale events).
+    pub fn drop_actor(&mut self, actor_type: &str) {
+        for routes in self.exact.values_mut() {
+            routes.retain(|r| r.actor_type != actor_type);
+        }
+        self.wildcard.retain(|(_, r)| r.actor_type != actor_type);
+    }
+
     /// All routes matching an event name: exact first, then wildcards.
     /// A single event may hit both — each match delivers independently.
     /// All routes bound by one actor type (its @on declarations) — the

@@ -83,10 +83,10 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [~] NUSHELL RESOLVED → PTY residency (ruled 2026-09-15, prototype-verified)
       - resident session: one PTY per actor instance running a long-lived `nu` REPL (`--no-config-file`); idle_ttl eviction = close the PTY
       - multi-entry: `use 'operation.nu' *` imports all exports; delivery addresses the handler by event name (exported fn names = event names)
-      - session state: `$env` variables persist across calls within the resident process — memory-state only, NOT durable ctx (no host bridge in a PTY: state vanishes at eviction unless the script persists it itself)
+      - session state: `$env` variables persist across calls within the resident process — the memory tier (vanishes at eviction); durable state goes through the ctx bridge (landed 2026-09-25, see below)
       - verified in prototype: env vars persist across sequential calls in one nu process; reedline emits `ESC[6n` cursor queries the host MUST answer (`ESC[row;colR`) or input hangs; ANSI/OSC output needs stripping (`--no-config-file` + winsize reduces noise)
-      - implementation (carrier PTY mode): pending — long-lived PTY session per instance, per-call wrapper eval, reedline query answering, ANSI strip
-      - capability position after this: nu actors = stateful-resident memory-only (no durable ctx) — between one-shot and in-process carriers; ctx-needing actors still use python/steel
+      - implementation (carrier PTY mode): LANDED — long-lived PTY session per instance, per-call wrapper eval, reedline query answering, ANSI strip
+      - capability position after this: nu actors = stateful-resident (2026-09-25: the PTY ctx bridge landed — durable state via ctx-store-emit like the other script carriers; cross-call $env is the memory tier)
 - [x] **Phase 4.5a — PRIORITY CLEANUP: remove the Rust-closure actor form (`ActorType::simple`) from the public API, immediately after Phase 4.5 lands its replacement**
   - the engine ships NO in-process Rust actor — framework mechanics (the evictor class) are plain realm logic, not actors; wrapping them as actors is a pointless detour
   - Rust code becomes an actor through exactly one channel: compile to wasm and upload
@@ -146,7 +146,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - serialization/partition routing/timer/mq semantics untouched; existing instance-state bytes discarded, no migration (ADR-0018 precedent)
   - Schema declaration (rides the 4.5b upload lifecycle; execution path never regenerates):
     - python: decorator over the okm type definitions derives the schema, merged into `interface_schema` (same implicit+explicit merge as @on)
-    - steel/nushell: hand-written schema literal in interface_schema; handlers call ctx store functions directly (nushell stays memory-only until its PTY host bridge lands)
+    - steel/nushell: hand-written schema literal in interface_schema; handlers call ctx store functions directly (nushell's PTY host bridge landed 2026-09-25 — file-round-trip req/resp, same op set as steel; see PLAN 4.5 NUSHELL item)
     - wasm: same op set over CBOR per the landed carrier ABI
     - merged schema persists on ActorDef (dynamic segment) at registration; `ctx.interface_schema` reads the persisted copy (reflection for handlers; dev-time completion served by the LLM receiving interface_schema)
   - Protocol naming (aura side docs-only; prism side lands with Phase 8): the wire/concept layer carries only `ev` in BOTH directions — no direction field; emit/on are per-end implementation details (aura @on+emit; prism client ws.send/ws.on); prism = aura event semantics extended to the user end
@@ -236,8 +236,14 @@ callslot deadline 属 feature 组合误判——见下）。
 - [ ] events_matching 增量化（可选小优化）：通配订阅每轮 50ms 全量重扫；可缓存
       上轮展开 + EventName registry 水位，registry 不变即跳过。通配订阅多/词汇大
       时才值得（Windmill 判据）。
-- [ ] probe 侧 nushell 的 ctx 桥：driver 轮询会话目录里的请求文件，文件里加载的
-      函数调 `HostBridge` 同步口（已选「写成函数在 shell 中加载」）。
+- [x] probe 侧 nushell 的 ctx 桥（LANDED 2026-09-25）：bridge.nu 把每个 host fn 物化为
+      `ctx-<dash-name>` 自定义命令（nu 禁点号），nu 侧写 req-*.json 轮询 resp-*.json，
+      Rust `call` 的 poll 循环 sweep 会话目录应答（HostBridge 同步口）。回归锁：结果
+      文件出现时 REPL 仍在重绘提示符，立即返回会让下一桥回合的 source 吞进半截提示符
+      ——`call` 交还 session 前须 pump 至 PTY 流静默（nu_bridge.rs 两回合测试锁住）。
+      aura 侧：`pure_nushell` 特判删除，nu 与其余语言同走桥；e2e =
+      echo.rs::nushell_store_emit_roundtrip（手写 schema 字面量 → ctx-store-emit →
+      真实 realm store 往返）。
 - [ ] cold call over the wire（依赖 Phase 6，勿单独实施）：重进入路径的前提是
       调用方有挂起/恢复契约——gravity 的 transcript 持久化 + 脚本侧约定 resume
       handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建

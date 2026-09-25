@@ -49,7 +49,7 @@ actor 类型是**声明的、部署级规模**的词汇——每个类型都由�
 collection 及其键/索引声明搭乘既有的 Phase 4.5b upload 生命周期：
 
 - **python**：脚本内的 okm 类型定义套装饰器派生 schema；introspection 将其合并进 `interface_schema`（与 `@on` 元数据同一套 implicit+explicit 合并，ADR-0014 step 1）。单一声明面，派生式。
-- **steel / nushell**：无 AOP——schema 是 `interface_schema` 内的手写字面量（数据，非派生）；handler 直接调用 ctx store 函数。nushell 的 PTY carrier 另无 host bridge，位置不变：在该桥落地前只有内存态。
+- **steel / nushell**：无 AOP——schema 是 `interface_schema` 内的手写字面量（数据，非派生）；handler 直接调用 ctx store 函数。nushell 的 PTY carrier 另无 host bridge，位置不变：在该桥落地前只有内存态。（更新 2026-09-25：PTY ctx 桥已落地——文件往返 req/resp，操作集与 steel 相同。）
 - **wasm**（Rust 源码）：okm 编译进模块——schema 声明就是构建期的 derive 宏，存储面不需要动态 interface_schema 形态；交付的 `.wasm` 工件在代码里携带自己的 schema，upload 时按 4.5b 生命周期内省读出。
 - 合并后的 schema 在注册时随 ActorDef 持久化（dynamic segment）；**执行路径从不重新生成 schema**——类型→schema 的开销只存在于 upload 一次。`ctx.interface_schema` 读持久化副本（便宜），供 handler 对自身声明形态做反射；开发期补全由 LLM 接收同一 interface_schema 服务。
 

@@ -136,8 +136,9 @@ host 函数参数为 JSON 字符串（可传原生 steel 值，自动 marshal）
 [English](#nushell-1)
 
 ```nu
-# 子进程执行：无 ctx host 函数（无法回调 host——需要 ctx 的脚本 Actor
-# 必须用进程内 carrier）；无 VM 驻留（one-shot，无内存态）
+# PTY 驻留会话：一个实例一个长驻 nu REPL，跨调用内存态走 $env；
+# ctx host 函数经文件桥应答（nu 写 req-*.json，宿主 poll 循环回 resp-*.json），
+# 命令名为 ctx-<短横线名>（nu 禁点号）
 export def execute [args] {
     { sum: ($args.items | math sum) }
 }
@@ -145,7 +146,8 @@ export def execute [args] {
 
 - 入口必须 `export def <name>`；裸 `main` 不可通过模块导入寻址，会被显式拒绝
 - 参数是一个解析后的值（record/list），不是字符串；返回值必须可 `to json --raw`
-- nushell 是**直接调用通道单 handler**（`execute`，子进程形态与多入口寻址不匹配）；`interface_schema` 声明经由通用 wrapper 生效（`export def interface_schema [args]` 可声明 lifecycle TTL）；需要 `@on` 多入口 + ctx 的场景用 python/steel
+- handler 按事件名寻址（导出的函数名 = 事件名）；`interface_schema` 声明经由通用 wrapper 生效（`export def interface_schema [args]` 可声明 lifecycle TTL 与 storage 字面量）
+- ctx 桥 2026-09-25 落地：`ctx-invoke` / `ctx-store-emit` / `ctx-interface-schema` 与其余进程内 carrier 同操作集；桥的回合间回归锁见 PLAN 遗留节
 
 ## Wasm（Rust 编写）
 

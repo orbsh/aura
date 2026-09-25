@@ -199,9 +199,10 @@ No-entry semantics: define a `*result*` variable in the source.
 [中文](#nushell-2)
 
 ```nu
-# Subprocess execution: no ctx host functions (cannot call back into the
-# host — script actors needing ctx must use an in-process carrier);
-# no VM residency (one-shot, no memory space)
+# PTY-resident session: one long-lived nu REPL per actor instance,
+# cross-call state in $env; ctx host functions ride a file bridge
+# (nu writes req-*.json, the host poll loop answers resp-*.json) —
+# command names are ctx-<dash-name> (nu forbids dots)
 export def execute [args] {
     { sum: ($args.items | math sum) }
 }
@@ -211,11 +212,12 @@ export def execute [args] {
   through module import and is explicitly rejected
 - The argument is one parsed value (record/list), not a string; the return
   value must survive `to json --raw`
-- nushell carries a **single direct-call handler** (`execute`; the
-  subprocess shape does not match multi-entry addressing);
+- Handlers are addressed by event name (exported fn names = event names);
   `interface_schema` declarations work through the generic wrapper
-  (`export def interface_schema [args]` can declare a lifecycle TTL);
-  scenarios needing `@on` multi-entry + ctx use python/steel
+  (`export def interface_schema [args]` can declare a lifecycle TTL and a
+  storage literal)
+- The ctx bridge landed 2026-09-25: `ctx-invoke` / `ctx-store-emit` /
+  `ctx-interface-schema` carry the same op set as the in-process carriers
 
 ## Wasm (written in Rust)
 

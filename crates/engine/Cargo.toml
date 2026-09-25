@@ -18,6 +18,7 @@ probe-protocol = { path = "../../../probe/crates/protocol" }
 probe-config = { path = "../../../probe/crates/config" }
 probe-runtime = { path = "../../../probe/crates/runtime" }
 tempfile = "3"
+base64 = "0.22"
 
 [features]
 default = []

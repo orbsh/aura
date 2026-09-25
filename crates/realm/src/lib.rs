@@ -275,6 +275,12 @@ impl Realm {
     /// `ctx_invoke` blocks on the unified call model.
     fn host_bridge_for(
         ctx: &aura_actor::Ctx,
+        // The type's ns + a raw ns-bound engine handle (ADR-0026 §4
+        // wasm storage): present when the type resolved a store plan.
+        // The wasm full-power path needs RAW engine calls, not the
+        // Collection-op layer (the module runs the real Collection in
+        // itself; the host is its engine).
+        wasm_raw: Option<(u16, crate::mq::MqStore)>,
     ) -> std::collections::BTreeMap<String, probe_runtime::carrier::HostFn> {
         use probe_runtime::carrier::HostFn;
 
@@ -320,6 +326,45 @@ impl Realm {
             fns.insert(
                 "ctx_interface_schema".into(),
                 Arc::new(move |_arg: serde_json::Value| Ok(schema.clone())) as HostFn,
+            );
+        }
+        if let Some((ns, store)) = wasm_raw {
+            // Wasm full-power path (ADR-0026 §4): the guest's in-module
+            // Collection emits okm-wire OpFrames; the host answers with
+            // OpResponses executed against the type's RAW ns engine
+            // plane (no Collection-op layer — the trusted static-mode
+            // writer IS the module; the no-bypass-guard ruling covers
+            // it). The JSON HostFn seam carries the bytes as number
+            // arrays (lossless; storage is not a hot path here).
+            let handle = crate::mq::MqStore::ns_raw(&store, ns as u16);
+            fns.insert(
+                "emit".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    use okm_wire::{OpFrame, OpResponse};
+                    let bytes: Vec<u8> = arg
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("emit: expected byte array"))?
+                        .iter()
+                        .map(|v| v.as_u64().map(|x| x as u8).ok_or_else(|| anyhow::anyhow!("emit: bad byte")))
+                        .collect::<Result<Vec<u8>, _>>()?;
+                    let frame = OpFrame::decode(&bytes)
+                        .ok_or_else(|| anyhow::anyhow!("emit: malformed op frame"))?;
+                    let mut out = OpResponse::default();
+                    let mut s = handle.clone();
+                    for (tag, key, value) in &frame.0 {
+                        use okm_core::storage::VirtualStorage;
+                        match *tag {
+                            okm_wire::OP_PUT => s.put(key.clone(), value.clone()),
+                            okm_wire::OP_DELETE => s.del(key),
+                            okm_wire::OP_GET => out.value = s.get(key),
+                            okm_wire::OP_SCAN => out.suffixes = s.scan_range(key, None),
+                            other => anyhow::bail!("emit: unsupported op tag {other}"),
+                        }
+                    }
+                    Ok(serde_json::Value::Array(
+                        out.encode().into_iter().map(serde_json::Value::from).collect(),
+                    ))
+                }) as HostFn,
             );
         }
         fns
@@ -474,10 +519,12 @@ impl Realm {
             return;
         };
         let body = actor.body.clone();
+        let realm_plan = realm.plan_of(&id.actor_type).cloned();
+        let realm_mq = realm.mq.clone();
         let ctx = Self::ctx_for(
             self_arc.clone(),
             realm.mq.clone(),
-            realm.plan_of(&id.actor_type),
+            realm_plan.as_ref(),
             realm.schema_of(&id.actor_type).cloned().flatten(),
             id,
         );
@@ -539,7 +586,13 @@ impl Realm {
                 let host = if pure_nushell {
                     None
                 } else {
-                    let fns = Self::host_bridge_for(&ctx);
+                    // Wasm full-power raw surface: the type's resolved
+                    // plan carries its ns; the raw engine handle rides
+                    // the mq clone the ctx already holds.
+                    let wasm_raw = realm_plan
+                        .as_ref()
+                        .map(|p| (p.ns, realm_mq.clone()));
+                    let fns = Self::host_bridge_for(&ctx, wasm_raw);
                     Some(probe_runtime::carrier::HostBridge { functions: fns })
                 };
                 let instance_key = format!("{}/{}", id.actor_type, id.key);

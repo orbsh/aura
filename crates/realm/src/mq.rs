@@ -233,6 +233,18 @@ impl MqStore {
     /// A namespace-qualified handle: every key enters as
     /// `[prefix][inner key]`; the inner engine stays untouched.
     /// `PrefixStore`-style 2-byte length discipline for the segment.
+    /// A TYPE-NS-raw handle (ADR-0026 §4 wasm storage): prefix = the
+    /// type's 2-byte ns. This is the wasm full-power path's engine
+    /// plane — the guest's in-module `Collection` emits RAW engine
+    /// calls (okm-wire OpFrames) and the host answers with this handle
+    /// (the guest code is the trusted static-mode writer; the
+    /// no-bypass-guard ruling covers it).
+    pub fn ns_raw(inner: &Self, ns: u16) -> Self {
+        let prefix = ns.to_be_bytes().to_vec();
+        let mut p = prefix;
+        p.extend_from_slice(&inner.prefix);
+        Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
+    }
     pub fn namespaced(inner: &Self, namespace: &str) -> Self {
         let mut prefix = (namespace.len() as u16).to_be_bytes().to_vec();
         prefix.extend_from_slice(namespace.as_bytes());

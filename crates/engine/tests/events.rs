@@ -195,7 +195,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
     );
 }
 
-// Regression: direct invoke still works alongside the event namespace.
+// Regression: direct invoke still works alongside event delivery.
 #[tokio::test]
 async fn invoke_path_unaffected() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");

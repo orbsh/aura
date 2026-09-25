@@ -119,11 +119,15 @@ segments (the okm key discipline — no textual separators):
   (put/get_document, fields, scan, reduce); same-type cross-instance
   aggregation is an ordinary scan/reduce inside the type's ns.
 
-User namespaces (Phase 3.6) are orthogonal to type nss: the namespace
-prefix wraps the outermost layer (`MqStore::namespaced`), the type nss
-live inside — different users' keyspaces within one physical engine are
-structurally separated, and cross-namespace access is not expressible at
-the type level.
+Namespace isolation (the Phase 3.6 mechanism) is orthogonal to type
+nss: the namespace prefix wraps the outermost layer
+(`MqStore::namespaced`), the type nss live inside — different
+namespaces' keyspaces within one physical engine are structurally
+separated, and cross-namespace access is not expressible at the type
+level. WHAT the namespace binds (user, project, or nothing) is an
+application decision (the PLAN 4.10 demotion) — the framework's
+isolation units are exactly two: type ns (storage) and instance
+serialization (routing); user is not among them.
 
 ## 4. Serialization boundary: load on activation, flush on sleep
 

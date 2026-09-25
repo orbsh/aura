@@ -24,7 +24,7 @@ actor 类型是**声明的、部署级规模**的词汇——每个类型都由�
 
 - 低位 ns 块保留给 aura 自身：mq 表（30–35）、meta/state（40–41）、未来框架平面。actor 类型从保留块之上的固定基址起分配。
 - 分配发生在 `register_type`，作为类型注册表的副作用（即今天已分配 `type_id` 的同一张注册表——本设计需要的动态 actor→ns 注册表已具雏形）；ns id 在节点生命周期内永不复用。
-- 用户 namespace 隔离（Phase 3.6 的 `PrefixStore` 包装，每个用户 namespace 一个前缀）是正交的，保留其**机制**：它前缀整个引擎，actor 类型的 ns 活在其下。绑定维度降级为应用决定（PLAN Phase 4.10）——gravity 可绑用户，无用户应用可不绑；「probe 注册凭据 = 用户凭据 → 推导 namespace」被取代。
+- namespace 隔离（Phase 3.6 的机制，今日形态是前缀绑定的 `MqStore::namespaced` 句柄）是正交的，保留其**机制**：它前缀整个引擎，actor 类型的 ns 活在其下。绑定维度是应用的决定（降级裁决，PLAN Phase 4.10 已落地）——gravity 可绑用户，无用户应用可不绑；「probe 注册凭据 = 用户凭据 → 推导 namespace」被取代。
 
 ### 2. 实例是 ns 内的 document，不是隔离单位
 

@@ -1,6 +1,9 @@
-//! User namespace isolation (Phase 3.6 / 4.10) — okm nesting style.
+//! Namespace isolation (Phase 3.6 mechanism) — okm nesting style.
 //!
-//! The namespace binds at construction: each namespace's realm rides a
+//! The BINDING DIMENSION is an application decision (PLAN 4.10: user,
+//! project, or nothing — no credential derivation exists in the frame-
+//! work; user separation is the application organizing types/keys). The
+//! namespace binds at construction: each namespace's realm rides a
 //! prefix-bound `MqStore` (`[u16 BE len][namespace]` prepended inside
 //! the engine handle, `MqStore::namespaced`) — every table, mq AND
 //! declared collections, lives under the prefix. Prefix escape is not

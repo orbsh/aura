@@ -66,3 +66,11 @@ consensus cluster. No consensus layer, no metadata sync.**
   illusion — this is where future design effort goes.
 - Placement planning (consistent hashing across nodes) dissolves: there
   is no global Actor space to place into, only domains.
+
+> Errata (2026-09-25, PLAN 4.10): the "isolated per user namespace"
+> phrasing above predates the namespace-binding demotion — the namespace
+> mechanism survives (prefix isolation at construction) but its binding
+> dimension is an application decision; the framework's isolation units
+> are type ns (storage) and instance serialization (routing). Node trust
+> rides ADR-0015 node identity. The two-instance meta narrative is also
+> superseded by ADR-0025 Plan A (one data-plane okm instance).

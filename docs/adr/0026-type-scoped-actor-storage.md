@@ -24,7 +24,7 @@ Actor types are a DECLARED, deployment-scale vocabulary — the application auth
 
 - The low ns block is reserved for aura itself: mq tables (30–35), meta/state (40–41), future framework planes. Actor types allocate from a fixed base above the reserved block.
 - Allocation happens at `register_type` as a side effect of the type registry (the same registry that assigns `type_id` today — the dynamic actor→ns registry this design requires already exists in embryo); ns ids are never reused within a node's lifetime.
-- Per-user namespace isolation (Phase 3.6's `PrefixStore` wrapper) keeps its MECHANISM as orthogonal — it prefixes the whole engine, beneath which actor-type nss live. Its binding dimension is demoted to an application decision (PLAN Phase 4.10): gravity may bind user, a no-user application binds nothing; "probe registration credential = user credential → namespace derived" is superseded.
+- Namespace isolation (the Phase 3.6 mechanism, today the prefix-bound `MqStore::namespaced` handle) keeps its MECHANISM as orthogonal — it prefixes the whole engine, beneath which actor-type nss live. Its binding dimension is an APPLICATION DECISION (demoted, PLAN Phase 4.10 LANDED): gravity may bind user, a no-user application binds nothing; "probe registration credential = user credential → namespace derived" is superseded.
 
 ### 2. Instances are documents inside the type's ns
 

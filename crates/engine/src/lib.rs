@@ -11,7 +11,8 @@ pub struct Engine {
     /// The system/default namespace realm (back-compat: single-node tests,
     /// CLI echo). User-facing surfaces use `namespaces` instead.
     pub realm: SharedRealm,
-    /// Per-user namespace map (Phase 3.6): structural isolation — a
+    /// Namespace map (Phase 3.6 mechanism; binding dimension demoted to an
+    /// application decision per PLAN 4.10): structural isolation — a
     /// NamespacedRealm handle cannot reach another namespace.
     pub namespaces: Arc<aura_realm::namespace::Namespaces>,
 }
@@ -183,8 +184,12 @@ impl Engine {
             .await
     }
 
-    /// Register an actor type into a user namespace (Phase 3.6). The
-    /// namespace is derived from the user credential at registration.
+    /// Register an actor type into a namespace (Phase 3.6 mechanism,
+    /// demoted binding per PLAN 4.10). The namespace is an EXPLICIT
+    /// application decision passed at the call site — construction-time
+    /// prefix isolation is the mechanism; what dimension the namespace
+    /// binds (user, project, nothing) is the application's choice. No
+    /// credential derivation exists anywhere on this path.
     pub async fn register_in(&self, namespace: &str, actor: ActorType) {
         let ns = self.namespaces.realm_of(namespace).await;
         // Same introspection + persistence path as register() (ADR-0026 §3:
@@ -193,9 +198,11 @@ impl Engine {
         let _ = self.register_inner(actor, &ns.realm()).await;
     }
 
-    /// Namespaced call: target resolution = user namespace + node alias +
-    /// operation. A namespace handle never sees another namespace's types
-    /// or events — cross-namespace delivery is not expressible.
+    /// Namespaced call (explicit namespace handle — an application
+    /// decision, not a credential derivation): target resolution =
+    /// namespace + node alias + operation. A namespace handle never sees
+    /// another namespace's types or events — cross-namespace delivery is
+    /// not expressible.
     pub async fn call_in(
         &self,
         namespace: &str,
@@ -210,7 +217,8 @@ impl Engine {
             .await
     }
 
-    /// Namespaced emit: events route only within the namespace.
+    /// Namespaced emit (explicit namespace — application decision): events
+    /// route only within the namespace.
     pub async fn emit_in(
         &self,
         namespace: &str,

@@ -61,7 +61,7 @@ ActorType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 - **slot（1 字节）**：实例内访问方法判别（0 = 主条目），同一张表的全部索引条目共享 ns 段
 - **Actor 状态**：实例状态不是每实例一份平铺 document——类型在自己的 ns 内声明 collections（schema 随 interface_schema 上传持久化），handler 经 `ctx.store.emit(op)` 以 okm Collection 指令读写（put/get_document、fields、scan、reduce）；同类型跨实例聚合 = 类型 ns 内的普通 scan/reduce。
 
-用户 namespace（Phase 3.6）与类型 ns 正交：namespace 前缀加在最外层（`MqStore::namespaced`），类型 ns 在其内——同一物理引擎内不同用户的键空间结构性分离，跨 namespace 的访问在类型上就不可表达。
+namespace 隔离（Phase 3.6 机制）与类型 ns 正交：namespace 前缀加在最外层（`MqStore::namespaced`），类型 ns 在其内——同一物理引擎内不同 namespace 的键空间结构性分离，跨 namespace 的访问在类型上就不可表达。namespace 绑定什么维度（用户、项目、或不绑）是应用的决定（PLAN 4.10 降级裁决）——框架的隔离单元只有两个：类型 ns（存储）与实例串行（路由），用户不在其中。
 
 ## 4. 序列化边界：激活时载入，休眠时写回
 

@@ -193,7 +193,11 @@ withdrawn. The EventName registry is still a realm-wide fact
 
 Namespace assignment is mechanical string handling at the proxy boundary —
 not an approval decision, not a table, not a credential. The prefix is
-prism's envelope: stamped on ingress, stripped on egress — the browser's
+prism's envelope: stamped on ingress, stripped on egress — and its SHAPE
+(`<account>/<session>.…` is the default, not a law) is prism-side
+configuration, what the realm sees is only the arrived name. The rule
+(dial-in never carries bare names) is not configurable; the string that
+implements it is. The browser's
 vocabulary is bare names on both ends, and a name it emitted that routes
 back has its OWN session prefix stripped before delivery (foreign prefixes
 either never reach the subscription match — the auth block gates them — or

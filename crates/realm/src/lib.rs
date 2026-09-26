@@ -186,7 +186,7 @@ impl Realm {
         // facts survive restart and are readable by ops without
         // introspecting scripts.
         self.router.drop_actor(&actor.name);
-        if let Err(e) = mq::routes_drop_actor(&mut self.mq.clone(), &actor.name) {
+        if let Err(e) = mq::routes_drop_actor(&self.mq, &actor.name) {
             eprintln!("route drop failed for {}: {e}", actor.name);
         }
         // Hot replacement reaches execution too: resident sessions hold
@@ -211,8 +211,7 @@ impl Realm {
             } else {
                 self.router.on(decl.event.clone(), &actor.name, &decl.key_field);
             }
-            let mut vs = self.mq.clone();
-            if let Err(e) = mq::route_put(&mut vs, &decl.event, &actor.name, &decl.key_field, decl.wildcard) {
+            if let Err(e) = mq::route_put(&self.mq, &decl.event, &actor.name, &decl.key_field, decl.wildcard) {
                 eprintln!("route persist failed for {}/{}: {e}", decl.event, actor.name);
             }
         }
@@ -491,8 +490,8 @@ impl Realm {
                             let prefix = event.trim_end_matches('*').to_string();
                             let found = {
                                 let realm = consumer_realm.lock().await;
-                                let mut vs = realm.mq.clone();
-                                mq::events_matching(&mut vs, &prefix).unwrap_or_default()
+                                let vs = realm.mq.clone();
+                                mq::events_matching(&vs, &prefix).unwrap_or_default()
                             };
                             if found != names {
                                 names = found;
@@ -506,10 +505,10 @@ impl Realm {
                             // OUTSIDE the realm lock.
                             let batch = {
                                 let realm = consumer_realm.lock().await;
-                                let mut vs = realm.mq.clone();
-                                let after = mq::cursor(&mut vs, concrete, &part, &actor)
+                                let vs = realm.mq.clone();
+                                let after = mq::cursor(&vs, concrete, &part, &actor)
                                     .unwrap_or(0);
-                                mq::backlog(&mut vs, concrete, &part, after).unwrap_or_default()
+                                mq::backlog(&vs, concrete, &part, after).unwrap_or_default()
                             };
                             for (seq, payload) in batch {
                                 let job = aura_actor::QueuedJob {
@@ -518,8 +517,8 @@ impl Realm {
                                 };
                                 Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
                                 let realm = consumer_realm.lock().await;
-                                let mut vs = realm.mq.clone();
-                                let _ = mq::advance(&mut vs, concrete, &part, &actor, seq);
+                                let vs = realm.mq.clone();
+                                let _ = mq::advance(&vs, concrete, &part, &actor, seq);
                                 progressed = true;
                             }
                         }
@@ -1043,8 +1042,8 @@ impl Realm {
             // with NO matching route (checked above): a matched route with
             // no live instance is a backlog write, not a loss.
             let event_name = event.to_string();
-            let mut store = realm.mq.clone();
-            if let Err(e) = mq::append(&mut store, &event_name, &partition, &data) {
+            let store = realm.mq.clone();
+            if let Err(e) = mq::append(&store, &event_name, &partition, &data) {
                 eprintln!("mq append failed for {event_name}/{partition}: {e}");
                 realm.dead_events.push(&event, data.clone());
                 continue;
@@ -1057,7 +1056,7 @@ impl Realm {
             // out; compaction deletes mq-data below the watermark. Runs on
             // the emit path (write-path compaction per the ruling); the
             // scan cost is bounded by the subscriber count.
-            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &partition, &mut store).await {
+            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &partition, &store).await {
                 eprintln!("mq compaction failed for {event_name}/{partition}: {e}");
             }
         }
@@ -1077,7 +1076,7 @@ impl Realm {
         realm: &mut Realm,
         event: &str,
         partition: &str,
-        store: &mut mq::MqStore,
+        store: &mq::MqStore,
     ) -> anyhow::Result<()> {
         let event_id = match mq::event_id_of(store, event)? {
             Some(id) => id,
@@ -1130,8 +1129,8 @@ impl Realm {
         partition: &str,
     ) -> anyhow::Result<()> {
         let mut realm = self_arc.lock().await;
-        let mut store = realm.mq.clone();
-        Self::compact_queue_locked(&mut realm, event, partition, &mut store).await
+        let store = realm.mq.clone();
+        Self::compact_queue_locked(&mut realm, event, partition, &store).await
     }
 
     /// Periodic eviction tick, spawned once per engine. Holds a Weak

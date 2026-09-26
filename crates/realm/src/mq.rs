@@ -166,7 +166,7 @@ pub enum MqEngine {
 }
 
 impl okm_core::storage::VirtualStorage for MqEngine {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         match self {
             Self::Fjall(s) => s.put(key, value),
             Self::Test(s) => s.put(key, value),
@@ -178,7 +178,7 @@ impl okm_core::storage::VirtualStorage for MqEngine {
             Self::Test(s) => s.get(key),
         }
     }
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         match self {
             Self::Fjall(s) => s.del(key),
             Self::Test(s) => s.del(key),
@@ -214,7 +214,7 @@ impl okm_core::storage::SharedVirtualStorage for MqEngine {
 #[derive(Clone)]
 pub struct MqStore {
     prefix: Vec<u8>,
-    inner: std::sync::Arc<std::sync::Mutex<MqEngine>>,
+    inner: MqEngine,
 }
 
 impl MqStore {
@@ -228,7 +228,7 @@ impl MqStore {
         Self::with_engine(MqEngine::Test(okm_core::TestStore::default()))
     }
     fn with_engine(engine: MqEngine) -> Self {
-        Self { prefix: Vec::new(), inner: std::sync::Arc::new(std::sync::Mutex::new(engine)) }
+        Self { prefix: Vec::new(), inner: engine }
     }
     /// A realm-qualified handle: every key enters as
     /// `[prefix][inner key]`; the inner engine stays untouched.
@@ -239,11 +239,15 @@ impl MqStore {
     /// calls (okm-wire OpFrames) and the host answers with this handle
     /// (the guest code is the trusted static-mode writer; the
     /// no-bypass-guard ruling covers it).
+    ///
+    /// Handles are CHEAP CLONES sharing the one engine (okm ADR-0026:
+    /// `VirtualStorage` writes take `&self` — no outer Mutex, no
+    /// per-handle lock boundary; aura ADR-0030 records the ruling).
     pub fn ns_raw(inner: &Self, ns: u16) -> Self {
         let prefix = ns.to_be_bytes().to_vec();
         let mut p = prefix;
         p.extend_from_slice(&inner.prefix);
-        Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
+        Self { prefix: p, inner: inner.inner.clone() }
     }
     /// The realm-prefixed handle (ADR-0028: the outer isolation axis is
     /// a realm, not a "namespace"): `[u16 BE len][realm name]` prepended
@@ -253,7 +257,7 @@ impl MqStore {
         prefix.extend_from_slice(name.as_bytes());
         let mut p = prefix.clone();
         p.extend_from_slice(&inner.prefix);
-        Self { prefix: p, inner: std::sync::Arc::new(std::sync::Mutex::new(inner.inner.lock().unwrap().clone())) }
+        Self { prefix: p, inner: inner.inner.clone() }
     }
     fn qualified(&self, key: &[u8]) -> Vec<u8> {
         let mut k = self.prefix.clone();
@@ -263,21 +267,21 @@ impl MqStore {
 }
 
 impl okm_core::storage::VirtualStorage for MqStore {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.inner.lock().unwrap().put(self.qualified(&key), value);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.put(self.qualified(&key), value);
     }
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.inner.lock().unwrap().get(&self.qualified(key))
+        self.inner.get(&self.qualified(key))
     }
-    fn del(&mut self, key: &[u8]) {
-        self.inner.lock().unwrap().del(&self.qualified(key));
+    fn del(&self, key: &[u8]) {
+        self.inner.del(&self.qualified(key));
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         // okm's suffix contract: the engine scans the QUALIFIED prefix
         // and returns keys minus it — the realm segment never leaks
         // to the caller, and no second strip happens here.
         let full = self.qualified(prefix);
-        self.inner.lock().unwrap().scan_suffix(&full)
+        self.inner.scan_suffix(&full)
     }
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
         // Qualified window over the inner engine; the returned keys are
@@ -285,8 +289,6 @@ impl okm_core::storage::VirtualStorage for MqStore {
         let full_begin = self.qualified(begin);
         let full_end = end.map(|e| self.qualified(e));
         self.inner
-            .lock()
-            .unwrap()
             .scan_range(&full_begin, full_end.as_deref())
             .into_iter()
             .map(|k| k[self.prefix.len()..].to_vec())
@@ -300,7 +302,7 @@ impl okm_core::storage::VirtualStorage for MqStore {
 // regime); miss = append with the next id.
 // ---------------------------------------------------------------------------
 
-fn resolve_event_id(store: &mut MqStore, name: &str) -> anyhow::Result<u32> {
+fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     let mut t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     // Exact match through the text index: prefix scan by name, then
     // verify (no delimiter in the index bytes).
@@ -324,7 +326,7 @@ fn resolve_event_id(store: &mut MqStore, name: &str) -> anyhow::Result<u32> {
     Ok(id)
 }
 
-fn resolve_actor_id(store: &mut MqStore, name: &str) -> anyhow::Result<u32> {
+fn resolve_actor_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     let mut t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_ActorName_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
@@ -358,7 +360,7 @@ pub(crate) fn resolve_actor_type_id(
 /// time — `max(now_ms, last+1)` keeps the sequence monotonic across
 /// concurrent emitters whose wall clocks agree to the millisecond or not.
 pub fn append(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
     part: &str,
     payload: &serde_json::Value,
@@ -433,7 +435,7 @@ pub fn part_id_of(part: &str) -> u64 {
 pub const SINGLETON: &str = "__singleton__";
 
 /// The subscriber's cursor (0 = nothing consumed).
-pub fn cursor(store: &mut MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
+pub fn cursor(store: &MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
@@ -448,7 +450,7 @@ pub fn cursor(store: &mut MqStore, event: &str, part: &str, actor: &str) -> anyh
 
 /// Advance the cursor after consuming.
 pub fn advance(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
     part: &str,
     actor: &str,
@@ -467,7 +469,7 @@ pub fn advance(
 /// The subscriber's backlog: (seq, payload) strictly after `after_seq`,
 /// oldest first. Empty = caught up.
 pub fn backlog(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
     part: &str,
     after_seq: u64,
@@ -518,7 +520,7 @@ pub fn backlog(
 /// skip-to-now: jump the cursor to the partition head, discarding the
 /// stale backlog (the relief valve per the ruling).
 pub fn skip_to_now(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
     part: &str,
     actor: &str,
@@ -541,7 +543,7 @@ pub fn skip_to_now(
 /// Persist one subscription: (event, actor type) → key field declaration.
 /// Idempotent (a re-register overwrites the same row).
 pub fn route_put(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
     actor_type: &str,
     key_field: &str,
@@ -562,7 +564,7 @@ pub fn route_put(
 /// The scan rides the by_actor index — the primary key is
 /// `[event_id][actor_id]`, so an actor-prefixed primary-slot scan would
 /// delete rows belonging to whoever's event id matched the actor id.
-pub fn routes_drop_actor(store: &mut MqStore, actor_type: &str) -> anyhow::Result<()> {
+pub fn routes_drop_actor(store: &MqStore, actor_type: &str) -> anyhow::Result<()> {
     let actor_id = resolve_actor_id(store, actor_type)?;
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let stale: Vec<u32> = t
@@ -578,7 +580,7 @@ pub fn routes_drop_actor(store: &mut MqStore, actor_type: &str) -> anyhow::Resul
 
 /// Every subscription row for one event: (actor_id, key_field, is_wildcard).
 pub fn routes_of_event(
-    store: &mut MqStore,
+    store: &MqStore,
     event: &str,
 ) -> anyhow::Result<Vec<(u32, String, bool)>> {
     let event_id = resolve_event_id(store, event)?;
@@ -607,7 +609,7 @@ pub fn routes_of_event(
 /// Every subscription row for one actor type: (event_id, key_field,
 /// is_wildcard). The activation binding's persistent `routes_of`.
 pub fn routes_of_actor(
-    store: &mut MqStore,
+    store: &MqStore,
     actor_type: &str,
 ) -> anyhow::Result<Vec<(u32, String, bool)>> {
     let actor_id = resolve_actor_id(store, actor_type)?;
@@ -635,7 +637,7 @@ pub fn routes_of_actor(
 /// Delete mq-data rows in a partition with seq < `min_seq`. Returns the
 /// number of rows removed.
 pub fn delete_before(
-    store: &mut MqStore,
+    store: &MqStore,
     event_id: u32,
     part_id: u64,
     min_seq: u64,
@@ -666,7 +668,7 @@ pub fn delete_before(
 /// Every cursor row in a partition: (actor_id, cursor). The caller filters
 /// against the route registry.
 pub fn cursor_rows(
-    store: &mut MqStore,
+    store: &MqStore,
     event_id: u32,
     part_id: u64,
 ) -> anyhow::Result<Vec<(u32, u64)>> {
@@ -697,12 +699,12 @@ pub fn cursor_rows(
 
 /// The actor_id for a cursor name ("type/key") — the registry resolve the
 /// consumer path uses; callers need it to map cursor rows back to routes.
-pub fn actor_id_of(store: &mut MqStore, actor: &str) -> anyhow::Result<u32> {
+pub fn actor_id_of(store: &MqStore, actor: &str) -> anyhow::Result<u32> {
     resolve_actor_id(store, actor)
 }
 
 /// The registered name for an actor id (None = never registered).
-pub fn actor_name_of(store: &mut MqStore, actor_id: u32) -> anyhow::Result<Option<String>> {
+pub fn actor_name_of(store: &MqStore, actor_id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
     Ok(t.get(&ActorNameKey { id: actor_id }).map(|a| a.name))
 }
@@ -715,7 +717,7 @@ pub fn part_hash_of(part: &str) -> u64 {
 /// Every registered event name matching a wildcard PREFIX (the pattern's
 /// concrete instantiations the registry has seen). Prefix scan over the
 /// by_name index + row verify.
-pub fn events_matching(store: &mut MqStore, prefix: &str) -> anyhow::Result<Vec<String>> {
+pub fn events_matching(store: &MqStore, prefix: &str) -> anyhow::Result<Vec<String>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     let mut out = Vec::new();
     for hit in t.scan::<__OkmIndex_EventName_by_name>(prefix.as_bytes()) {
@@ -730,7 +732,7 @@ pub fn events_matching(store: &mut MqStore, prefix: &str) -> anyhow::Result<Vec<
 }
 
 /// The registered id for an event name (None = never emitted/registered).
-pub fn event_id_of(store: &mut MqStore, event: &str) -> anyhow::Result<Option<u32>> {
+pub fn event_id_of(store: &MqStore, event: &str) -> anyhow::Result<Option<u32>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes()) {
         if let Some(row) = &hit.1 {

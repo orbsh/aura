@@ -92,3 +92,36 @@ fn routes_drop_booth_targets_only_its_own_rows() {
     let e3 = mq::routes_of_event(&vs, "e3").unwrap();
     assert!(e3.is_empty(), "e3 was a's alone: {e3:?}");
 }
+
+#[test]
+fn depth_counts_live_and_skip_to_now_skips_the_backlog() {
+    // The zero-scan operational surface (realm.md retention ruling):
+    // append folds +1, watermark compaction's delete unfolds -1, depth()
+    // is one point read — never a prefix scan.
+    let vs = mq::MqStore::mem();
+    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 0, "unseen event: depth 0");
+
+    let s1 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 1})).unwrap();
+    let s2 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 2})).unwrap();
+    let s3 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 3})).unwrap();
+    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 3, "three appends fold +1 each");
+    // Depth is per (event, partition): another partition keeps its own count.
+    mq::append(&vs, "tick", "u2", &serde_json::json!({"n": 9})).unwrap();
+    assert_eq!(mq::depth(&vs, "tick", "u2").unwrap(), 1, "partition-scoped count");
+
+    // Watermark compaction unfolds: delete below s2 removes {s1}, count drops.
+    let eid = mq::event_id_of(&vs, "tick").unwrap().unwrap();
+    let part = mq::part_hash_of("u1");
+    let removed = mq::delete_before(&vs, eid, part, s2).unwrap();
+    assert_eq!(removed, 1, "the pre-watermark row is gone");
+    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 2, "unfold -1 on compaction delete");
+
+    // skip-to-now: the cursor jumps to the head; the stale backlog never
+    // re-surfaces (advance is monotonic — a later lower seq is a no-op).
+    mq::skip_to_now(&vs, "tick", "u1", "cart/u1").unwrap();
+    let bl = mq::backlog(&vs, "tick", "u1", mq::cursor(&vs, "tick", "u1", "cart/u1").unwrap()).unwrap();
+    assert!(bl.is_empty(), "skipped: nothing ahead of the cursor");
+    mq::advance(&vs, "tick", "u1", "cart/u1", s1).unwrap();
+    assert_eq!(mq::cursor(&vs, "tick", "u1", "cart/u1").unwrap(), s3,
+        "advance never rewinds — the skip survives a stale lower seq");
+}

@@ -369,10 +369,11 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     assert!(remaining.iter().all(|s| *s >= min), "nothing below the watermark survives: {remaining:?}");
 
     // A lagging subscriber pins the watermark: rewind one cursor to the
-    // first event's logical time, re-emit (compaction runs on the emit
+    // first event's logical time (advance is monotonic — a test-only
+    // rewind pins the old cursor), re-emit (compaction runs on the emit
     // path), then verify rows below the pinned watermark are gone while
     // later rows survive.
-    mq::advance(&vs, "order.created", "u1", "cart/u1", first_time).unwrap();
+    mq::rewind_cursor(&vs, "order.created", "u1", "cart/u1", first_time).unwrap();
     Realm::emit(
         &engine.realm,
         None,

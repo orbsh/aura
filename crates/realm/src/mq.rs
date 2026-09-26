@@ -20,11 +20,15 @@
 //! - `MqCursor` — `[event_id][part_id][booth_id]` → last consumed seq.
 //!
 //! Backlog = range scan after the cursor; skip-to-now = cursor write to
-//! the partition head. Min-watermark retention compaction and reduce-based
-//! depth counts are follow-ups (PLAN), not implemented here.
+//! the partition head (cursors are monotonic — advance never rewinds).
+//! The queue's DEPTH is a live `Count` reduce over MqData grouped by
+//! (event_id, part_id) — the write path folds +1 on append and unfolds
+//! −1 on watermark compaction, so `depth()` is one point read, never a
+//! scan (the zero-scan operational surface; the skip-to-now decision
+//! reads it directly).
 
 use okm_core::document::Collection;
-use okm_core::{KeyEncode, Document, DocumentEncode};
+use okm_core::{KeyEncode, Document, DocumentEncode, ReduceCodec};
 use okm_core::storage::VirtualStorage as _;
 use crate::value::{json_to_dyn, dyn_to_json};
 
@@ -75,6 +79,10 @@ pub struct MqHead {
 #[ok_ref(MqDataKey)]
 #[ok_partition(1)]
 #[ok_ns(31)]
+// Backlog depth as a live count (ADR-0023 preset, ADR-0024 key-field
+// group): append folds +1, watermark compaction's delete unfolds -1 —
+// the write path maintains it, `depth()` reads it as one point get.
+#[ok_reduce(Count { group(event_id, part_id) })]
 pub struct MqData {}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -439,7 +447,9 @@ pub fn cursor(store: &MqStore, event: &str, part: &str, booth: &str) -> anyhow::
     .unwrap_or(0))
 }
 
-/// Advance the cursor after consuming.
+/// Advance the cursor after consuming. Monotonic by contract: a lower
+/// `seq` never rewinds — that is what makes skip-to-now durable (a
+/// skipped backlog must not re-surface on the next drain pass).
 pub fn advance(
     store: &MqStore,
     event: &str,
@@ -450,10 +460,12 @@ pub fn advance(
     let event_id = resolve_event_id(store, event)?;
     let booth_id = resolve_booth_id(store, booth)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    t.put(
-        &MqCursorKey { event_id, part_id: part_id_of(part), booth_id },
-        &MqCursor { cursor: seq },
-    );
+    let key = MqCursorKey { event_id, part_id: part_id_of(part), booth_id };
+    let current = t.get(&key).map(|c| c.cursor).unwrap_or(0);
+    if seq <= current {
+        return Ok(());
+    }
+    t.put(&key, &MqCursor { cursor: seq });
     Ok(())
 }
 
@@ -505,6 +517,50 @@ pub fn backlog(
     }
     out.sort_by_key(|(s, _)| *s);
     Ok(out)
+}
+
+/// The queue's backlog depth: rows still stored in (event, partition).
+/// One point read of the live `Count` reduce — the zero-scan operational
+/// surface the skip-to-now decision reads. Absent group (no rows ever,
+/// or everything compacted away with the count at its zero state) is 0.
+pub fn depth(store: &MqStore, event: &str, part: &str) -> anyhow::Result<u64> {
+    let Some(event_id) = event_id_of(store, event)? else {
+        return Ok(0);
+    };
+    let part_id = part_id_of(part);
+    let mut header = Vec::with_capacity(4);
+    header.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
+    header.extend_from_slice(<MqData as Document>::NS_PREFIX);
+    Ok(
+        okm_core::reduce_get::<MqStore, __OkmReduce_MqData_0>(
+            store,
+            &header,
+            &MqDataKey { event_id, part_id, time: 0 },
+            &MqData {},
+        )
+        .unwrap_or(0),
+    )
+}
+
+/// Rewind a cursor BELOW its current value (test-support only — the
+/// production path never does this; `advance` is monotonic). Used to
+/// pin the retention watermark at an old logical time in compaction
+/// tests.
+pub fn rewind_cursor(
+    store: &MqStore,
+    event: &str,
+    part: &str,
+    booth: &str,
+    seq: u64,
+) -> anyhow::Result<()> {
+    let event_id = resolve_event_id(store, event)?;
+    let booth_id = resolve_booth_id(store, booth)?;
+    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    t.put(
+        &MqCursorKey { event_id, part_id: part_id_of(part), booth_id },
+        &MqCursor { cursor: seq },
+    );
+    Ok(())
 }
 
 /// skip-to-now: jump the cursor to the partition head, discarding the
@@ -697,6 +753,55 @@ pub fn booth_id_of(store: &MqStore, booth: &str) -> anyhow::Result<u32> {
 pub fn booth_name_of(store: &MqStore, booth_id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(store.clone());
     Ok(t.get(&BoothNameKey { id: booth_id }).map(|a| a.name))
+}
+
+/// The registered name for an event id (None = never registered).
+pub fn event_name_of(store: &MqStore, event_id: u32) -> anyhow::Result<Option<String>> {
+    let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
+    Ok(t.get(&EventNameKey { id: event_id }).map(|a| a.name))
+}
+
+/// The queue THIS booth instance subscribes to for one concrete event,
+/// resolved through the PERSISTED route registry — the same source the
+/// watermark denominator and the consumer loop's binding use. An exact
+/// row matches by id; a wildcard row (the registry stores the PREFIX as
+/// its event name) matches when the concrete name starts with it. The
+/// returned value is the partition NAME: singleton for a key-less
+/// route, the instance key for a keyed one (the emit path derives the
+/// partition from the same field, so subscriber and queue agree by
+/// construction). None = no route of this booth type binds the event.
+pub fn bound_partition(
+    store: &MqStore,
+    booth_type: &str,
+    instance_key: &str,
+    event: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(event_id) = event_id_of(store, event)? else {
+        return Ok(None);
+    };
+    for (rid, key_field, wildcard) in routes_of_booth(store, booth_type)? {
+        let matched = if rid == event_id {
+            true
+        } else if wildcard {
+            match event_name_of(store, rid)? {
+                // The registry stores the PATTERN ("order.*"); the
+                // consumer loop expands it by trimming the trailing
+                // '*' — the same rule applies to the relief valve.
+                Some(pattern) => event.starts_with(pattern.trim_end_matches('*')),
+                None => false,
+            }
+        } else {
+            false
+        };
+        if matched {
+            return Ok(Some(if key_field.is_empty() {
+                SINGLETON.to_string()
+            } else {
+                instance_key.to_string()
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The partition hash (exposed for realm-side watermark computation).

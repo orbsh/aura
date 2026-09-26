@@ -288,7 +288,7 @@ impl Realm {
                     let wasm_raw = realm_plan
                         .as_ref()
                         .map(|p| (p.ns, realm_mq.clone()));
-                    let fns = Self::host_bridge_for(&ctx, wasm_raw);
+                    let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq);
                     Some(probe_runtime::carrier::HostBridge { functions: fns })
                 };
                 let instance_key = format!("{}/{}", id.booth_type, id.key);

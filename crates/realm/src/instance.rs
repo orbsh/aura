@@ -93,39 +93,54 @@ impl Realm {
             let consumer_id = id.clone();
             let booth_key = id.key.clone();
             tokio::spawn(async move {
-                for (event, part, is_wildcard) in subs {
-                    // Cursor name = the booth type + instance key: two
-                    // types on one event hold independent cursors.
-                    let booth = format!("{}/{}", consumer_id.booth_type, booth_key);
-                    // Concrete queue names: an exact subscription is one
-                    // name; a wildcard subscription expands to every
-                    // registered event matching its prefix (re-expanded
-                    // each pass — new concrete names join automatically).
-                    let mut names: Vec<String> = Vec::new();
-                    loop {
-                        if is_wildcard {
+                // One pass over ALL bound queues per cycle. (The earlier
+                // shape — a `for` over subs wrapping an infinite `loop`
+                // per subscription — starved every queue but the first
+                // for a multi-@on type, and tripped clippy::never_loop.)
+                // Cursor name = the booth type + instance key: two types
+                // on one event hold independent cursors.
+                let booth = format!("{}/{}", consumer_id.booth_type, booth_key);
+                // Concrete queue names per subscription: an exact
+                // subscription is one name; a wildcard expands to every
+                // registered event matching its prefix (re-expanded each
+                // pass — new concrete names join automatically).
+                let mut queues: Vec<(String, String, bool, Vec<String>)> = subs
+                    .into_iter()
+                    .map(|(event, part, is_wildcard)| {
+                        (event, part, is_wildcard, Vec::new())
+                    })
+                    .collect();
+                // An instance with no bound queue has nothing to drain —
+                // exit (releasing the realm Arc) instead of spinning the
+                // poll loop forever holding the store open.
+                if queues.is_empty() {
+                    return;
+                }
+                loop {
+                    let mut progressed = false;
+                    for (event, part, is_wildcard, names) in &mut queues {
+                        if *is_wildcard {
                             let prefix = event.trim_end_matches('*').to_string();
                             let found = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
                                 mq::events_matching(&vs, &prefix).unwrap_or_default()
                             };
-                            if found != names {
-                                names = found;
+                            if found != *names {
+                                *names = found;
                             }
                         } else if names.is_empty() {
-                            names = vec![event.clone()];
+                            names.push(event.clone());
                         }
-                        let mut progressed = false;
-                        for concrete in &names {
+                        for concrete in &*names {
                             // Fetch the backlog under a short lock; run jobs
                             // OUTSIDE the realm lock.
                             let batch = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let after = mq::cursor(&vs, concrete, &part, &booth)
+                                let after = mq::cursor(&vs, concrete, part, &booth)
                                     .unwrap_or(0);
-                                mq::backlog(&vs, concrete, &part, after).unwrap_or_default()
+                                mq::backlog(&vs, concrete, part, after).unwrap_or_default()
                             };
                             for (seq, payload) in batch {
                                 let job = aura_booth::QueuedJob {
@@ -135,13 +150,13 @@ impl Realm {
                                 Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let _ = mq::advance(&vs, concrete, &part, &booth, seq);
+                                let _ = mq::advance(&vs, concrete, part, &booth, seq);
                                 progressed = true;
                             }
                         }
-                        if !progressed {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                        }
+                    }
+                    if !progressed {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
             });

@@ -60,7 +60,7 @@ fn counter_of(name: &'static str, events: &[&'static str]) -> BoothType {
 #[tokio::test]
 async fn exact_route_instance_key_from_event_data() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["add_to_cart"])).await;
+    engine.register(counter_of("cart", &["add_to_cart"])).await.unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("add_to_cart", "cart", "user_id");
@@ -95,7 +95,7 @@ async fn exact_route_instance_key_from_event_data() {
 #[tokio::test]
 async fn wildcard_route_goes_to_singleton() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("audit", &["order.created", "order.cancelled"])).await;
+    engine.register(counter_of("audit", &["order.created", "order.cancelled"])).await.unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on_wildcard("order.*", "audit");
@@ -127,7 +127,7 @@ async fn wildcard_route_goes_to_singleton() {
 #[tokio::test]
 async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["cart_updated"])).await;
+    engine.register(counter_of("cart", &["cart_updated"])).await.unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("cart_updated", "cart", "user_id");
@@ -162,8 +162,8 @@ async fn unmatched_events_land_in_dead_ring() {
 #[tokio::test]
 async fn exact_and_wildcard_both_match_deliver_independently() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["order.created"])).await;
-    engine.register(counter_of("stats", &["order.created"])).await;
+    engine.register(counter_of("cart", &["order.created"])).await.unwrap();
+    engine.register(counter_of("stats", &["order.created"])).await.unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
@@ -221,8 +221,8 @@ async fn invoke_path_unaffected() {
 #[tokio::test]
 async fn one_event_multiple_subscriber_types() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["order.created"])).await;
-    engine.register(counter_of("stats", &["order.created"])).await;
+    engine.register(counter_of("cart", &["order.created"])).await.unwrap();
+    engine.register(counter_of("stats", &["order.created"])).await.unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
@@ -252,6 +252,41 @@ async fn one_event_multiple_subscriber_types() {
     );
 }
 
+// Regression lock: the consumer task once wrapped an infinite per-
+// subscription `loop` inside a `for (event,..) in subs` — for an instance
+// bound to MORE queues than the first, the first queue looped forever and
+// the rest were never drained (starvation; clippy::never_loop flagged the
+// shape). One instance, two routes, two events: both must be consumed.
+// Old shape: count 1 (only the first queue's handler ran); new: count 2.
+#[tokio::test]
+async fn multi_route_instance_drains_every_queue() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine.register(counter_of("multi", &["evt.a", "evt.b"])).await.unwrap();
+    {
+        let mut r = engine.realm.try_lock().unwrap();
+        r.router.on("evt.a", "multi", "user_id");
+        r.router.on("evt.b", "multi", "user_id");
+    }
+    Realm::emit(&engine.realm, None, "evt.a", serde_json::json!({
+        "event": "evt.a", "user_id": "alice"
+    })).await.unwrap();
+    Realm::emit(&engine.realm, None, "evt.b", serde_json::json!({
+        "event": "evt.b", "user_id": "alice"
+    })).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // ONE instance (same key) consumed BOTH queues — the counter is
+    // per-user, so 2 means both handlers ran, not fan-out copies.
+    assert_eq!(
+        engine.invoke(
+            InstanceId { booth_type: "multi".into(), key: "alice".into() },
+            "count", serde_json::json!({ "user_id": "alice" }),
+        ).await.unwrap(),
+        serde_json::json!({"count": 2})
+    );
+}
+
 // ------------------------------------------- Phase 4.5c step 2b (retention) --
 //
 // Min-watermark compaction: the watermark's denominator is the route
@@ -270,7 +305,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
             BoothType::script(name, "steel", ECHO)
                 .on("order.created", "user_id"),
         )
-        .await;
+        .await.unwrap();
     }
 
     // Emit three events; both instances consume (the poll loop drains).
@@ -287,7 +322,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     use aura_realm::mq;
-    let mut vs = {
+    let vs = {
         let realm = engine.realm.try_lock().unwrap();
         realm.mq.clone()
     };

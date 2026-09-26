@@ -52,6 +52,8 @@ def audit(args): ...
 - `ctx_store_emit(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
 - `ctx_interface_schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
+- `ctx_queue_depth(event)` → 本实例在该事件队列上的积压深度（mq-data 上实时 Count 计数的点读，不扫描——水位线 compaction 的 unfold 同步维护）；队列经持久路由注册表解析（与消费循环同源），本类型无路由的事件=错误值
+- `ctx_skip_to_now(event)` → 把本实例游标推到分区头部，丢弃陈旧积压（泄压阀；游标单调——被跳过的积压不会在下一轮 drain 复活；后续事件照常投递）
 
 **语言能力差异**：
 

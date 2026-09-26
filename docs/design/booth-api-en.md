@@ -93,6 +93,15 @@ following — each takes one JSON argument and returns a JSON value:
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
   Booth's return value (blocking wait through the unified call model;
   timeout = failure value)
+- `ctx_queue_depth(event)` → this instance's backlog depth on the event's
+  queue (a point read of the live Count reduce over mq-data — never a
+  scan; the watermark compaction's unfold maintains it); the queue
+  resolves through the persisted route registry (the consumer loop's own
+  source) — an event this type has no route for is an error value
+- `ctx_skip_to_now(event)` → jumps this instance's cursor to the
+  partition head, discarding the stale backlog (the relief valve;
+  cursors are monotonic — a skipped backlog never re-surfaces on the
+  next drain; events after the skip flow normally)
 
 **Language capability matrix**:
 

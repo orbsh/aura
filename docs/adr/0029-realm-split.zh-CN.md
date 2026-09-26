@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0029-realm-split.md) (primary) · [中文](0029-realm-split.zh-CN.md)
 
-**Status:** Accepted (2026-09-26) — design; implementation pending, see Consequences
+**Status:** Accepted (2026-09-26) — 同日实现（commit 85573a1）
 
 ## Context
 

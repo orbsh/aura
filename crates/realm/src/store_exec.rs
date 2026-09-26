@@ -21,7 +21,10 @@ use std::sync::Mutex;
 /// register here at plan parse; execution looks them up. Single-process
 /// single-writer discipline (embedded mode) makes the global registry
 /// safe; the plan is the only writer.
-static REDUCE_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), (u16, Vec<String>, PresetKind)>>> =
+/// One declared reduce: (slot, group fields, preset kind).
+type ReduceSpecData = (u16, Vec<String>, PresetKind);
+
+static REDUCE_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), ReduceSpecData>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static INDEX_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), IndexSpecData>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -185,7 +188,7 @@ pub fn execute(
         .indexes
         .get(&op.collection)
         .map(|m| {
-            let mut specs = INDEX_SPECS.lock().unwrap();
+            let specs = INDEX_SPECS.lock().unwrap();
             m.keys()
                 .filter_map(|n| specs.get(&(op.collection.clone(), n.clone())).map(IndexSpecData::access_method))
                 .collect()
@@ -242,13 +245,10 @@ pub fn execute(
                     }
                     let mut out = serde_json::Map::new();
                     for name in fields {
-                        match m.get(name) {
-                            Some(v) => {
-                                out.insert(name.clone(), value_to_json(v));
-                            }
-                            // Absent name: omitted from the result (the
-                            // caller distinguishes by key presence).
-                            None => {}
+                        // Absent name: omitted from the result (the
+                        // caller distinguishes by key presence).
+                        if let Some(v) = m.get(name) {
+                            out.insert(name.clone(), value_to_json(v));
                         }
                     }
                     Ok(serde_json::Value::Object(out))
@@ -263,12 +263,12 @@ pub fn execute(
         }
         StoreOpKind::Scan { index, value, limit } => {
             let slots = plan.indexes.get(&op.collection).ok_or_else(|| format!("collection `{}` declares no indexes", op.collection))?;
-            let slot = *slots.get(index).ok_or_else(|| format!("index `{index}` is not declared (declared: {:?})", slots.keys().collect::<Vec<_>>()))?;
+            let _slot = *slots.get(index).ok_or_else(|| format!("index `{index}` is not declared (declared: {:?})", slots.keys().collect::<Vec<_>>()))?;
             // The encoded prefix: the indexed fields' values, in the
             // access method's field order, encoded by the schema
             // (fixed-width fields only — key or hot).
             let vals = value.as_array().ok_or("scan value must be an array (one value per indexed field, in order)")?;
-            let (index_fields, index_slot) = {
+            let (index_fields, _index_slot) = {
                 let specs = INDEX_SPECS.lock().unwrap();
                 let am = specs.get(&(op.collection.clone(), index.clone())).ok_or_else(|| format!("index `{index}` spec missing"))?;
                 (am.fields.clone(), am.slot)
@@ -282,7 +282,7 @@ pub fn execute(
             let ns_prefix = plan.ns.to_be_bytes().to_vec();
             let am = INDEX_SPECS.lock().unwrap().get(&(op.collection.clone(), index.clone())).ok_or("index spec missing")?.access_method();
             let mut rows = okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)?;
-            if let Some(n) = limit {
+            if let Some(_n) = limit {
                 rows.truncate(limit.unwrap_or(u64::MAX) as usize);
             }
             Ok(serde_json::Value::Array(rows.iter().map(map_to_json).collect()))
@@ -392,7 +392,6 @@ mod tests {
 // objects (python/steel callables) register through the bindings, not
 // through schema data.
 
-use okm_dynamic::ReduceLogicObj;
 
 fn build_access_method(v: &serde_json::Value) -> Result<(String, AccessMethod), String> {
     let obj = v.as_object().ok_or("index entry must be an object")?;
@@ -444,7 +443,7 @@ impl okm_dynamic::ReduceLogic for PresetLogic {
         *acc = cur.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
         match &self.kind {
             PresetKind::Count => {
                 let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
@@ -484,7 +483,7 @@ fn build_reduce(v: &serde_json::Value) -> Result<(String, ReduceSpec, PresetKind
 #[cfg(test)]
 mod scan_tests {
     use super::*;
-    use okm_core::storage::VirtualStorage;
+    
     use super::tests::schema_json;
     #[test]
     fn scan_and_reduce_through_emit() {

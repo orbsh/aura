@@ -92,8 +92,7 @@ impl EventRouter {
     pub fn matches(&self, event: &str) -> Vec<Route> {
         let mut out: Vec<Route> = self
             .exact
-            .get(event)
-            .map(|v| v.clone())
+            .get(event).cloned()
             .unwrap_or_default();
         for (prefix, route) in &self.wildcard {
             if event.starts_with(prefix.as_str()) {

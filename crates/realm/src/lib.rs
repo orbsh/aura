@@ -17,12 +17,11 @@ pub mod events;
 pub mod remote;
 pub mod ctx;
 
-use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
-use aura_actor::{ActorType, Instance, InstanceId, Job};
+use aura_actor::call::{CallId, CallSpec, PendingEntry, Waited};
+use aura_actor::{ActorType, Instance, InstanceId};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::interval;
+use std::time::Duration;
 
 /// Shared realm handle: the dispatcher closes over this.
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;

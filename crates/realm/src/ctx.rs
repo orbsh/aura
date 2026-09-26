@@ -2,8 +2,8 @@
 //! resident sessions. Split out of lib.rs per ADR-0029.
 
 use super::{dispatch_call, Realm, SharedRealm};
-use crate::{mq, store_exec, value};
-use aura_actor::{Ctx, InstanceId};
+use crate::{mq, store_exec};
+use aura_actor::InstanceId;
 use std::sync::Arc;
 
 impl Realm {
@@ -122,7 +122,7 @@ impl Realm {
             // writer IS the module; the no-bypass-guard ruling covers
             // it). The JSON HostFn seam carries the bytes as number
             // arrays (lossless; storage is not a hot path here).
-            let handle = crate::mq::MqStore::ns_raw(&store, ns as u16);
+            let handle = crate::mq::MqStore::ns_raw(&store, ns);
             fns.insert(
                 "emit".into(),
                 Arc::new(move |arg: serde_json::Value| {
@@ -136,7 +136,7 @@ impl Realm {
                     let frame = OpFrame::decode(&bytes)
                         .ok_or_else(|| anyhow::anyhow!("emit: malformed op frame"))?;
                     let mut out = OpResponse::default();
-                    let mut s = handle.clone();
+                    let s = handle.clone();
                     for (tag, key, value) in &frame.0 {
                         use okm_core::storage::VirtualStorage;
                         match *tag {

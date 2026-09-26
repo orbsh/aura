@@ -102,7 +102,7 @@ impl Engine {
     /// declaration (explicit > introspected). The script never touches
     /// the engine: introspection is a pure function the host calls,
     /// direction is host ← script.
-    pub async fn register(&self, mut actor: ActorType) -> anyhow::Result<()> {
+    pub async fn register(&self, actor: ActorType) -> anyhow::Result<()> {
         self.register_inner(actor, &self.realm).await
     }
 
@@ -135,7 +135,7 @@ impl Engine {
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {
                 for pattern in wildcards.iter().filter_map(|p| p.as_str()) {
-                    actor = actor.on_wildcard(pattern.clone());
+                    actor = actor.on_wildcard(pattern);
                 }
             }
             // Keep the uploaded copy: it persists with the definition AND

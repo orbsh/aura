@@ -2,9 +2,8 @@
 //! Split out of lib.rs per ADR-0029.
 
 use super::Realm;
-use crate::{meta, mq, store_exec};
+use crate::{mq, store_exec};
 use aura_actor::ActorType;
-use std::collections::HashMap;
 use aura_actor::call::CallSpec;
 use std::time::Duration;
 

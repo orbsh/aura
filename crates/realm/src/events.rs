@@ -3,14 +3,13 @@
 
 use super::{Realm, SharedRealm};
 use crate::mq;
-use aura_actor::{ActorType, InstanceId, Job};
+use aura_actor::InstanceId;
 use crate::event;
-use std::collections::HashMap;
 
 impl Realm {
     pub async fn emit(
         self_arc: &SharedRealm,
-        emitter: Option<&str>,
+        _emitter: Option<&str>,
         event: &str,
         data: serde_json::Value,
     ) -> anyhow::Result<()> {
@@ -54,7 +53,7 @@ impl Realm {
                 key: partition.clone(),
             };
             {
-                let mut realm = self_arc.lock().await;
+                let realm = self_arc.lock().await;
                 if !realm.instances.contains_key(&(route.actor_type.clone(), partition.clone())) {
                     drop(realm);
                     let mut r = self_arc.lock().await;
@@ -68,7 +67,7 @@ impl Realm {
                 targets.push((route, partition));
             }
         }
-        for (route, partition) in targets {
+        for (_route, partition) in targets {
             let mut realm = self_arc.lock().await;
             // Persistent queues (step 2b): events are passively persisted
             // on emit — an evicted/not-yet-active subscriber's backlog is
@@ -79,7 +78,7 @@ impl Realm {
             let store = realm.mq.clone();
             if let Err(e) = mq::append(&store, &event_name, &partition, &data) {
                 eprintln!("mq append failed for {event_name}/{partition}: {e}");
-                realm.dead_events.push(&event, data.clone());
+                realm.dead_events.push(event, data.clone());
                 continue;
             }
             // Retention (step 2b follow-up): min-watermark over REGISTERED
@@ -98,7 +97,7 @@ impl Realm {
     }
 
     async fn compact_queue_locked(
-        realm: &mut Realm,
+        _realm: &mut Realm,
         event: &str,
         partition: &str,
         store: &mq::MqStore,

@@ -4,7 +4,6 @@
 //! connection ending must NOT unregister the alias (the guard's
 //! same_channel check), and the routing channel is the NEW one.
 
-use aura_actor::{ActorType, Body, InstanceId};
 use aura_engine::{Engine, probes};
 use std::time::Duration;
 

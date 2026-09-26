@@ -346,15 +346,6 @@ fn resolve_actor_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     Ok(id)
 }
 
-/// The type-id resolve the state table shares (same `ActorName`
-/// registry: actor types and instances live in one identity space).
-pub(crate) fn resolve_actor_type_id(
-    store: &MqStore,
-    name: &str,
-) -> anyhow::Result<u32> {
-    resolve_actor_id(&mut store.clone(), name)
-}
-
 /// Append one event to a partition; returns the assigned logical time.
 /// O(1): the head row (MqHead) carries the partition's last assigned
 /// time — `max(now_ms, last+1)` keeps the sequence monotonic across
@@ -438,7 +429,7 @@ pub const SINGLETON: &str = "__singleton__";
 pub fn cursor(store: &MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let actor_id = resolve_actor_id(store, actor)?;
-    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
         part_id: part_id_of(part),
@@ -491,8 +482,8 @@ pub fn backlog(
         let mut b = [0u8; 8];
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
-        if seq > after_seq {
-            if t.get(&MqDataKey { event_id, part_id, time: seq }).is_some() {
+        if seq > after_seq
+            && t.get(&MqDataKey { event_id, part_id, time: seq }).is_some() {
                 // Reconstruct from the dynamic segment (name-keyed).
                 let v = match t.get_document(&MqDataKey { event_id, part_id, time: seq }) {
                     Some(obj) if !obj.contains_key("_root") => {
@@ -511,7 +502,6 @@ pub fn backlog(
                 };
                 out.push((seq, v));
             }
-        }
     }
     out.sort_by_key(|(s, _)| *s);
     Ok(out)
@@ -584,7 +574,7 @@ pub fn routes_of_event(
     event: &str,
 ) -> anyhow::Result<Vec<(u32, String, bool)>> {
     let event_id = resolve_event_id(store, event)?;
-    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);

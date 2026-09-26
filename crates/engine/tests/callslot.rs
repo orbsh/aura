@@ -4,10 +4,9 @@
 //! returns immediately, the result arrives via resolve_call, unknown id
 //! never replays.
 
-use aura_actor::call::{CallId, CallSpec, Tier};
-use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
+use aura_actor::call::{CallId, CallSpec};
+use aura_actor::{ActorType, InstanceId};
 use aura_engine::Engine;
-use std::sync::Arc;
 use std::time::Duration;
 
 // Steel script actors (4.5a). slow_echo: nushell subprocess — its natural

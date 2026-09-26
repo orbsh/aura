@@ -3,9 +3,8 @@
 //! ADR-0029.
 
 use super::{next_seq, Realm, SharedRealm, RemotePending};
-use crate::{event, meta, mq, timer, value};
-use aura_actor::call::{CallSlot, Waited};
-use aura_actor::{ActorType, Instance, InstanceId, Job};
+use crate::{event, mq, timer};
+use aura_actor::{Instance, InstanceId, Job};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,7 +45,7 @@ impl Realm {
     pub(crate) async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
         let key = (id.actor_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
-            let mut inst = Instance::new(id.clone(), self.queue_capacity);
+            let inst = Instance::new(id.clone(), self.queue_capacity);
             // on_wake: fresh residency. Runs on first activation too —
             // symmetric with on_sleep; a first-time wake is still a wake.
             if let Some(actor) = self.types.get(&id.actor_type) {
@@ -66,7 +65,7 @@ impl Realm {
             // store, one per (event, partition); the subscriber holds a
             // named cursor. Key-less routes bind the singleton partition.
             let mut subs: Vec<(String, String, bool)> = Vec::new();
-            if let Some(actor) = self.types.get(&id.actor_type) {
+            if let Some(_actor) = self.types.get(&id.actor_type) {
                 for route in self.router.routes_of(&id.actor_type) {
                     let partition = if route.instance_key_field.is_empty() {
                         mq::SINGLETON.to_string()
@@ -166,8 +165,9 @@ impl Realm {
 
     pub(crate) async fn run_job(self_arc: SharedRealm, id: &InstanceId, job: Job) {
         let mut realm = self_arc.lock().await;
-        realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone()))
-            .map(|i| i.last_activity = Instant::now());
+        if let Some(i) = realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone())) {
+            i.last_activity = Instant::now();
+        }
         // ADR-0016 revised: the instance's pending idle-reclaim entry is
         // void the moment work arrives (work CANCELLED it — idempotent
         // cancel covers a timer that fired between tick and execution).
@@ -304,8 +304,9 @@ impl Realm {
                 .and_then(|a| a.idle_ttl)
                 .unwrap_or(realm.idle_ttl);
             realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Idle, idle);
-            realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone()))
-                .map(|i| i.last_activity = Instant::now());
+            if let Some(i) = realm.instances.get_mut(&(id.actor_type.clone(), id.key.clone())) {
+                i.last_activity = Instant::now();
+            }
         }
         let _ = job.reply.send(result);
     }
@@ -313,7 +314,7 @@ impl Realm {
     pub async fn evict_instance(realm: SharedRealm, id: &InstanceId) {
         let mut locked = realm.lock().await;
         let key = (id.actor_type.clone(), id.key.clone());
-        let Some(inst) = locked.instances.remove(&key) else { return };
+        let Some(_inst) = locked.instances.remove(&key) else { return };
         locked.timers.cancel_target(id);
         if let Some(actor) = locked.types.get(&id.actor_type) {
             if let Some(on_sleep) = actor.on_sleep.clone() {

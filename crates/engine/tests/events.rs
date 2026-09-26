@@ -291,9 +291,9 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         let realm = engine.realm.try_lock().unwrap();
         realm.mq.clone()
     };
-    let eid = mq::event_id_of(&mut vs, "order.created").unwrap().unwrap();
+    let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
     let part = mq::part_hash_of("u1");
-    let rows = mq::cursor_rows(&mut vs, eid, part).unwrap();
+    let rows = mq::cursor_rows(&vs, eid, part).unwrap();
     assert_eq!(rows.len(), 2, "two registered subscribers: {rows:?}");
     // Caught up = both cursors equal the partition head (logical time,
     // monotonic — not a compact 1..3 sequence). The last emit's append
@@ -313,7 +313,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     // compaction removed everything below, fall back to min-1 (a rewind
     // just below the watermark suffices — the invariant tested is
     // relative, not tied to a literal 1..3 numbering).
-    let known: Vec<u64> = mq::backlog(&mut vs, "order.created", "u1", 0)
+    let known: Vec<u64> = mq::backlog(&vs, "order.created", "u1", 0)
         .unwrap()
         .into_iter()
         .map(|(s, _)| s)
@@ -325,7 +325,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         // watermark; its length tells us whether below-watermark rows
         // were removed by comparing against the pre-compaction count via
         // delete_before's return on a rewind-free call.
-        mq::backlog(&mut vs, "order.created", "u1", after)
+        mq::backlog(&vs, "order.created", "u1", after)
             .unwrap()
             .into_iter()
             .map(|(s, _)| s)
@@ -337,7 +337,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     // first event's logical time, re-emit (compaction runs on the emit
     // path), then verify rows below the pinned watermark are gone while
     // later rows survive.
-    mq::advance(&mut vs, "order.created", "u1", "cart/u1", first_time).unwrap();
+    mq::advance(&vs, "order.created", "u1", "cart/u1", first_time).unwrap();
     Realm::emit(
         &engine.realm,
         None,
@@ -350,8 +350,8 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     // Trigger compaction explicitly at the true min watermark (2): rows
     // below it are removed; rows at/above survive.
     aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", "u1").await.unwrap();
-    let surviving = mq::backlog(&mut vs, "order.created", "u1", 0).unwrap();
+    let surviving = mq::backlog(&vs, "order.created", "u1", 0).unwrap();
     assert!(surviving.iter().all(|(s, _)| *s > first_time),
         "rows at/below the pinned watermark are gone: {surviving:?}");
-    assert!(surviving.len() >= 1, "at/above-watermark rows survive");
+    assert!(!surviving.is_empty(), "at/above-watermark rows survive");
 }

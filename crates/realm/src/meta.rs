@@ -21,7 +21,7 @@
 use crate::mq::MqStore;
 use aura_actor::PersistedActor;
 use okm_core::document::Collection;
-use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceLogic, ReduceCodec};
+use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 // ---------------------------------------------------------------------------
 // The registry: open-ended type name → id.
@@ -179,7 +179,7 @@ pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<(
 
 /// Read the blob bytes (None = never stored under this hash).
 pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> Option<Vec<u8>> {
-    let mut t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
+    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
     t.get(&CodeBlobKey { sha256: *sha }).map(|row| row.data.0)
 }
 
@@ -229,7 +229,7 @@ impl ActorDef {
 /// The type's storage ns (ADR-0026): registry resolve (no allocation —
 /// unregistered types have no ns; the caller registers first).
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
+    let t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
     for hit in t.scan::<TypeNameByName>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {

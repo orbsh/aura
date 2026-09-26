@@ -2,9 +2,8 @@
 //! deadlines, the deadline sweep. Split out of lib.rs per ADR-0029.
 
 use super::{Realm, SharedRealm};
-use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier, Waited};
-use aura_actor::{ActorType, InstanceId, Job};
-use std::collections::HashMap;
+use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier};
+use aura_actor::{InstanceId, Job};
 use std::time::{Duration, Instant};
 
 impl Realm {

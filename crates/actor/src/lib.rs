@@ -10,13 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// An Actor type definition. The handler is a Rust async function for now;
-/// embedded languages (Phase 2) wrap the same definition with a script body.
-///
-/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Actor calls (ADR-0011,
-/// off ctx): optional, declared on the type, invoked by the runtime around
-/// eviction and reactivation.
-
 /// Actor body: a Rust closure, or a script executed by a probe carrier.
 ///
 /// The script form imports the probe runtime instead of reimplementing
@@ -43,6 +36,12 @@ pub enum Body {
     },
 }
 
+/// An Actor type definition. The handler is a Rust async function for now;
+/// embedded languages (Phase 2) wrap the same definition with a script body.
+///
+/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Actor calls (ADR-0011,
+/// off ctx): optional, declared on the type, invoked by the runtime around
+/// eviction and reactivation.
 #[derive(Clone)]
 pub struct ActorType {
     /// Registered type name, e.g. "echo".

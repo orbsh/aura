@@ -153,8 +153,21 @@ because the participant picks its own schema tooling). A dial-in browser
 participant is exempt: JS speaks JSON natively, and its surface is the
 session-scoped mount, not the registry plane (§6).
 
-Liveness (a connection idle of events must still be known to be alive) is a
-heartbeat question — open, §Consequences.
+**RULING (2026-09-26 review round 2) — liveness: realm-side ping, 1–5s, no
+reply = disconnect.** tungstenite already answers protocol Pings with Pongs
+in the read loop (RFC 6455 §5.5.2 "read is responsive"), so the cost is the
+timer and the policy, not new protocol machinery: the realm pings each held
+dial-out connection on a fast cadence, a missing Pong closes the socket
+immediately, and the connection's absence then behaves exactly like a cold
+start — events fail as values into the delivery log. Reconnect is
+exponential backoff; between attempts the state is simply DISCONNECTED —
+there is no "maybe alive" middle ground to reason about. The policy rests on
+the microservice assumption: dial-out endpoints live in the same machine
+room as the realm (the owner's own network), where a 1–5s deadline catches
+real faults and the cadence is cheap. The same rule covers the emit-back
+direction: the realm never applies an `auth` block to a dial-out service —
+the trust source is ownership (§4), and gating the owner's own process with
+credentials is checking yourself for intrusion.
 
 ### 4. Vocabulary: two mechanical rules, no grant ceremony
 
@@ -275,13 +288,15 @@ wrong.
 - **Cross-repo:** probe-protocol (dial-out frame shapes; CBOR wire for the
   registry plane), prism (connection plane hosts the session mount; stamp
   rule), aura (realm + ADR chain).
-- **Deliberately open:** (a) heartbeat/liveness policy for held dial-out
-  connections; (b) fluxen staging — does it dogfood the dial-in mount before
-  any real business event flows; (c) whether dial-out endpoints get their
-  own posture (`open`/`required`-like) for *who* the realm dials — probably
-  just an allow-list, but the shape deserves one sentence somewhere;
-  (d) the `auth` block's posture semantics for a tier-2 dial-out service
-  (it has none — confirm that's right or fix §5).
+- **Deliberately open:** (b) fluxen staging — does it dogfood the dial-in
+  mount before any real business event flows; (c) whether dial-out endpoints
+  get their own posture (`open`/`required`-like) for *who* the realm dials —
+  probably just an allow-list, but the shape deserves one sentence somewhere.
+  The first draft's (a) heartbeat policy and (d) dial-out auth posture are
+  **RULINED in §3** (2026-09-26 round 2): realm-side ping 1–5s, missing Pong
+  = disconnect, exponential-backoff reconnect with DISCONNECTED as the only
+  intermediate state; dial-out services carry no `auth` block — ownership is
+  the trust source, and emit-back rides the same exemption.
 - **Follow-up (landed 2026-09-26):** prism `docs/PLAN.md` Phase 1.8 carried the
   *first* draft's recorded constraints (stricter tier-2 approval, three key
   spaces, vocabulary gate as prerequisite). Its DESIGN CONSTRAINTS block has

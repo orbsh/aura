@@ -7,6 +7,12 @@
 //! (`cargo build -p actor-guest --example counter_actor --target
 //! wasm32-unknown-unknown`); the test fails loudly when the artifact is
 //! missing (a stale build is a CI recipe error, not a skip condition).
+//
+//! Whole-crate gate: this e2e needs the wasmtime carrier — without the
+//! feature it fails fast with "language not resident-carried by this probe
+//! build" (and imports/helper would dangle unused). Gate the crate, not
+//! the fn.
+#![cfg(feature = "wasmtime")]
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
@@ -30,8 +36,6 @@ fn wasm_booth() -> BoothType {
 /// the ctx store bridge → the realm executor resolves them against the
 /// type's ns → the value reads back through the module's own reader.
 #[tokio::test]
-#[cfg(feature = "wasmtime")] // needs the wasmtime carrier — ungated it fails fast with
-// "language not resident-carried by this probe build" without the feature
 async fn wasm_booth_storage_end_to_end() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
 

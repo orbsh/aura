@@ -2,7 +2,7 @@
 //! realm routes an invoke through the wire; the probe's resident session
 //! executes; the result round-trips.
 
-use aura_actor::{ActorType, InstanceId, Body};
+use aura_booth::{BoothType, InstanceId, Body};
 use aura_engine::{Engine, probes};
 use std::time::Duration;
 
@@ -35,9 +35,9 @@ async fn remote_probe_roundtrip() {
     // pre-bound listener via the exported helper (accept over the listener).
     tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), listener));
 
-    // Register a remote probe actor type pointing at the node the probe
+    // Register a remote probe booth type pointing at the node the probe
     // will claim.
-    engine.register(ActorType {
+    engine.register(BoothType {
         name: "remote-counter".into(),
         body: Body::RemoteProbe {
             node_alias: "test-node".into(),
@@ -54,7 +54,7 @@ async fn remote_probe_roundtrip() {
 
     // Local target for ctx_invoke from the probe script.
     engine.register(
-        ActorType::script(
+        BoothType::script(
             "echo",
             "steel",
             r#"(define (execute args) args)"#,
@@ -77,7 +77,7 @@ async fn remote_probe_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "remote-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "remote-counter".into(), key: "k".into() },
             "double",
             serde_json::json!({"n": 4}),
         )
@@ -111,7 +111,7 @@ async fn remote_probe_roundtrip() {
     assert!(gone, "dropped connection unregisters the node alias");
     let err = engine
         .invoke(
-            InstanceId { actor_type: "remote-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "remote-counter".into(), key: "k".into() },
             "double",
             serde_json::json!({"n": 1}),
         )
@@ -170,7 +170,7 @@ fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {
 // source = error value (locked probe-side in remote.rs tests).
 #[tokio::test]
 async fn remote_code_travels_as_reference() {
-    // Static code source: serve the registered actor's bytes.
+    // Static code source: serve the registered booth's bytes.
     let code_src = r#"
 (define (double args) (hash "doubled" (* 2 (hash-ref args "n"))))
 "#;
@@ -194,7 +194,7 @@ async fn remote_code_travels_as_reference() {
     // Register through the REAL path (register_inner persists the blob —
     // the reference the dispatch arm builds must resolve in the source).
     engine
-        .register(aura_actor::ActorType {
+        .register(aura_booth::BoothType {
             name: "ref-counter".into(),
             body: Body::RemoteProbe {
                 node_alias: "test-node".into(),
@@ -224,7 +224,7 @@ async fn remote_code_travels_as_reference() {
     }
     let out = engine
         .invoke(
-            InstanceId { actor_type: "ref-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "ref-counter".into(), key: "k".into() },
             "double",
             serde_json::json!({"n": 21}),
         )

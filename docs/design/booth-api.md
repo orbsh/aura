@@ -1,6 +1,6 @@
-# Actor API（脚本语言参考）
+# 摊位 API（脚本语言参考）
 
-> 每种语言的脚本契约与 host 函数。中文为主，英文版成对：[English](actor-api-en.md)。
+> 每种语言的脚本契约与 host 函数。中文为主，英文版成对：[English](booth-api-en.md)。
 > 执行模型与设计背景见 [realm.md](realm.md)；自省机制见 [§5.4](realm.md#54-interface_schema)。
 
 ## 生命周期（三条线分离）
@@ -8,16 +8,16 @@
 ```
 上传（set）     独立生命周期，可以永远不执行
   └─ Host 自省一次（调 interface_schema()，或从 @on 装饰器推导）
-  └─ 元数据（receives/wildcard_receives/lifecycle）提取后持久化（ActorDef 表，数据面 okm 实例——ADR-0025）
+  └─ 元数据（receives/wildcard_receives/lifecycle）提取后持久化（BoothDef 表，数据面 okm 实例——ADR-0025）
   └─ receives 派生投递路由（事件 → 类型 + key 字段）
 执行            每条消息：加载脚本（最新版本）→ 按事件名寻址 handler → 执行
-  └─ 永不调用 interface_schema —— schema 已是 ActorDef 表里的静态记录
+  └─ 永不调用 interface_schema —— schema 已是 BoothDef 表里的静态记录
 版本变更        新 set 重新自省一次、更新持久化元数据与路由；此前旧元数据治理
 ```
 
 ## 事件驱动模型（多入口）
 
-一个 Actor 类型是**多入口**的：`@on` 装饰器（steel 为 `on` 函数，wasm 为导出约定）声明每个 handler 监听的事件，事件名就是 handler 的寻址名。没有单一入口——单入口模型下 emits 是多出口而入口只有一个，不对称；多个 handler 的事件共享逻辑被迫拆成多个 Actor 复制底层代码。
+一个 Booth 类型是**多入口**的：`@on` 装饰器（steel 为 `on` 函数，wasm 为导出约定）声明每个 handler 监听的事件，事件名就是 handler 的寻址名。没有单一入口——单入口模型下 emits 是多出口而入口只有一个，不对称；多个 handler 的事件共享逻辑被迫拆成多个摊位复制底层代码。
 
 ```python
 @on("add_to_cart", key="user_id")   # instance key 在装饰器上声明
@@ -30,7 +30,7 @@ def remove(args): ...
 def audit(args): ...
 ```
 
-**投递语义：事件队列，不是实例内的 queue**。事件不属于任何 Actor——`emit("add_to_cart", data)` 把事件写入 `add_to_cart` 事件的队列；`@on` 声明了 `key` 的队列按 `(event, partition)` 分区（key 字段值取自事件数据），没声明 key 的队列按 event 单队列。一个队列可以有**多个订阅者**（多个 Actor 类型监听同一事件——一对多是结构性的，不是 fan-out 模拟）。Actor 实例按自己的 `@on` 声明订阅队列，per-subscription cursor 保证同一实例串行消费，实例不拥有队列。
+**投递语义：事件队列，不是实例内的 queue**。事件不属于任何 Booth——`emit("add_to_cart", data)` 把事件写入 `add_to_cart` 事件的队列；`@on` 声明了 `key` 的队列按 `(event, partition)` 分区（key 字段值取自事件数据），没声明 key 的队列按 event 单队列。一个队列可以有**多个订阅者**（多个摊位类型监听同一事件——一对多是结构性的，不是 fan-out 模拟）。摊位实例按自己的 `@on` 声明订阅队列，per-subscription cursor 保证同一实例串行消费，实例不拥有队列。
 
 **emits 不声明、不收集、不校验（ADR-0012）**：事件的接收者集合是运行时事实——无订阅者的 emit 落入 dead-event ring，那是可观测的审计面。源码级 emit 收集推迟到有真实消费端再做（Windmill 判据：解析要驱动一个只有解析才能做对的动作时才解析）。
 
@@ -38,7 +38,7 @@ def audit(args): ...
 
 ## 通用契约（所有语言）
 
-一个脚本 Actor = **一个源文件** + **handler 函数集**：
+一个脚本摊位 = **一个源文件** + **handler 函数集**：
 
 | 函数 | 必需 | 作用 |
 |------|------|------|
@@ -51,7 +51,7 @@ def audit(args): ...
 
 - `ctx_store_emit(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
 - `ctx_interface_schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
-- `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标 Actor 的返回值（阻塞等待，走统一调用模型，超时=失败值）
+- `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
 
 **语言能力差异**：
 
@@ -179,10 +179,10 @@ pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
 - `interface_schema` 同一约定：导出同名函数优先（按 handler 方式调用，schema JSON 以 CBOR 编码过线）；否则 receives 半边由导出清单推导——`aura_alloc`/`memory`/`interface_schema` 之外的每个函数导出都是事件 handler
 - Host imports（ctx bridge）注册在 `aura_host` 模块命名空间下，每个 host 函数一个 import，统一签名 `(ptr: i32, len: i32) -> i64`、同样打包返回：guest 把参数 CBOR 编码进线性内存后调用 import；host 跑 HostFn 并经 guest 的 `aura_alloc` 写回结果。import 了未声明 host 函数的模块实例化即失败（能力拒绝，不是运行时错误）
 - Host imports 刻意最小化：无 fs、无 network——能力面（Phase 5）决定授予什么
-- aura 引擎本身**不提供进程内 Rust Actor**——框架机制（evictor 类）就是 realm 内的普通逻辑；Rust 代码要成为 Actor 只有一条路：编译为 wasm 上传
+- aura 引擎本身**不提供进程内 Rust 摊位**——框架机制（evictor 类）就是 realm 内的普通逻辑；Rust 代码要成为摊位只有一条路：编译为 wasm 上传
 
 ---
 
 ## 与 probe 的关系（再述）
 
-probe = **操作执行面**：`ToolCall` 进 → `execute()` → `ToolResult` 出。它不知道 Actor、不知道事件、不知道 `interface_schema` 的语义——所有这些是 **aura 的场域层概念**。同一个 python 文件：作为 probe 操作时只有 `execute` 被调用；作为 aura Actor 上传时自省先行、每个 `@on` handler 成为实例的一个消息入口。一个文件，两种宿主，契约透明。
+probe = **操作执行面**：`ToolCall` 进 → `execute()` → `ToolResult` 出。它不知道摊位、不知道事件、不知道 `interface_schema` 的语义——所有这些是 **aura 的场域层概念**。同一个 python 文件：作为 probe 操作时只有 `execute` 被调用；作为 aura 摊位上传时自省先行、每个 `@on` handler 成为实例的一个消息入口。一个文件，两种宿主，契约透明。

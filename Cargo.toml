@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/actor",
+    "crates/booth",
     "crates/realm",
     "crates/config",
     "crates/engine",

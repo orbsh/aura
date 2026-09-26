@@ -3,7 +3,7 @@
 
 use super::{dispatch_call, Realm, SharedRealm};
 use crate::{mq, store_exec};
-use aura_actor::InstanceId;
+use aura_booth::InstanceId;
 use std::sync::Arc;
 
 impl Realm {
@@ -13,7 +13,7 @@ impl Realm {
         plan: Option<&store_exec::StorePlan>,
         schema: Option<serde_json::Value>,
         id: &InstanceId,
-    ) -> aura_actor::Ctx {
+    ) -> aura_booth::Ctx {
         // The store is already a shared Arc: handlers get a direct handle.
         // (Phase 1 single-node: the store is lock-free per operation. The
         // realm lock only guards registry/instances, never state.)
@@ -23,7 +23,7 @@ impl Realm {
         // reference cycle (realm → sessions → session → closure → realm)
         // that keeps the fjall Database open forever after engine drop.
         let dispatch_realm = Arc::downgrade(&self_arc);
-        let mut ctx = aura_actor::Ctx::new(
+        let mut ctx = aura_booth::Ctx::new(
             id.clone(),
             Arc::new(move |target, handler: &str, args| {
                 let realm = dispatch_realm.clone();
@@ -49,7 +49,7 @@ impl Realm {
         if let Some(plan) = plan {
             let store = store_engine.clone();
             let plan = plan.clone();
-            ctx = ctx.with_store_emit(Arc::new(move |op: aura_actor::StoreOp| {
+            ctx = ctx.with_store_emit(Arc::new(move |op: aura_booth::StoreOp| {
                 store_exec::execute(&store, &plan, &op)
             }));
         }
@@ -60,7 +60,7 @@ impl Realm {
     }
 
     pub(crate) fn host_bridge_for(
-        ctx: &aura_actor::Ctx,
+        ctx: &aura_booth::Ctx,
         // The type's ns + a raw ns-bound engine handle (ADR-0026 §4
         // wasm storage): present when the type resolved a store plan.
         // The wasm full-power path needs RAW engine calls, not the
@@ -89,7 +89,7 @@ impl Realm {
                 let handler = obj.get("handler").and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `handler` (the function to call)"))?;
                 let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                let target = InstanceId { actor_type: ty.to_string(), key: key.to_string() };
+                let target = InstanceId { booth_type: ty.to_string(), key: key.to_string() };
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
@@ -101,7 +101,7 @@ impl Realm {
             fns.insert(
                 "ctx_store_emit".into(),
                 Arc::new(move |arg: serde_json::Value| {
-                    let op: aura_actor::StoreOp = serde_json::from_value(arg)
+                    let op: aura_booth::StoreOp = serde_json::from_value(arg)
                         .map_err(|e| anyhow::anyhow!("ctx_store_emit: bad op: {e}"))?;
                     (emit_fn)(op).map_err(|e| anyhow::anyhow!(e))
                 }) as HostFn,

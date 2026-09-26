@@ -4,13 +4,13 @@
 //! NamedRealm handle is bound at construction — cross-realm delivery is
 //! not expressible, not merely checked.
 
-use aura_actor::{ActorType, InstanceId};
+use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use aura_realm::Realm;
 
 // Counter into the type's declared collection (ADR-0026 §3). Keyed by the
 // payload's user_id (identity rides payload metadata, modeling.md §2.1);
-// tests read the count back by INVOKING the `count` handler — the actor's
+// tests read the count back by INVOKING the `count` handler — the booth's
 // observable output, not the retired instance-document model.
 const COUNTER: &str = r#"
 (define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
@@ -62,8 +62,8 @@ const LISTENER: &str = r#"
     (+ c 1)))
 "#;
 
-fn counter() -> ActorType {
-    ActorType::script("counter", "steel", COUNTER)
+fn counter() -> BoothType {
+    BoothType::script("counter", "steel", COUNTER)
 }
 
 #[tokio::test]
@@ -73,13 +73,13 @@ async fn same_type_key_isolated_per_realm() {
     engine.register_in("alice", counter()).await;
     engine.register_in("bob", counter()).await;
 
-    let target = InstanceId { actor_type: "counter".into(), key: "k".into() };
+    let target = InstanceId { booth_type: "counter".into(), key: "k".into() };
     engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
     engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
     engine.call_in("bob", target.clone(), "execute", serde_json::json!({"user_id": "bob"})).await.unwrap();
 
     // alice's count is 2, bob's is 1 — the realms never mixed. Read
-    // back through the `count` handler (the actor's observable output).
+    // back through the `count` handler (the booth's observable output).
     let read = |ns: String, uid: String| {
         let engine_ns = engine.realm_set.clone();
         let target = target.clone();
@@ -87,8 +87,8 @@ async fn same_type_key_isolated_per_realm() {
             let realm = engine_ns.realm_of(&ns).await;
             let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": uid})).await.unwrap().wait().await.unwrap();
             match waited {
-                aura_actor::call::Waited::Done(v) => v.unwrap(),
-                aura_actor::call::Waited::Pending(_) => panic!("count read went cold"),
+                aura_booth::call::Waited::Done(v) => v.unwrap(),
+                aura_booth::call::Waited::Pending(_) => panic!("count read went cold"),
             }
         }
     };
@@ -107,7 +107,7 @@ async fn events_do_not_cross_realms() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Same event subscription in two realms; the emit goes to one.
     let listener = || {
-        ActorType::script(
+        BoothType::script(
             "listener",
             "steel",
             LISTENER,
@@ -128,8 +128,8 @@ async fn events_do_not_cross_realms() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let target = InstanceId { actor_type: "listener".into(), key: "u1".into() };
-    // Read back through the `count` handler (the actor's observable output).
+    let target = InstanceId { booth_type: "listener".into(), key: "u1".into() };
+    // Read back through the `count` handler (the booth's observable output).
     let read = |ns: String| {
         let engine_ns = engine.realm_set.clone();
         let target = target.clone();
@@ -137,8 +137,8 @@ async fn events_do_not_cross_realms() {
             let realm = engine_ns.realm_of(&ns).await;
             let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": "u1"})).await.unwrap().wait().await.unwrap();
             match waited {
-                aura_actor::call::Waited::Done(v) => v.unwrap(),
-                aura_actor::call::Waited::Pending(_) => panic!("count read went cold"),
+                aura_booth::call::Waited::Done(v) => v.unwrap(),
+                aura_booth::call::Waited::Pending(_) => panic!("count read went cold"),
             }
         }
     };
@@ -164,13 +164,13 @@ async fn type_registered_in_one_realm_is_unknown_in_another() {
     let err = engine
         .call_in(
             "bob",
-            InstanceId { actor_type: "counter".into(), key: "k".into() },
+            InstanceId { booth_type: "counter".into(), key: "k".into() },
                 "execute",
             serde_json::json!(null),
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unknown actor type"));
+    assert!(err.to_string().contains("unknown booth type"));
 }
 
 #[tokio::test]

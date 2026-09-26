@@ -52,7 +52,7 @@ second name for a thing that has a precise one.
 
 - Code (first work item, same commit): `crates/realm/src/namespace.rs` → `realm_set.rs`,
   the identifiers of §1, config field + KDL child, engine plumbing, tests.
-- Docs sweep: partitioning §3, storage.md federation lines, actor-api, modeling, PLAN live
+- Docs sweep: partitioning §3, storage.md federation lines, booth-api, modeling, PLAN live
   passages, ADR-0026 §1 (a dated update — the decision archive is not rewritten), and the
   wiki's stateless-agent passages that describe the mechanism.
 - PLAN 3.6's historical entry describes the landing-time shape — kept as landed (log rule);

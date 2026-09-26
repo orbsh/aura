@@ -7,11 +7,11 @@
 
 #[cfg(feature = "python")]
 mod py_schema_tests {
-    use aura_actor::{ActorType, InstanceId};
+    use aura_booth::{BoothType, InstanceId};
     use aura_engine::Engine;
 
     // Storage handlers receive host fns taking ONE JSON string; the
-    // collection is the decorator-declared class. Assertion is the actor's
+    // collection is the decorator-declared class. Assertion is the booth's
     // observable output (invoke read-back), never a store poke.
     const RMW: &str = r##"
 import json
@@ -42,13 +42,13 @@ def read(args):
     #[tokio::test]
     async fn decorator_schema_resolves_the_store_plan() {
         let engine = Engine::start(&Default::default()).await.expect("engine boot");
-        engine.register(ActorType::script("py-counter", "python", RMW)).await.unwrap();
+        engine.register(BoothType::script("py-counter", "python", RMW)).await.unwrap();
 
         // The plan resolved from the decorator-assembled schema: put/get
         // round trip through the type's declared collection.
         let out = engine
             .invoke(
-                InstanceId { actor_type: "py-counter".into(), key: "k".into() },
+                InstanceId { booth_type: "py-counter".into(), key: "k".into() },
                 "bump",
                 serde_json::json!({"user_id": "alice"}),
             )
@@ -56,11 +56,11 @@ def read(args):
             .unwrap();
         assert_eq!(out, serde_json::json!({"count": 1}));
 
-        // Read back through the reader handler — the actor's observable
+        // Read back through the reader handler — the booth's observable
         // output, not a store poke.
         let read = engine
             .invoke(
-                InstanceId { actor_type: "py-counter".into(), key: "k".into() },
+                InstanceId { booth_type: "py-counter".into(), key: "k".into() },
                 "read",
                 serde_json::json!({"user_id": "alice"}),
             )
@@ -71,11 +71,11 @@ def read(args):
 
     #[tokio::test]
     async fn decorator_schema_is_persisted_with_the_definition() {
-        // The assembled schema rides ActorDef (ADR-0025 Plan A) — the
+        // The assembled schema rides BoothDef (ADR-0025 Plan A) — the
         // persisted copy is what ctx.interface_schema reflects and what
         // StorePlan::from_schema consumes at plan resolution.
         let engine = Engine::start(&Default::default()).await.expect("engine boot");
-        engine.register(ActorType::script("py-counter2", "python", RMW)).await.unwrap();
+        engine.register(BoothType::script("py-counter2", "python", RMW)).await.unwrap();
         let schema = engine
             .realm
             .lock()

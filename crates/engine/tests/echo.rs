@@ -4,11 +4,11 @@
 //! surface (ADR-0011). Phase 1: state survives eviction (scale-to-zero
 //! drops the resident, not the data); on_sleep/on_wake run around it.
 
-use aura_actor::{ActorType, InstanceId};
+use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use std::time::Duration;
 
-// Steel script actors (4.5a): script source is the only public actor form.
+// Steel script booths (4.5a): script source is the only public booth form.
 const ECHO: &str = r#"
 (define (execute args) args)
 "#;
@@ -21,8 +21,8 @@ const CALLER: &str = r#"
     "\", \"handler\": \"execute\", \"args\": {\"via\": \"ctx.invoke\"}}")))
 "#;
 
-fn echo_type() -> ActorType {
-    ActorType::script("echo", "steel", ECHO)
+fn echo_type() -> BoothType {
+    BoothType::script("echo", "steel", ECHO)
 }
 
 // ---------------------------------------------------------------- Phase 0 --
@@ -34,7 +34,7 @@ async fn invoke_returns_handler_result() {
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "echo".into(), key: "a1".into() },
+            InstanceId { booth_type: "echo".into(), key: "a1".into() },
                 "execute",
             serde_json::json!({"hello": "aura"}),
         )
@@ -49,15 +49,15 @@ async fn ctx_invoke_routes_through_realm() {
     engine.register(echo_type()).await;
 
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
-    // actor sees; target resolution is registry-declared.
+    // booth sees; target resolution is registry-declared.
     engine
-        .register(ActorType::script("caller", "steel", CALLER))
+        .register(BoothType::script("caller", "steel", CALLER))
         .await
         .unwrap();
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "caller".into(), key: "c1".into() },
+            InstanceId { booth_type: "caller".into(), key: "c1".into() },
                 "execute",
             serde_json::json!({"target_key": "a2"}),
         )
@@ -67,17 +67,17 @@ async fn ctx_invoke_routes_through_realm() {
 }
 
 #[tokio::test]
-async fn unknown_actor_type_is_error_value() {
+async fn unknown_booth_type_is_error_value() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let err = engine
         .invoke(
-            InstanceId { actor_type: "ghost".into(), key: "x".into() },
+            InstanceId { booth_type: "ghost".into(), key: "x".into() },
                 "execute",
             serde_json::json!(null),
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unknown actor type"));
+    assert!(err.to_string().contains("unknown booth type"));
 }
 
 #[tokio::test]
@@ -88,7 +88,7 @@ async fn instance_key_activates_distinct_instances() {
     for key in ["a1", "a2"] {
         let out = engine
             .invoke(
-                InstanceId { actor_type: "echo".into(), key: key.into() },
+                InstanceId { booth_type: "echo".into(), key: key.into() },
                 "execute",
                 serde_json::json!({"key": key}),
             )
@@ -125,10 +125,10 @@ async fn state_survives_scale_to_zero() {
     (hash "count" (+ n 1))))
 "#;
     engine.register(
-        ActorType::script("counter", "steel", COUNTER)
+        BoothType::script("counter", "steel", COUNTER)
     ).await.unwrap();
 
-    let target = InstanceId { actor_type: "counter".into(), key: "k1".into() };
+    let target = InstanceId { booth_type: "counter".into(), key: "k1".into() };
     assert_eq!(engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 1}));
     assert_eq!(engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 2}));
 
@@ -142,15 +142,15 @@ async fn state_survives_scale_to_zero() {
 
 // ------------------------------------------------------- Phase 2 (script) --
 
-// Script actors execute through the probe carriers — the same carrier set
+// Script booths execute through the probe carriers — the same carrier set
 // the remote actuator uses; language execution is not reimplemented here.
-// Script actors are pure functions in this phase (args in, value out).
+// Script booths are pure functions in this phase (args in, value out).
 #[cfg(feature = "nushell")]
 #[tokio::test]
-async fn nushell_script_actor() {
+async fn nushell_script_booth() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "nu-op",
             "nushell",
             r#"
@@ -163,7 +163,7 @@ export def execute [args] {
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "nu-op".into(), key: "n1".into() },
+            InstanceId { booth_type: "nu-op".into(), key: "n1".into() },
                 "execute",
             serde_json::json!({"items": [1, 2, 3]}),
         )
@@ -174,10 +174,10 @@ export def execute [args] {
 
 #[cfg(feature = "python")]
 #[tokio::test]
-async fn python_script_actor() {
+async fn python_script_booth() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "py-op",
             "python",
             r#"def execute(args):
@@ -188,7 +188,7 @@ async fn python_script_actor() {
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "py-op".into(), key: "p1".into() },
+            InstanceId { booth_type: "py-op".into(), key: "p1".into() },
                 "execute",
             serde_json::json!({"x": 21}),
         )
@@ -197,14 +197,14 @@ async fn python_script_actor() {
     assert_eq!(out, serde_json::json!({"doubled": 42}));
 }
 
-// A script actor naming a language this build does not carry is an error
+// A script booth naming a language this build does not carry is an error
 // value on the call path — the same validate-at-dispatch rule as probe.
 #[cfg(feature = "nushell")]
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "koto-op",
             "koto",
             "1 + 2",
@@ -213,7 +213,7 @@ async fn script_unknown_language_is_error_value() {
 
     let err = engine
         .invoke(
-            InstanceId { actor_type: "koto-op".into(), key: "k1".into() },
+            InstanceId { booth_type: "koto-op".into(), key: "k1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -231,7 +231,7 @@ async fn idle_ttl_evicts_automatically() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(echo_type()).await;
 
-    let target = InstanceId { actor_type: "echo".into(), key: "ttl".into() };
+    let target = InstanceId { booth_type: "echo".into(), key: "ttl".into() };
     engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
 
     {
@@ -245,21 +245,21 @@ async fn idle_ttl_evicts_automatically() {
 
 // Per-type TTL: a type's own residency policy overrides the realm-wide
 // default — the mechanism Phase 6.5's retention window rides on (a
-// turn-executor declares a long TTL; entity actors fall back to default).
+// turn-executor declares a long TTL; entity booths fall back to default).
 #[tokio::test]
 async fn per_type_idle_ttl_overrides_realm_default() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
 
     // "dweller": 10-minute TTL (long-lived resident, the retention-window
     // shape). "echo": no override — realm default applies.
-    let dweller = ActorType::script("dweller", "steel", ECHO)
+    let dweller = BoothType::script("dweller", "steel", ECHO)
         .with_idle_ttl(Duration::from_secs(600));
     engine.register(dweller).await;
     engine.register(echo_type()).await;
 
     engine
         .invoke(
-            InstanceId { actor_type: "dweller".into(), key: "d1".into() },
+            InstanceId { booth_type: "dweller".into(), key: "d1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -267,7 +267,7 @@ async fn per_type_idle_ttl_overrides_realm_default() {
         .unwrap();
     engine
         .invoke(
-            InstanceId { actor_type: "echo".into(), key: "e1".into() },
+            InstanceId { booth_type: "echo".into(), key: "e1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -280,7 +280,7 @@ async fn per_type_idle_ttl_overrides_realm_default() {
         let evicted = realm.evict_idle(engine.realm.clone()).await;
         // Only echo is evicted; the dweller's own TTL keeps it resident.
         assert_eq!(evicted.len(), 1);
-        assert_eq!(evicted[0].actor_type, "echo");
+        assert_eq!(evicted[0].booth_type, "echo");
         // A second pass evicts nothing more: the dweller is still under
         // its own 600s TTL even though the realm default is 0s.
         let again = realm.evict_idle(engine.realm.clone()).await;
@@ -290,13 +290,13 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 
 // ------------------------------------------------- Phase 2.5 (ctx bridge) --
 //
-// Script actors reach the host through named functions: one JSON argument
+// Script booths reach the host through named functions: one JSON argument
 // in, one JSON value out. Storage rides `ctx_store_emit` (the type's
 // declared collections, ADR-0026 §3); `ctx_invoke` rides the unified call
 // model (Phase 3.5).
 
 // Steel script: one RMW into the type's declared collection, read back,
-// and invoke another actor through ctx_invoke. The storage declaration is
+// and invoke another booth through ctx_invoke. The storage declaration is
 // the interface_schema `storage` block (same shape as events.rs).
 #[cfg(feature = "steel")]
 #[tokio::test]
@@ -306,7 +306,7 @@ async fn steel_script_ctx_bridge() {
     // Target invoked from the script: echoes back its args.
     engine.register(echo_type()).await;
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "steel-ctx",
             "steel",
             r#"
@@ -330,7 +330,7 @@ async fn steel_script_ctx_bridge() {
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "steel-ctx".into(), key: "s1".into() },
+            InstanceId { booth_type: "steel-ctx".into(), key: "s1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -351,7 +351,7 @@ async fn python_script_ctx_bridge() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(echo_type()).await;
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "py-ctx",
             "python",
             r#"
@@ -381,7 +381,7 @@ def execute(args):
 
     let out = engine
         .invoke(
-            InstanceId { actor_type: "py-ctx".into(), key: "p1".into() },
+            InstanceId { booth_type: "py-ctx".into(), key: "p1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -399,7 +399,7 @@ def execute(args):
 async fn idle_eviction_drops_the_resident_session() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "py-resident",
             "python",
             r#"
@@ -414,7 +414,7 @@ def bump(args):
         ))
         .await;
 
-    let target = InstanceId { actor_type: "py-resident".into(), key: "r1".into() };
+    let target = InstanceId { booth_type: "py-resident".into(), key: "r1".into() };
     let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
     let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
     assert_eq!(out, serde_json::json!({"memory": 2}), "same session accumulates");
@@ -432,7 +432,7 @@ def bump(args):
 
 
 // Script-declared TTL: `interface_schema()` introspection seeds
-// `ActorType.idle_ttl` at registration (host ← script; the script never
+// `BoothType.idle_ttl` at registration (host ← script; the script never
 // touches the engine). The retention window rides this for script
 // turn-executors.
 #[cfg(feature = "python")]
@@ -440,7 +440,7 @@ def bump(args):
 async fn script_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "py-dweller",
             "python",
             r#"
@@ -457,13 +457,13 @@ def execute(args):
     // per-type TTL even though the host never called with_idle_ttl.
     {
         let realm = engine.realm.try_lock().unwrap();
-        let actor = realm.actor_type("py-dweller").unwrap();
-        assert_eq!(actor.idle_ttl, Some(Duration::from_secs(300)));
+        let booth = realm.booth_type("py-dweller").unwrap();
+        assert_eq!(booth.idle_ttl, Some(Duration::from_secs(300)));
     }
 
     // Plain script without the lifecycle section: no TTL adopted.
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "py-plain",
             "python",
             r#"
@@ -477,23 +477,23 @@ def execute(args):
         .await;
     {
         let realm = engine.realm.try_lock().unwrap();
-        let actor = realm.actor_type("py-plain").unwrap();
-        assert_eq!(actor.idle_ttl, None);
+        let booth = realm.booth_type("py-plain").unwrap();
+        assert_eq!(booth.idle_ttl, None);
     }
 }
 
 // ------------------------------------------------- Phase 4.5b (metadata lifecycle) --
 //
-// UPLOAD is its own lifecycle: registering a script actor persists the
+// UPLOAD is its own lifecycle: registering a script booth persists the
 // definition + introspected TTL into the meta store; a fresh engine booted
 // on the same data dir reloads the type — definitions survive node
 // restart, execution never re-introspects.
 
 #[cfg(all(feature = "fjall", feature = "steel"))]
 #[tokio::test]
-async fn script_actor_definition_survives_restart() {
+async fn script_booth_definition_survives_restart() {
     // ADR-0025 Plan A: definitions live in the DATA plane's okm instance
-    // (ActorDef table) — restart persistence rides the single data dir,
+    // (BoothDef table) — restart persistence rides the single data dir,
     // there is no separate meta instance/config anymore.
     let dir = tempfile::tempdir().unwrap();
 
@@ -501,12 +501,12 @@ async fn script_actor_definition_survives_restart() {
     cfg.engine = aura_config::Engine::Fjall;
     cfg.data_dir = Some(dir.path().to_path_buf());
 
-    // Node 1: register a script actor (declares idle_ttl via
+    // Node 1: register a script booth (declares idle_ttl via
     // interface_schema — introspection happens at upload).
     {
         let engine = Engine::start(&cfg).await.expect("boot");
         engine
-            .register(aura_actor::ActorType::script(
+            .register(aura_booth::BoothType::script(
                 "persisted",
                 "steel",
                 r#"
@@ -527,12 +527,12 @@ async fn script_actor_definition_survives_restart() {
     let engine = Engine::start(&cfg).await.expect("boot");
     {
         let realm = engine.realm.try_lock().unwrap();
-        let actor = realm.actor_type("persisted").expect("type reloaded");
-        assert_eq!(actor.idle_ttl, Some(Duration::from_secs(300)));
+        let booth = realm.booth_type("persisted").expect("type reloaded");
+        assert_eq!(booth.idle_ttl, Some(Duration::from_secs(300)));
     }
     let out = engine
         .invoke(
-            InstanceId { actor_type: "persisted".into(), key: "k1".into() },
+            InstanceId { booth_type: "persisted".into(), key: "k1".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -543,7 +543,7 @@ async fn script_actor_definition_survives_restart() {
 
 // Phase 4.5b (c): nushell introspection — interface_schema() declared in
 // the script is callable at registration through the same generated
-// wrapper (one spawn, call schema, done). Nu actors declare TTL in
+// wrapper (one spawn, call schema, done). Nu booths declare TTL in
 // script like python/steel; ctx host fns ride the PTY file bridge (see
 // nushell_store_emit_roundtrip below).
 #[cfg(feature = "nushell")]
@@ -551,7 +551,7 @@ async fn script_actor_definition_survives_restart() {
 async fn nushell_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "nu-dweller",
             "nushell",
             r#"
@@ -569,12 +569,12 @@ export def execute [args] {
 
     {
         let realm = engine.realm.try_lock().unwrap();
-        let actor = realm.actor_type("nu-dweller").unwrap();
-        assert_eq!(actor.idle_ttl, Some(Duration::from_secs(300)));
+        let booth = realm.booth_type("nu-dweller").unwrap();
+        assert_eq!(booth.idle_ttl, Some(Duration::from_secs(300)));
     }
 }
 
-// ------------------------------------- Phase 4.5c (multi-entry actors, step 1) --
+// ------------------------------------- Phase 4.5c (multi-entry booths, step 1) --
 //
 // @on-decorated handlers: the decorator registry derives `receives` at
 // upload; `register` seeds the router from it (event → type, key field),
@@ -584,7 +584,7 @@ export def execute [args] {
 async fn python_on_decorators_derive_receives_and_routes() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "cart",
             "python",
             r#"
@@ -607,7 +607,7 @@ def audit(args):
     let realm = engine.realm.try_lock().unwrap();
     let routes = realm.router.matches("add_to_cart");
     assert_eq!(routes.len(), 1, "add_to_cart routed to cart");
-    assert_eq!(routes[0].actor_type, "cart");
+    assert_eq!(routes[0].booth_type, "cart");
     assert_eq!(routes[0].instance_key_field, "user_id");
     let routes = realm.router.matches("remove_from_cart");
     assert_eq!(routes.len(), 1, "remove_from_cart routed (no key → singleton)");
@@ -633,7 +633,7 @@ async fn re_register_replaces_routes() {
 (define (b args) (hash "got" "b"))
 "#;
     engine
-        .register(aura_actor::ActorType::script("swapper", "steel", v1))
+        .register(aura_booth::BoothType::script("swapper", "steel", v1))
         .await
         .unwrap();
     {
@@ -644,7 +644,7 @@ async fn re_register_replaces_routes() {
     // Resident on v1 first — the swap must rebuild the session on v2.
     let out = engine
         .invoke(
-            aura_actor::InstanceId { actor_type: "swapper".into(), key: "x".into() },
+            aura_booth::InstanceId { booth_type: "swapper".into(), key: "x".into() },
             "a",
             serde_json::json!({"k": "x"}),
         )
@@ -659,7 +659,7 @@ async fn re_register_replaces_routes() {
 (define (a args) (hash "got" "v2"))
 "#;
     engine
-        .register(aura_actor::ActorType::script("swapper", "steel", v2))
+        .register(aura_booth::BoothType::script("swapper", "steel", v2))
         .await
         .unwrap();
     {
@@ -667,14 +667,14 @@ async fn re_register_replaces_routes() {
         assert_eq!(realm.router.matches("evt.a").len(), 1, "no duplicate after re-register");
         assert!(realm.router.matches("evt.b").is_empty(), "dropped declaration stops routing");
         // Persisted registry agrees with the router (same-side durability).
-        let rows = aura_realm::mq::routes_of_actor(&mut realm.mq.clone(), "swapper").unwrap();
+        let rows = aura_realm::mq::routes_of_booth(&mut realm.mq.clone(), "swapper").unwrap();
         assert_eq!(rows.len(), 1, "EventRoute table holds only evt.a: {rows:?}");
     }
     // Execution rides the NEW source: the v1 session was reclaimed, the
     // cold start loads v2.
     let out = engine
         .invoke(
-            aura_actor::InstanceId { actor_type: "swapper".into(), key: "x".into() },
+            aura_booth::InstanceId { booth_type: "swapper".into(), key: "x".into() },
             "a",
             serde_json::json!({"k": "x"}),
         )
@@ -722,7 +722,7 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
   (ctx_interface_schema ""))
 "#;
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "store-keeper",
             "steel",
             full_src,
@@ -730,7 +730,7 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
         .await
         .expect("register store-keeper");
 
-    let target = aura_actor::InstanceId { actor_type: "store-keeper".into(), key: "k".into() };
+    let target = aura_booth::InstanceId { booth_type: "store-keeper".into(), key: "k".into() };
 
     // The type's plan resolved at registration: ctx.store is available.
     engine
@@ -757,7 +757,7 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
     // registering one and calling ctx_store_emit errors as a value.
 }
 
-// The nushell PTY ctx bridge end to end (PLAN 2.5/2.6 tail): a nu actor
+// The nushell PTY ctx bridge end to end (PLAN 2.5/2.6 tail): a nu booth
 // with a hand-written storage literal writes and reads through
 // `ctx-store-emit` — the file-round-trip bridge (nu writes req-*.json,
 // the Rust call loop sweeps it against the real realm store, resp-*.json
@@ -769,7 +769,7 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
 async fn nushell_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(aura_actor::ActorType::script(
+        .register(aura_booth::BoothType::script(
             "nu-keeper",
             "nushell",
             r#"
@@ -801,7 +801,7 @@ export def get-note [args] {
         .await
         .expect("register nu-keeper");
 
-    let target = aura_actor::InstanceId { actor_type: "nu-keeper".into(), key: "k".into() };
+    let target = aura_booth::InstanceId { booth_type: "nu-keeper".into(), key: "k".into() };
     engine
         .invoke(target.clone(), "put-note", serde_json::json!({}))
         .await

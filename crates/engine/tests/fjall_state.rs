@@ -6,7 +6,7 @@
 
 #[cfg(feature = "fjall")]
 mod fjall_tests {
-    use aura_actor::{ActorType, Ctx, InstanceId, futures_boxed::BoxFuture};
+    use aura_booth::{BoothType, Ctx, InstanceId, futures_boxed::BoxFuture};
     use aura_config::{Engine as EngineKind, EngineConfig};
     use aura_engine::Engine;
     use std::sync::Arc;
@@ -20,7 +20,7 @@ mod fjall_tests {
     }
 
     // Counter into the type's declared collection (ADR-0026 §3). Reads go
-    // through the `count` handler (the actor's observable output).
+    // through the `count` handler (the booth's observable output).
     const COUNTER: &str = r#"
 (define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
   (hash "key_len" 8
@@ -40,8 +40,8 @@ mod fjall_tests {
                           "key" (hash "id" 1) "doc" (hash "count" (+ c 1))))
     (hash "count" (+ c 1))))
 "#;
-    fn counter() -> ActorType {
-        ActorType::script("counter", "steel", COUNTER)
+    fn counter() -> BoothType {
+        BoothType::script("counter", "steel", COUNTER)
     }
 
     #[test]
@@ -70,7 +70,7 @@ mod fjall_tests {
         {
             let engine = Engine::start(&fjall_config(dir.path())).await.unwrap();
             engine.register(counter()).await;
-            let target = InstanceId { actor_type: "counter".into(), key: "k".into() };
+            let target = InstanceId { booth_type: "counter".into(), key: "k".into() };
             engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
             engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
         } // Engine dropped — process-restart semantics.
@@ -81,7 +81,7 @@ mod fjall_tests {
         engine.register(counter()).await;
         let out = engine
             .invoke(
-                InstanceId { actor_type: "counter".into(), key: "k".into() },
+                InstanceId { booth_type: "counter".into(), key: "k".into() },
                 "execute",
                 serde_json::json!(null),
             )

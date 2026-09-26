@@ -6,7 +6,7 @@
 
 ## Context
 
-Phase 4.5c replaced per-actor mailboxes with per-(event, partition) queues — one event family
+Phase 4.5c replaced per-booth mailboxes with per-(event, partition) queues — one event family
 per queue, multiple subscribers per queue (one-to-many delivery is structural). The interim
 implementation used `tokio::sync::broadcast`, which has three properties inconsistent with the
 architecture's own rulings:
@@ -26,10 +26,10 @@ architecture's own rulings:
 
 ```
 [mq-data][event][part_id][time]        ← event payload, written on emit (passive save)
-[mq-cursor][event][part_id][actor]{u64 cursor}
+[mq-cursor][event][part_id][booth]{u64 cursor}
 ```
 
-- Emit = append to `[mq-data]` (durable, same engine as actor state).
+- Emit = append to `[mq-data]` (durable, same engine as booth state).
 - Consumption = range scan from the subscriber's cursor, then cursor advance.
 - Subscribe = register a cursor at *now* (a new subscriber does not replay history).
 - Serial-per-instance semantics are preserved by the per-subscription cursor, not by owning
@@ -41,8 +41,8 @@ A `[ev][part_id]` queue keeps only the range that every active subscriber's curs
 needs; data before the minimum cursor is deleted on write-path compaction.
 
 **The watermark's denominator comes from the route registry** (the 4.5b-persisted `@on`
-metadata), never from the raw cursor keys. A permanently-departed actor's stale cursor must
-not pin the watermark forever. Deregistering an actor removes its cursor row; its backlog
+metadata), never from the raw cursor keys. A permanently-departed booth's stale cursor must
+not pin the watermark forever. Deregistering an booth removes its cursor row; its backlog
 then falls below the watermark and vanishes with ordinary compaction — no separate reaper.
 
 ### 3. Backlog depth is an okm reduce count
@@ -74,8 +74,8 @@ on the event bus.
   on re-activation.
 - Slow consumers accumulate visible, metered backlog (reduce count) instead of silent
   `Lagged` loss; skip-to-now makes "falling behind" a choosable policy.
-- Multi-subscriber fan-out stores each event once per queue (N actors = N cursors into one
-  partition) — the N-copy duplication of per-actor mailboxes disappears structurally.
+- Multi-subscriber fan-out stores each event once per queue (N booths = N cursors into one
+  partition) — the N-copy duplication of per-booth mailboxes disappears structurally.
 - "No queue component" clarified: no *external heavyweight* queue system; embedded
   persistent partitions are the natural form of passive event persistence.
 
@@ -90,7 +90,7 @@ watermark — is squarely in LSM territory:
   always the oldest contiguous segment of `[mq-data][ev][part]` (the watermark only moves
   forward). High stale-ratio SSTables drop wholesale during compaction — the friendliest
   possible case, no tombstone storm.
-- Sharing the engine with actor state buys crash recovery and a unified ops surface. Note
+- Sharing the engine with booth state buys crash recovery and a unified ops surface. Note
   the atomic domain of a batch is one partition — event + state co-atomicity is not a design
   goal here (events are triggers, ctx_state is the truth; see the honest-cost section).
 

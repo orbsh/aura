@@ -9,7 +9,7 @@ name = "aura"
 path = "src/main.rs"
 
 [dependencies]
-aura-actor = { path = "../actor" }
+aura-booth = { path = "../booth" }
 aura-engine = { path = "../engine" }
 aura-config = { path = "../config" }
 serde_json = { workspace = true }

@@ -32,7 +32,7 @@ fn mq_roundtrip() {
 }
 
 #[test]
-fn event_route_registry_persists_and_scans_by_actor() {
+fn event_route_registry_persists_and_scans_by_booth() {
     let mut vs = mq::MqStore::mem();
 
     // Register two subscribers on one event, one on another; one wildcard.
@@ -47,43 +47,43 @@ fn event_route_registry_persists_and_scans_by_actor() {
     assert_eq!(subs.len(), 2, "two subscribers on the exact event: {subs:?}");
     assert!(subs.iter().all(|(_, k, w)| k == "user_id" && !*w));
 
-    // Reverse lookup (by_actor index): one actor's full subscription set.
-    let audit = mq::routes_of_actor(&vs, "audit").unwrap();
+    // Reverse lookup (by_booth index): one booth's full subscription set.
+    let audit = mq::routes_of_booth(&vs, "audit").unwrap();
     assert_eq!(audit.len(), 1, "audit's wildcard route: {audit:?}");
     assert!(audit[0].2, "wildcard flag survives the round trip");
 
-    // Deregistration drops the actor's rows; the other subscriber stays.
-    mq::routes_drop_actor(&vs, "cart").unwrap();
+    // Deregistration drops the booth's rows; the other subscriber stays.
+    mq::routes_drop_booth(&vs, "cart").unwrap();
     let subs = mq::routes_of_event(&vs, "order_created").unwrap();
     assert_eq!(subs.len(), 1, "cart deregistered: {subs:?}");
 }
 
 #[test]
-fn routes_drop_actor_targets_only_its_own_rows() {
-    // The bug this locks: routes_drop_actor once scanned the PRIMARY slot
-    // with the actor_id where the event_id lives, so it deleted any row
-    // whose event_id happened to equal the actor_id — cross-actor damage,
+fn routes_drop_booth_targets_only_its_own_rows() {
+    // The bug this locks: routes_drop_booth once scanned the PRIMARY slot
+    // with the booth_id where the event_id lives, so it deleted any row
+    // whose event_id happened to equal the booth_id — cross-booth damage,
     // invisible when the ids coincide (as in the test above). Register
-    // several events for one actor AND the same events for others, so the
-    // actor's id collides with a DIFFERENT event's id in another row.
+    // several events for one booth AND the same events for others, so the
+    // booth's id collides with a DIFFERENT event's id in another row.
     let mut vs = mq::MqStore::mem();
     // event ids allocate in first-seen order: e1=1, e2=2, e3=3.
-    // actor ids: a=1, b=2, c=3.
-    mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, actor 1)
-    mq::route_put(&vs, "e2", "a", "k", false).unwrap(); // (event 2, actor 1)
-    mq::route_put(&vs, "e3", "a", "k", false).unwrap(); // (event 3, actor 1)
-    mq::route_put(&vs, "e1", "b", "k", false).unwrap(); // (event 1, actor 2)
-    mq::route_put(&vs, "e2", "c", "k", false).unwrap(); // (event 2, actor 3)
+    // booth ids: a=1, b=2, c=3.
+    mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, booth 1)
+    mq::route_put(&vs, "e2", "a", "k", false).unwrap(); // (event 2, booth 1)
+    mq::route_put(&vs, "e3", "a", "k", false).unwrap(); // (event 3, booth 1)
+    mq::route_put(&vs, "e1", "b", "k", false).unwrap(); // (event 1, booth 2)
+    mq::route_put(&vs, "e2", "c", "k", false).unwrap(); // (event 2, booth 3)
 
-    // Drop actor "a" (id 1). The old scan would also hit rows whose
-    // EVENT id == 1 (the (e1,b) row), wrongly deleting actor b's route.
-    mq::routes_drop_actor(&vs, "a").unwrap();
+    // Drop booth "a" (id 1). The old scan would also hit rows whose
+    // EVENT id == 1 (the (e1,b) row), wrongly deleting booth b's route.
+    mq::routes_drop_booth(&vs, "a").unwrap();
 
-    assert!(mq::routes_of_actor(&vs, "a").unwrap().is_empty(), "a's rows all gone");
+    assert!(mq::routes_of_booth(&vs, "a").unwrap().is_empty(), "a's rows all gone");
     // b subscribed only e1; that row must SURVIVE a's drop.
-    let b = mq::routes_of_actor(&vs, "b").unwrap();
+    let b = mq::routes_of_booth(&vs, "b").unwrap();
     assert_eq!(b.len(), 1, "b's e1 route survives: {b:?}");
-    let c = mq::routes_of_actor(&vs, "c").unwrap();
+    let c = mq::routes_of_booth(&vs, "c").unwrap();
     assert_eq!(c.len(), 1, "c's e2 route survives: {c:?}");
 
     // Forward lookups agree: e1 still has exactly b, e2 exactly c, e3 none.

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aura-actor = { path = "../actor" }
+aura-booth = { path = "../booth" }
 probe-runtime = { path = "../../../probe/crates/runtime" }
 probe-protocol = { path = "../../../probe/crates/protocol" }
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde"] }

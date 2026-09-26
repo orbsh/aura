@@ -2,7 +2,7 @@
 //! event name IS the reference), instance key from event data, wildcard
 //! singleton routing, emits whitelist as the Realm boundary, dead events.
 
-use aura_actor::{ActorType, InstanceId};
+use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use aura_realm::Realm;
 
@@ -12,7 +12,7 @@ use aura_realm::Realm;
 // keyed by the event's user_id (identity rides payload metadata; the
 // instance key answers who serializes, modeling.md §2.1). Tests read the
 // count back by invoking the `count` handler with the same user_id — the
-// actor's observable output, not the retired instance-document model.
+// booth's observable output, not the retired instance-document model.
 fn counter_script(events: &[&'static str]) -> String {
     let common = r#"(define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
   (hash "key_len" 8
@@ -53,8 +53,8 @@ fn counter_script(events: &[&'static str]) -> String {
     format!("{common}{userdoc}{}", events.iter().map(|e| body(e)).collect::<Vec<_>>().join("\n"))
 }
 
-fn counter_of(name: &'static str, events: &[&'static str]) -> ActorType {
-    ActorType::script(name, "steel", counter_script(events))
+fn counter_of(name: &'static str, events: &[&'static str]) -> BoothType {
+    BoothType::script(name, "steel", counter_script(events))
 }
 
 #[tokio::test]
@@ -66,7 +66,7 @@ async fn exact_route_instance_key_from_event_data() {
         r.router.on("add_to_cart", "cart", "user_id");
     }
 
-    // The event name references the actor; the payload's user_id picks the
+    // The event name references the booth; the payload's user_id picks the
     // instance. Two users → two instances, independent state.
     Realm::emit(&engine.realm, None, "add_to_cart", serde_json::json!({
         "event": "add_to_cart", "user_id": "alice", "item": "book"
@@ -81,7 +81,7 @@ async fn exact_route_instance_key_from_event_data() {
     let read = async |uid: &str| {
         engine
             .invoke(
-                InstanceId { actor_type: "cart".into(), key: format!("cart/{uid}") },
+                InstanceId { booth_type: "cart".into(), key: format!("cart/{uid}") },
                 "count",
                 serde_json::json!({ "user_id": uid }),
             )
@@ -113,7 +113,7 @@ async fn wildcard_route_goes_to_singleton() {
 
     let count = engine
         .invoke(
-            InstanceId { actor_type: "audit".into(), key: "__singleton__".into() },
+            InstanceId { booth_type: "audit".into(), key: "__singleton__".into() },
             "count",
             serde_json::json!({ "user_id": "u1" }),
         )
@@ -179,7 +179,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
     // Exact: keyed instance got it.
     assert_eq!(
         engine.invoke(
-            InstanceId { actor_type: "cart".into(), key: "alice".into() },
+            InstanceId { booth_type: "cart".into(), key: "alice".into() },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -188,7 +188,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
     // event's own user_id — same key the exact-route instance wrote).
     assert_eq!(
         engine.invoke(
-            InstanceId { actor_type: "stats".into(), key: "__singleton__".into() },
+            InstanceId { booth_type: "stats".into(), key: "__singleton__".into() },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -203,19 +203,19 @@ async fn invoke_path_unaffected() {
 (define (execute args) args)
 "#;
     engine.register(
-        ActorType::script("echo", "steel", ECHO)
+        BoothType::script("echo", "steel", ECHO)
     ).await.unwrap();
     let out = engine
-        .invoke(InstanceId { actor_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
+        .invoke(InstanceId { booth_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
         .await
         .unwrap();
     assert_eq!(out, serde_json::json!({"x": 1}));
-    let _ = InstanceId { actor_type: String::new(), key: String::new() }; // silence unused if refactors
+    let _ = InstanceId { booth_type: String::new(), key: String::new() }; // silence unused if refactors
 }
 
 // ------------------------------------- Phase 4.5c (step 2: event queues) --
 //
-// One-to-many is structural: two actor types subscribed to the same event
+// One-to-many is structural: two booth types subscribed to the same event
 // each get the message through their own private queue Receiver. The
 // per-subscription cursor keeps each instance's consumption serial.
 #[tokio::test]
@@ -238,14 +238,14 @@ async fn one_event_multiple_subscriber_types() {
     // Both subscriber types received the same event, independently.
     assert_eq!(
         engine.invoke(
-            InstanceId { actor_type: "cart".into(), key: "alice".into() },
+            InstanceId { booth_type: "cart".into(), key: "alice".into() },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
     );
     assert_eq!(
         engine.invoke(
-            InstanceId { actor_type: "stats".into(), key: "alice".into() },
+            InstanceId { booth_type: "stats".into(), key: "alice".into() },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -267,7 +267,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
 "#;
     for name in ["cart", "stats"] {
         engine.register(
-            ActorType::script(name, "steel", ECHO)
+            BoothType::script(name, "steel", ECHO)
                 .on("order.created", "user_id"),
         )
         .await;

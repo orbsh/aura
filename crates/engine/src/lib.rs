@@ -1,7 +1,7 @@
 //! Engine assembly: config + realm + runtime. Phase 1 — store-backed ctx
 //! state, idle-TTL eviction (scale-to-zero), submit-based call path.
 
-use aura_actor::ActorType;
+use aura_booth::BoothType;
 use aura_realm::{Realm, SharedRealm};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,11 +37,11 @@ impl Engine {
             mq.clone(),
             config.code_base_url.clone(),
         ));
-        // Boot reload (Phase 4.5b): persisted script actors re-register from
+        // Boot reload (Phase 4.5b): persisted script booths re-register from
         // the meta store — definitions outlive the process.
         let engine = Self { realm, realm_set };
         // Boot reload (ADR-0025 Plan A): definitions live in the DATA
-        // plane's okm instance (actor_defs beside mq/state).
+        // plane's okm instance (booth_defs beside mq/state).
         for def in aura_realm::meta::load_all(&mq)? {
             engine.register(def.to_type()).await?;
         }
@@ -49,10 +49,10 @@ impl Engine {
     }
 
     /// The data plane as ONE okm engine (ADR-0018 steps 1+2): the
-    /// "aura_mq" okm keyspace carries BOTH the mq tables and the actor
+    /// "aura_mq" okm keyspace carries BOTH the mq tables and the booth
     /// state documents — one engine, one keyspace, ns-isolated tables.
     /// Fjall opens its own database (single directory). The meta plane
-    /// keeps the separate JSON SharedStore (PersistedActor records).
+    /// keeps the separate JSON SharedStore (PersistedBooth records).
     fn open_planes(
         engine: &aura_config::Engine,
         dir: Option<std::path::PathBuf>,
@@ -84,7 +84,7 @@ impl Engine {
 impl Engine {
 
     /// Override the idle TTL (realm-wide default; per-type TTL overrides
-    /// this — see `ActorType::with_idle_ttl`).
+    /// this — see `BoothType::with_idle_ttl`).
     pub fn with_idle_ttl(self, ttl: Duration) -> Self {
         if let Ok(mut r) = self.realm.try_lock() {
             r.idle_ttl = ttl;
@@ -92,18 +92,18 @@ impl Engine {
         self
     }
 
-    /// Register an actor type with this engine's realm.
+    /// Register an booth type with this engine's realm.
     ///
     /// For script types (python/steel/wasm), the registration runs the
     /// script's `interface_schema()` introspection ONCE and adopts
     /// declared metadata into the type definition — `lifecycle.idle_ttl`
-    /// seeds `ActorType.idle_ttl` when the host did not set one
+    /// seeds `BoothType.idle_ttl` when the host did not set one
     /// explicitly. The host-side builder always wins over the script
     /// declaration (explicit > introspected). The script never touches
     /// the engine: introspection is a pure function the host calls,
     /// direction is host ← script.
-    pub async fn register(&self, actor: ActorType) -> anyhow::Result<()> {
-        self.register_inner(actor, &self.realm).await
+    pub async fn register(&self, booth: BoothType) -> anyhow::Result<()> {
+        self.register_inner(booth, &self.realm).await
     }
 
     /// Shared registration body: introspection + definition persistence +
@@ -112,17 +112,17 @@ impl Engine {
     /// named-realm type gets the same ctx.store plan (ADR-0026 §3).
     async fn register_inner(
         &self,
-        mut actor: ActorType,
+        mut booth: BoothType,
         realm: &aura_realm::SharedRealm,
     ) -> anyhow::Result<()> {
         // Phase 4.5c: derive delivery routes from the introspected schema —
         // `receives` (event → key field) seeds the router per @on
         // declaration; empty key = singleton (per-event queue consumer).
         let mut introspected: Option<serde_json::Value> = None;
-        if let Some(schema) = aura_realm::introspect_schema(&actor).await {
-            if actor.idle_ttl.is_none() {
+        if let Some(schema) = aura_realm::introspect_schema(&booth).await {
+            if booth.idle_ttl.is_none() {
                 if let Some(ttl) = schema.get("lifecycle").and_then(|l| l.get("idle_ttl")).and_then(parse_ttl) {
-                    actor.idle_ttl = Some(ttl);
+                    booth.idle_ttl = Some(ttl);
                 }
             }
             // Introspected declarations land ON THE TYPE (one declaration
@@ -130,12 +130,12 @@ impl Engine {
             if let Some(receives) = schema.get("receives").and_then(|r| r.as_object()) {
                 for (event, spec) in receives {
                     let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                    actor = actor.on(event.clone(), key_field);
+                    booth = booth.on(event.clone(), key_field);
                 }
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {
                 for pattern in wildcards.iter().filter_map(|p| p.as_str()) {
-                    actor = actor.on_wildcard(pattern);
+                    booth = booth.on_wildcard(pattern);
                 }
             }
             // Keep the uploaded copy: it persists with the definition AND
@@ -143,9 +143,9 @@ impl Engine {
             introspected = Some(schema);
         }
         // Phase 4.5b + ADR-0025 Plan A: persist the definition as a
-        // data-plane row (actor_defs beside mq/state) — definitions
+        // data-plane row (booth_defs beside mq/state) — definitions
         // outlive the process, one okm instance for everything.
-        if let Some(mut def) = aura_actor::persist::PersistedActor::from_type(&actor) {
+        if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
             def.schema = introspected.clone();
             let r = realm.lock().await;
             aura_realm::meta::persist(&r.mq, &def)?;
@@ -154,9 +154,9 @@ impl Engine {
         // dispatch arm references `sha256(source)`, and the serving
         // source reads CodeBlob — so the bytes must enter the blob store
         // at upload. RemoteProbe definitions are not persisted (4.5b
-        // scope: script actors); this write is the blob's only home for
+        // scope: script booths); this write is the blob's only home for
         // them, deliberately without a definition row.
-        if let aura_actor::Body::RemoteProbe { ref source, .. } = actor.body {
+        if let aura_booth::Body::RemoteProbe { ref source, .. } = booth.body {
             let r = realm.lock().await;
             aura_realm::meta::put_blob(
                 &r.mq,
@@ -164,36 +164,36 @@ impl Engine {
                 source.as_bytes(),
             )?;
         }
-        realm.lock().await.register_type(actor);
+        realm.lock().await.register_type(booth);
         Ok(())
     }
 
-    /// Invoke a registered actor instance (hot path convenience: wait for
+    /// Invoke a registered booth instance (hot path convenience: wait for
     /// the value). The general entry is `call`, returning a CallSlot.
     pub async fn invoke(
         &self,
-        target: aura_actor::InstanceId,
+        target: aura_booth::InstanceId,
         handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         match self.call(target, handler, args).await? {
-            aura_actor::call::Waited::Done(result) => result,
-            aura_actor::call::Waited::Pending(id) => {
+            aura_booth::call::Waited::Done(result) => result,
+            aura_booth::call::Waited::Pending(id) => {
                 anyhow::bail!("cold call returned a Pending slot to a hot caller: {}", id.0)
             }
         }
     }
 
     /// The unified call (Phase 3.5): every surface — CLI, HTTP, remote
-    /// Probe, actor ctx.invoke — converges here. Hot targets return
+    /// Probe, booth ctx.invoke — converges here. Hot targets return
     /// Done on wait; cold targets return Pending(call_id) and the
     /// result arrives via resolve_call.
     pub async fn call(
         &self,
-        target: aura_actor::InstanceId,
+        target: aura_booth::InstanceId,
         handler: &str,
         args: serde_json::Value,
-    ) -> anyhow::Result<aura_actor::call::Waited> {
+    ) -> anyhow::Result<aura_booth::call::Waited> {
         // Slot construction errors (unknown type/full queue) are Err;
         // wait results — including Done(Err(timeout/handler failure)) —
         // travel inside the Waited so callers see failure as a value.
@@ -203,19 +203,19 @@ impl Engine {
             .await
     }
 
-    /// Register an actor type into a named realm (Phase 3.6 mechanism,
+    /// Register an booth type into a named realm (Phase 3.6 mechanism,
     /// demoted binding per PLAN 4.10; renamed namespace → realm by
     /// ADR-0028). The realm is an EXPLICIT application decision passed at
     /// the call site — construction-time prefix isolation is the
     /// mechanism; what dimension the realm binds (user, project, nothing)
     /// is the application's choice. No credential derivation exists
     /// anywhere on this path.
-    pub async fn register_in(&self, realm: &str, actor: ActorType) {
+    pub async fn register_in(&self, realm: &str, booth: BoothType) {
         let ns = self.realm_set.realm_of(realm).await;
         // Same introspection + persistence path as register() (ADR-0026 §3:
         // the ctx.store plan resolves from the persisted interface_schema —
         // a named-realm type without it has no ctx.store surface).
-        let _ = self.register_inner(actor, &ns.realm()).await;
+        let _ = self.register_inner(booth, &ns.realm()).await;
     }
 
     /// Realm-scoped call (explicit realm name — an application decision,
@@ -225,10 +225,10 @@ impl Engine {
     pub async fn call_in(
         &self,
         realm: &str,
-        target: aura_actor::InstanceId,
+        target: aura_booth::InstanceId,
         handler: &str,
         args: serde_json::Value,
-    ) -> anyhow::Result<aura_actor::call::Waited> {
+    ) -> anyhow::Result<aura_booth::call::Waited> {
         let ns = self.realm_set.realm_of(realm).await;
         Realm::call(&ns.realm(), None, target, handler, args)
             .await?
@@ -253,7 +253,7 @@ impl Engine {
     /// result; unknown call_id is a no-op (completed never replay).
     pub async fn resolve_call(
         &self,
-        call_id: &aura_actor::call::CallId,
+        call_id: &aura_booth::call::CallId,
         result: anyhow::Result<serde_json::Value>,
     ) -> bool {
         Realm::resolve_call(&self.realm, call_id, result).await

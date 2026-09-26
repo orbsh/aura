@@ -45,7 +45,7 @@ Phase 3.6 的外层空间（字符串命名、构造期前缀绑定的数据世�
 
 - 代码（第一工作项，同一提交）：`crates/realm/src/namespace.rs` → `realm_set.rs`，§1 的
   各标识符，配置字段 + KDL 子节点，engine 管路，测试。
-- 文档清扫：partitioning §3、storage.md 联邦行、actor-api、modeling、PLAN 的活段落、
+- 文档清扫：partitioning §3、storage.md 联邦行、booth-api、modeling、PLAN 的活段落、
   ADR-0026 §1（追加 dated update——决策档案不改写正文），以及 wiki 里描述该机制的
   stateless-agent 段落。
 - PLAN 3.6 的历史条目记录落地当时的形态——按日志规则保持原样；4.10 降级段落是活文档，

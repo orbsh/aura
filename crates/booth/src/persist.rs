@@ -1,4 +1,4 @@
-//! Actor definition persistence (Phase 4.5b): script-actor definitions and
+//! Booth definition persistence (Phase 4.5b): script-booth definitions and
 //! their introspected metadata survive node restart.
 //!
 //! Lifecycle (PLAN 4.5b): UPLOAD is its own lifecycle — `set` persists the
@@ -10,16 +10,16 @@
 //! The PERSISTENCE TABLES live in aura-realm (`realm/src/meta.rs`) over the
 //! meta okm instance (ADR-0018 follow-through: no JSON storage anywhere;
 //! this struct is the seam type — JSON only as the interface artifact for
-//! the introspected schema). Rust-closure actors (`Body::Rust`) are
+//! the introspected schema). Rust-closure booths (`Body::Rust`) are
 //! compile-time constructs — they are not persistable and not restored.
 
-use crate::ActorType;
+use crate::BoothType;
 use serde::{Deserialize, Serialize};
 
-/// The persistable slice of an `ActorType`: script body + declared
+/// The persistable slice of an `BoothType`: script body + declared
 /// metadata. Rust-closure bodies are NOT persistable (compile-time).
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PersistedActor {
+pub struct PersistedBooth {
     pub name: String,
     pub language: String,
     pub source: String,
@@ -31,23 +31,23 @@ pub struct PersistedActor {
     pub schema: Option<serde_json::Value>,
 }
 
-impl PersistedActor {
-    pub fn from_type(actor: &ActorType) -> Option<Self> {
-        let crate::Body::Script { language, source } = &actor.body else {
+impl PersistedBooth {
+    pub fn from_type(booth: &BoothType) -> Option<Self> {
+        let crate::Body::Script { language, source } = &booth.body else {
             return None; // Rust handlers are compile-time; nothing to persist
         };
         Some(Self {
-            name: actor.name.clone(),
+            name: booth.name.clone(),
             language: language.clone(),
             source: source.clone(),
-            idle_ttl_secs: actor.idle_ttl.map(|d| d.as_secs()),
+            idle_ttl_secs: booth.idle_ttl.map(|d| d.as_secs()),
             schema: None,
         })
     }
 
     /// Rebuild the runtime type from the persisted record.
-    pub fn to_type(&self) -> ActorType {
-        let mut t = ActorType::script(
+    pub fn to_type(&self) -> BoothType {
+        let mut t = BoothType::script(
             self.name.clone(),
             self.language.clone(),
             self.source.clone(),

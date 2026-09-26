@@ -1,4 +1,4 @@
-//! Actor model: definition, context, queue.
+//! Booth model: definition, context, queue.
 //!
 //! ctx surface is bounded by ADR-0011: state / metadata / invoke only.
 //! emit/on, contracts, and hooks stay off ctx (realm-level or static
@@ -10,11 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Actor body: a Rust closure, or a script executed by a probe carrier.
+/// Booth body: a Rust closure, or a script executed by a probe carrier.
 ///
 /// The script form imports the probe runtime instead of reimplementing
 /// language execution: one set of carriers (steel/python/wasmtime/nushell)
-/// serves both the remote actuator and embedded actors. Script actors are
+/// serves both the remote actuator and embedded booths. Script booths are
 /// pure functions in this phase (args in, value out); the ctx bridge
 /// (state/invoke from inside scripts via host functions) is the remaining
 /// Phase 2 work.
@@ -25,7 +25,7 @@ pub enum Body {
         language: String,
         source: String,
     },
-    /// Remote probe actor (Phase 3): the body lives on a probe node that
+    /// Remote probe booth (Phase 3): the body lives on a probe node that
     /// dialed into THIS control plane. `node_alias` addresses the probe's
     /// outbound connection; `language` + `source` are delivered per call
     /// (inline payload). The probe executes in its resident sessions.
@@ -36,14 +36,14 @@ pub enum Body {
     },
 }
 
-/// An Actor type definition. The handler is a Rust async function for now;
+/// An Booth type definition. The handler is a Rust async function for now;
 /// embedded languages (Phase 2) wrap the same definition with a script body.
 ///
-/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Actor calls (ADR-0011,
+/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Booth calls (ADR-0011,
 /// off ctx): optional, declared on the type, invoked by the runtime around
 /// eviction and reactivation.
 #[derive(Clone)]
-pub struct ActorType {
+pub struct BoothType {
     /// Registered type name, e.g. "echo".
     pub name: String,
     pub body: Body,
@@ -51,7 +51,7 @@ pub struct ActorType {
     /// before the evictor reclaims the residency (scale-to-zero). `None`
     /// = fall back to the realm-wide default. Per-type because residency
     /// value differs by role — a turn-executor dwells through its
-    /// retention window while an entity actor can be reclaimed quickly.
+    /// retention window while an entity booth can be reclaimed quickly.
     pub idle_ttl: Option<Duration>,
     /// Execution budget (ADR-0016 revised §4): a reclaim entry fires if a
     /// single job runs longer than this — maximum-duration control, not
@@ -89,7 +89,7 @@ pub type Handler = dyn Fn(Ctx, Value) -> futures_boxed::BoxFuture<'static, anyho
 pub type SleepHook =
     dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
 
-impl ActorType {
+impl BoothType {
     /// Define a script type executed by a probe carrier.
     pub fn script(
         name: impl Into<String>,
@@ -156,7 +156,7 @@ impl ActorType {
 pub mod call;
 pub mod persist;
 pub mod store_emit;
-pub use persist::PersistedActor;
+pub use persist::PersistedBooth;
 pub use store_emit::{StoreOp, StoreOpKind};
 
 pub mod futures_boxed {
@@ -167,7 +167,7 @@ pub mod futures_boxed {
 /// Per-instance context. ADR-0011: exactly state / metadata / invoke.
 /// Metadata lands with Openraft (Phase 5); the surface reserves the name.
 pub struct Ctx {
-    /// This instance's identity: (actor type, instance key). Answers who
+    /// This instance's identity: (booth type, instance key). Answers who
     /// serially processes this message (ADR-0026) — storage addressing
     /// lives in the type's declared collections (the store_emit handle),
     /// never in this struct.
@@ -187,7 +187,7 @@ pub struct Ctx {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct InstanceId {
-    pub actor_type: String,
+    pub booth_type: String,
     /// Partition key: instance identity within the type (session_id,
     /// node_id, ...).
     pub key: String,
@@ -238,7 +238,7 @@ impl Ctx {
     }
 
     /// Inject the type-scoped storage executor (realm-side assembly;
-    /// actors never construct a Ctx themselves).
+    /// booths never construct a Ctx themselves).
     pub fn with_store_emit(mut self, handle: store_emit_handle::StoreEmitHandle) -> Self {
         self.store_emit = Some(handle);
         self
@@ -279,7 +279,7 @@ impl Ctx {
     }
 }
 
-/// The actor-visible storage surface: one method, `emit`. The op is the
+/// The booth-visible storage surface: one method, `emit`. The op is the
 /// protocol type (`StoreOp`); the runtime executes it against the type's
 /// declared collections (okm Collection semantics — documents, indexes,
 /// preset reduces, dynamic-segment fields).
@@ -323,7 +323,7 @@ impl Queue {
 }
 
 /// A job traveling an event queue: handler name + args. No reply channel —
-/// event delivery is fire-and-forget (an actor that must return values is
+/// event delivery is fire-and-forget (an booth that must return values is
 /// invoked, not emitted to). Clone: broadcast queues fan it out to every
 /// subscriber.
 #[derive(Clone)]

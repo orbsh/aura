@@ -4,29 +4,29 @@
 //! returns immediately, the result arrives via resolve_call, unknown id
 //! never replays.
 
-use aura_actor::call::{CallId, CallSpec};
-use aura_actor::{ActorType, InstanceId};
+use aura_booth::call::{CallId, CallSpec};
+use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use std::time::Duration;
 
-// Steel script actors (4.5a). slow_echo: nushell subprocess — its natural
+// Steel script booths (4.5a). slow_echo: nushell subprocess — its natural
 // spawn latency (~100-500ms) provides the slow handler the deadline tests need.
 const ECHO: &str = r#"
 (define (execute args) args)
 "#;
 
-fn echo() -> ActorType {
-    ActorType::script("echo", "steel", ECHO)
+fn echo() -> BoothType {
+    BoothType::script("echo", "steel", ECHO)
 }
 
-fn slow_echo() -> ActorType {
+fn slow_echo() -> BoothType {
     const SLOW: &str = r#"
 export def execute [args] {
     sleep 1sec
     args
 }
 "#;
-    ActorType::script("slow_echo", "nushell", SLOW)
+    BoothType::script("slow_echo", "nushell", SLOW)
 }
 
 #[tokio::test]
@@ -35,14 +35,14 @@ async fn hot_call_parks_and_returns() {
     engine.register(echo()).await;
     let waited = engine
         .call(
-            InstanceId { actor_type: "echo".into(), key: "a".into() },
+            InstanceId { booth_type: "echo".into(), key: "a".into() },
                 "execute",
             serde_json::json!({"hot": true}),
         )
         .await
         .unwrap();
     match waited {
-        aura_actor::call::Waited::Done(Ok(v)) => assert_eq!(v, serde_json::json!({"hot": true})),
+        aura_booth::call::Waited::Done(Ok(v)) => assert_eq!(v, serde_json::json!({"hot": true})),
         other => panic!("expected Done, got {other:?}"),
     }
 }
@@ -63,14 +63,14 @@ async fn hot_timeout_is_failure_value() {
 
     let err = engine
         .call(
-            InstanceId { actor_type: "slow_echo".into(), key: "s".into() },
+            InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
                 "execute",
             serde_json::json!(null),
         )
         .await
         .unwrap();
     match err {
-        aura_actor::call::Waited::Done(Err(e)) => assert!(e.to_string().contains("timed out")),
+        aura_booth::call::Waited::Done(Err(e)) => assert!(e.to_string().contains("timed out")),
         other => panic!("expected timeout failure, got {other:?}"),
     }
 }
@@ -78,7 +78,7 @@ async fn hot_timeout_is_failure_value() {
 #[tokio::test]
 async fn cold_call_returns_pending_without_parking() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let mut approval = ActorType::script(
+    let mut approval = BoothType::script(
         "approval",
         "steel",
         ECHO,
@@ -94,7 +94,7 @@ async fn cold_call_returns_pending_without_parking() {
     let started = std::time::Instant::now();
     let waited = engine
         .call(
-            InstanceId { actor_type: "approval".into(), key: "human".into() },
+            InstanceId { booth_type: "approval".into(), key: "human".into() },
                 "execute",
             serde_json::json!({"ask": "allow rm -rf?"}),
         )
@@ -103,7 +103,7 @@ async fn cold_call_returns_pending_without_parking() {
     // The slot returns immediately — wait never entered park.
     assert!(started.elapsed() < Duration::from_millis(100));
     let call_id = match waited {
-        aura_actor::call::Waited::Pending(id) => id,
+        aura_booth::call::Waited::Pending(id) => id,
         other => panic!("expected Pending, got {other:?}"),
     };
 
@@ -143,7 +143,7 @@ async fn deadline_scan_fails_expired_hot_calls() {
     // Fire without awaiting: the call is in-flight past its deadline.
     let slot = engine
         .call(
-            InstanceId { actor_type: "slow_echo".into(), key: "s".into() },
+            InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
                 "execute",
             serde_json::json!(null),
         )
@@ -156,7 +156,7 @@ async fn deadline_scan_fails_expired_hot_calls() {
     engine.realm.lock().await.sweep_deadlines().await;
 
     match slot {
-        aura_actor::call::Waited::Done(Err(e)) => assert!(e.to_string().contains("timed out")),
+        aura_booth::call::Waited::Done(Err(e)) => assert!(e.to_string().contains("timed out")),
         other => panic!("expected timeout failure from sweep, got {other:?}"),
     }
 }

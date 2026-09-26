@@ -2,13 +2,13 @@
 //! deadlines, the deadline sweep. Split out of lib.rs per ADR-0029.
 
 use super::{Realm, SharedRealm};
-use aura_actor::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier};
-use aura_actor::{InstanceId, Job};
+use aura_booth::call::{CallId, CallSlot, CallSpec, PendingEntry, Tier};
+use aura_booth::{InstanceId, Job};
 use std::time::{Duration, Instant};
 
 impl Realm {
-    pub fn declare_call(&mut self, actor_type: &str, spec: CallSpec) {
-        self.call_specs.insert(actor_type.into(), spec);
+    pub fn declare_call(&mut self, booth_type: &str, spec: CallSpec) {
+        self.call_specs.insert(booth_type.into(), spec);
     }
 
     pub async fn call(
@@ -22,12 +22,12 @@ impl Realm {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let call_id = {
             let mut realm = self_arc.lock().await;
-            if !realm.types.contains_key(&target.actor_type) {
-                anyhow::bail!("unknown actor type: {}", target.actor_type);
+            if !realm.types.contains_key(&target.booth_type) {
+                anyhow::bail!("unknown booth type: {}", target.booth_type);
             }
             let spec = realm
                 .call_specs
-                .get(&target.actor_type)
+                .get(&target.booth_type)
                 .cloned()
                 .unwrap_or_else(|| CallSpec::hot(Duration::from_secs(30)));
             match spec.tier {
@@ -42,7 +42,7 @@ impl Realm {
                         .map_err(|_| {
                             anyhow::anyhow!(
                                 "queue full: {}/{}",
-                                target.actor_type,
+                                target.booth_type,
                                 target.key
                             )
                         })?;
@@ -54,7 +54,7 @@ impl Realm {
                         let job = {
                             let mut r = spawn_realm.lock().await;
                             r.instances
-                                .get_mut(&(target.actor_type.clone(), target.key.clone()))
+                                .get_mut(&(target.booth_type.clone(), target.key.clone()))
                                 .and_then(|i| {
                                     // Take only OUR job: recv from this instance's rx.
                                     i.queue.rx.try_recv().ok()

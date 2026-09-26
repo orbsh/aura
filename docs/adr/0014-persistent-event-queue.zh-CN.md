@@ -6,7 +6,7 @@
 
 ## Context（背景）
 
-Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每个队列承载一个事件族，多个订阅者共享一个队列（一对多投递是结构性能力，不是扇出模拟）。过渡实现使用 `tokio::sync::broadcast`，它有三个性质与架构自身的裁决相矛盾：
+Phase 4.5c 用 per-(event, partition) 队列取代了 per-摊位 mailbox——每个队列承载一个事件族，多个订阅者共享一个队列（一对多投递是结构性能力，不是扇出模拟）。过渡实现使用 `tokio::sync::broadcast`，它有三个性质与架构自身的裁决相矛盾：
 
 - **迟到订阅者一无所获**：实例在事件生命周期内被驱逐（scale-to-zero），就永远看不到这条事件。ctx_state 是 durable truth 的前提下，触发丢失是静默发生的。
 - **慢消费者收到 `Lagged`**：落后于 broadcast 环形缓冲会静默丢弃整段——与「失效显式化」的偏好正好相反。
@@ -18,10 +18,10 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 
 ```
 [mq-data][event][part_id][time]        ← 事件载荷，emit 时写入（被动保存）
-[mq-cursor][event][part_id][actor]{u64 cursor}
+[mq-cursor][event][part_id][booth]{u64 cursor}
 ```
 
-- Emit = 追加到 `[mq-data]`（持久，与 Actor 状态同一引擎）。
+- Emit = 追加到 `[mq-data]`（持久，与摊位状态同一引擎）。
 - 消费 = 从订阅者游标开始 range scan，然后推进游标。
 - 订阅 = 在 *now* 位置注册游标（新订阅者不回放历史）。
 - 单实例内串行语义由 per-subscription cursor 保证，不由拥有队列保证。
@@ -30,7 +30,7 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 
 一个 `[ev][part_id]` 队列只保留所有活跃订阅者游标仍需要的范围；最小游标之前的数据在写入路径 compaction 时删除。
 
-**水位线的分母来自路由注册表**（4.5b 持久化的 `@on` 元数据），绝不来自原始 cursor 键。已永久退出的 actor 的陈旧游标不得把水位线永远钉死。注销 actor 时同步删除其 cursor 行；它的积压随后跌破水位线、随普通 compaction 消失——不需要独立的回收器。
+**水位线的分母来自路由注册表**（4.5b 持久化的 `@on` 元数据），绝不来自原始 cursor 键。已永久退出的摊位的陈旧游标不得把水位线永远钉死。注销摊位时同步删除其 cursor 行；它的积压随后跌破水位线、随普通 compaction 消失——不需要独立的回收器。
 
 ### 3. 积压深度是 okm reduce 计数
 
@@ -49,7 +49,7 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 - Broadcast channel 降级为过渡形态；realm 事件路径在 4.5c step 2b 重写（队列读 = scan + 游标推进；订阅 = 注册游标于 now）。
 - Scale-to-zero 不再丢触发：驱逐期间积累的积压在重新激活后送达。
 - 慢消费者积累的是可见、可计量的积压（reduce 计数），不再是静默的 `Lagged` 丢失；skip-to-now 让「跟不上」成为可选择的策略。
-- 多订阅者扇出每个事件每队列只存一份（N 个 actor = N 个游标指向同一个分区）——per-actor mailbox 的 N 份复制从结构上消失。
+- 多订阅者扇出每个事件每队列只存一份（N 个摊位 = N 个游标指向同一个分区）——per-摊位 mailbox 的 N 份复制从结构上消失。
 - "不引入队列组件"澄清：不引入的是*外部重型*队列系统；嵌入式持久分区是事件被动保存的自然形态。
 
 ### 5. 存储底座：LSM-tree，不用专门的 append-only 存储（2026-09-16）
@@ -58,7 +58,7 @@ Phase 4.5c 用 per-(event, partition) 队列取代了 per-actor mailbox——每
 
 - 追加只碰 memtable；compaction 在后台消化。B 树引擎（BoltDB/redb）恰好为这种模式付出每写一次的页寻址代价。
 - 水位线删除是**前缀删除，不是随机删除**：被删区间永远是 `[mq-data][ev][part]` 下最旧的连续段（水位线只前进）。高 stale 比例的 SSTable 在 compaction 时整体丢弃——最友好情形，无墓碑风暴。
-- 与 Actor 状态同引擎换来崩溃恢复与统一运维面。注意 batch 的原子域是单个分区——事件 + 状态的原子同写不是这里的设计目标（事件是触发信号，ctx_state 才是真理；见诚实语义代价一节）。
+- 与摊位状态同引擎换来崩溃恢复与统一运维面。注意 batch 的原子域是单个分区——事件 + 状态的原子同写不是这里的设计目标（事件是触发信号，ctx_state 才是真理；见诚实语义代价一节）。
 
 **需要设计正视的 LSM 特性**：删除不是即时的。水位线 compaction 写 tombstone；物理空间在 compaction 跑完后才回收。reduce 计数（逻辑值）即时反映删除；物理磁盘占用滞后。不是新问题（状态删除行为相同），但运维语义必须说清：`mq-data` 的物理体积领先于水位线。
 

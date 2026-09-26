@@ -4,10 +4,10 @@
 > This document describes the full partitioning mechanism, from key byte
 > layout to cluster topology. Bilingual: [中文](partitioning.md).
 
-## 1. Partition unit: the Actor instance; the instance key decides placement
+## 1. Partition unit: the Booth instance; the instance key decides placement
 
 The smallest partitioning unit is neither a table nor a realm — it is
-the **Actor instance**. `InstanceId = (actor_type, key)`, where `key` is the
+the **Booth instance**. `InstanceId = (booth_type, key)`, where `key` is the
 instance key (session_id, channel_id, order_id, ...). Placement rules:
 
 - **Same key, serial**: all messages for one instance key land in the same
@@ -15,7 +15,7 @@ instance key (session_id, channel_id, order_id, ...). Placement rules:
   consistency comes from queue serialization, not locks
 - **Different keys, parallel**: instances with different keys are fully
   independent and never block each other
-- **Wildcard-subscription exception**: an Actor registered via `on_wildcard`
+- **Wildcard-subscription exception**: an Booth registered via `on_wildcard`
   binds to the singleton `__singleton__` and does not participate in
   partitioning (an observer listening to global events has no meaningful
   state shard)
@@ -28,41 +28,41 @@ lands), the event name maps to an okm ns and the routing resolves ids
 through that ns's access methods — a scan is one-to-many by nature, so a
 single emit can deliver to multiple instances.
 
-## 2. actor_type: type vs instance
+## 2. booth_type: type vs instance
 
 ```rust
 pub struct InstanceId {
-    pub actor_type: String,  // type: which kind of Actor
+    pub booth_type: String,  // type: which kind of Booth
     pub key: String,         // instance key: which instance of that kind
 }
 ```
 
-`actor_type` is the Actor's type name — the identity of one logical role;
+`booth_type` is the Booth's type name — the identity of one logical role;
 the instance key identifies a concrete instance within that type.
 
 ```
-ActorType "cart"                ← blueprint: state schema + handler + subscriptions
+BoothType "cart"                ← blueprint: state schema + handler + subscriptions
   ├─ Instance ("cart", "alice")   ← concrete instance: own queue, own state
   ├─ Instance ("cart", "bob")
   └─ Instance ("cart", "carol")   ← same type, different keys: independent, parallel
 ```
 
-- **Registration**: `engine.register(ActorType::simple("echo", handler))` or
-  `ActorType::script("py-ctx", "python", source, entry)` — the type name is
+- **Registration**: `engine.register(BoothType::simple("echo", handler))` or
+  `BoothType::script("py-ctx", "python", source, entry)` — the type name is
   fixed here; the body (Rust handler or script) attaches to the type and is
   shared by every instance
 - **Routing**: `router.on("order.created", "cart", "user_id")` delivers to
   `(type, key extracted from the event)`; `ctx_invoke` addresses targets the
   same way with `{type, key}`
 - **State layout**: storage isolation lives at the type level (ADR-0026 §3) —
-  each actor type occupies one real okm ns and declares its own collections;
+  each booth type occupies one real okm ns and declares its own collections;
   instances are documents inside it. The instance key only answers "who
   serially processes this message"; it no longer decides storage layout
-- **Shard identity**: `(actor_type, key)` together form the full partition
+- **Shard identity**: `(booth_type, key)` together form the full partition
   identity; the key alone is not enough ("alice" under `cart` and under
   `session` are two unrelated instances)
 
-Essentially the **class/instance relationship**: actor_type is the unit of
+Essentially the **class/instance relationship**: booth_type is the unit of
 deployment and code distribution (hot reload swaps definitions per type);
 the instance is the unit of serialization and state ownership (addressed,
 sharded, and recovered by `(type, key)`).
@@ -86,11 +86,11 @@ ownership**, not a field the request happens to carry:
   Mounting user_id onto ctx here is a logical conflict — ctx is
   per-instance, so a mounted field would claim "this instance's user", and
   a group-chat instance has no such thing. Nor is an intermediary router
-  actor needed to look up the channel by user_id first: that adds a hop, a
+  booth needed to look up the channel by user_id first: that adds a hop, a
   state write, and turns the routing table into a second source of truth
   for membership.
 - **Cross-partition reverse indexes (user ↔ channels, user ↔ orders) →
-  projection actors**: a per-user actor subscribes to the event stream and
+  projection booths**: a per-user booth subscribes to the event stream and
   maintains its own index — isomorphic to projection aggregation, off the
   delivery hot path.
 
@@ -108,12 +108,12 @@ segments (the okm key discipline — no textual separators):
 ```
 
 - **ns (2 bytes)**: the okm-level table/edge-table number, addressed
-  uniformly within the single okm instance (post ADR-0025, actor
-  definitions share the data plane's instance: ActorDef ns 41 beside
+  uniformly within the single okm instance (post ADR-0025, booth
+  definitions share the data plane's instance: BoothDef ns 41 beside
   mq/state)
 - **slot (1 byte)**: access-method discriminator within the table
   (0 = primary entry); all index entries of one table share its ns segment
-- **Actor state**: instance state is NOT one flat document per instance —
+- **Booth state**: instance state is NOT one flat document per instance —
   the type declares its collections inside its own ns (schema persisted
   with the interface_schema at upload), and handlers read/write through
   `ctx.store.emit(op)` carrying okm Collection instructions
@@ -140,7 +140,7 @@ lifecycle of partition state is decoupled from instance residency**:
   instance and reads/writes on demand
 - **Sleep (on_sleep/evict)**: the resident is released — scale-to-zero
   drops the resident, not the data (locked by acceptance tests:
-  script-actor state over a declared collection survives eviction)
+  script-booth state over a declared collection survives eviction)
 - Phase 6.5's resident window optimizes this boundary: within the retention
   window, consecutive same-partition calls flow through in-memory oneshots
   with zero persistence; state is flushed and the resident released only at
@@ -150,7 +150,7 @@ lifecycle of partition state is decoupled from instance residency**:
 
 - **The shard map lives in the node's own storage** (post ADR-0025, the data plane's okm instance) under a
   single-writer model: exactly one logical writer (the control plane)
-  writes the shard map / actor registry; nodes read through caches — no
+  writes the shard map / booth registry; nodes read through caches — no
   multi-writer consensus. Federation contains no path to consensus: a
   multi-control-plane deployment is a directional retreat (it overturns
   the federation, not an extension point); internal metadata stays
@@ -169,7 +169,7 @@ lifecycle of partition state is decoupled from instance residency**:
   (wiki ruling: no self-built strong-consistency replication) — the
   partitioning scheme and the replication scheme are decoupled; the
   default path carries no replication
-- Actor-definition hot reload rides the node's own storage: write the new
+- Booth-definition hot reload rides the node's own storage: write the new
   definition → nodes re-read on activation
 
 ## Appendix: evictor complexity trade-off

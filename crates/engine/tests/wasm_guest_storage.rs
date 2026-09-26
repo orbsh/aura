@@ -1,5 +1,5 @@
 //! Wasm guest storage e2e (ADR-0026 §4 full-power path, PLAN 4.9 wasm
-//! item): a REAL rustc-compiled wasm module registers as an actor type,
+//! item): a REAL rustc-compiled wasm module registers as an booth type,
 //! its `interface_schema` export carries the compiled `storage.collections`
 //! block, and the handlers run the in-module Collection over the ctx
 //! store bridge. The full upload → introspect → persist → emit-executor
@@ -8,12 +8,12 @@
 //! wasm32-unknown-unknown`); the test fails loudly when the artifact is
 //! missing (a stale build is a CI recipe error, not a skip condition).
 
-use aura_actor::{ActorType, InstanceId};
+use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use aura_realm::Realm;
 use base64::Engine as _;
 
-fn wasm_actor() -> ActorType {
+fn wasm_booth() -> BoothType {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../probe/target/wasm32-unknown-unknown/debug/examples/counter_actor.wasm"
@@ -22,23 +22,23 @@ fn wasm_actor() -> ActorType {
         "counter_actor.wasm missing — build it in ~/world/probe: cargo build -p actor-guest --example counter_actor --target wasm32-unknown-unknown",
     );
     let source = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    ActorType::script("wasm-guest-counter", "wasmtime", source)
+    BoothType::script("wasm-guest-counter", "wasmtime", source)
 }
 
 /// Full path: register → introspection persists the module's compiled
-/// schema onto ActorDef → instance handler emits Collection ops through
+/// schema onto BoothDef → instance handler emits Collection ops through
 /// the ctx store bridge → the realm executor resolves them against the
 /// type's ns → the value reads back through the module's own reader.
 #[tokio::test]
-async fn wasm_actor_storage_end_to_end() {
+async fn wasm_booth_storage_end_to_end() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
 
-    engine.register(wasm_actor()).await.unwrap();
+    engine.register(wasm_booth()).await.unwrap();
 
     // The persisted definition carries the module's compiled schema.
     // Verified indirectly: the type resolved a store plan (a handler
     // that emits succeeds) and `ctx.interface_schema` returns the block.
-    let target = InstanceId { actor_type: "wasm-guest-counter".into(), key: "u1".into() };
+    let target = InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() };
 
     // bump via invoke: the handler does an in-module Collection RMW —
     // put_document/get_document cross the ctx store bridge.
@@ -65,12 +65,12 @@ async fn wasm_actor_storage_end_to_end() {
     // the collections; re-activation reads on demand).
     Realm::evict_instance(
         engine.realm.clone(),
-        &InstanceId { actor_type: "wasm-guest-counter".into(), key: "u1".into() },
+        &InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() },
     )
     .await;
     let v = engine
         .invoke(
-            InstanceId { actor_type: "wasm-guest-counter".into(), key: "u1".into() },
+            InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() },
             "peek",
             serde_json::json!(null),
         )

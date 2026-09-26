@@ -7,9 +7,9 @@
 //!   ns dictionary stays compile-time). Lookup = index scan + row verify
 //!   (the text-first regime's documented cost: no delimiter, so "add"
 //!   prefix-matches "add_to_cart"; the row comparison is the exactness).
-//! - `ActorName` — same registry pattern for subscriber identity.
+//! - `BoothName` — same registry pattern for subscriber identity.
 //! - `MqData` — `[event_id][part_id][time]` → payload. An event belongs to
-//!   no actor: one row per emitted event, N subscribers = N cursors. The
+//!   no booth: one row per emitted event, N subscribers = N cursors. The
 //!   sort key is the LOGICAL time (ms, monotonic via MqHead — not wall
 //!   truth; the event's real timestamp rides the payload fields).
 //! - `MqHead` — `[event_id][part_id]` → last assigned logical time. The
@@ -17,7 +17,7 @@
 //!   `max(now_ms, last+1)`, writes it back. O(1) append (the old max-scan
 //!   over the partition prefix is gone) and cross-emitter monotonicity
 //!   (same-ms emits from concurrent emitters fold +1 into the sequence).
-//! - `MqCursor` — `[event_id][part_id][actor_id]` → last consumed seq.
+//! - `MqCursor` — `[event_id][part_id][booth_id]` → last consumed seq.
 //!
 //! Backlog = range scan after the cursor; skip-to-now = cursor write to
 //! the partition head. Min-watermark retention compaction and reduce-based
@@ -81,7 +81,7 @@ pub struct MqData {}
 pub struct MqCursorKey {
     pub event_id: u32,
     pub part_id: u64,
-    pub actor_id: u32,
+    pub booth_id: u32,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -94,21 +94,21 @@ pub struct MqCursor {
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct ActorNameKey {
+pub struct BoothNameKey {
     pub id: u32,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(ActorNameKey)]
+#[ok_ref(BoothNameKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_ns(33)]
-pub struct ActorName {
+pub struct BoothName {
     pub name: String,
 }
 
 // ---------------------------------------------------------------------------
 // EventRoute: the PERSISTED subscription registry. One row per (event,
-// actor-type) subscription assembled at registration from the type's @on
+// booth-type) subscription assembled at registration from the type's @on
 // declarations. Replaces the in-memory Route table as the source of truth:
 // routes survive restart (no re-introspection to rebuild them), and
 // `routes_of` is an index scan. Wildcards ride the same row shape — a
@@ -119,17 +119,17 @@ pub struct ActorName {
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct EventRouteKey {
     pub event_id: u32,
-    pub actor_id: u32,
+    pub booth_id: u32,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(EventRouteKey)]
-#[ok_index(by_actor { fields(actor_id) })]
+#[ok_index(by_booth { fields(booth_id) })]
 #[ok_ns(35)]
 pub struct EventRoute {
-    /// Mirror of the key's actor segment — index fields must be payload
-    /// fields (the key is not one), so the by_actor scan reads this.
-    pub actor_id: u32,
+    /// Mirror of the key's booth segment — index fields must be payload
+    /// fields (the key is not one), so the by_booth scan reads this.
+    pub booth_id: u32,
     /// Empty = singleton subscription (no instance key); a wildcard
     /// subscription carries the PREFIX here (matching is the emit path's
     /// job) and `wildcard` is set.
@@ -326,9 +326,9 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     Ok(id)
 }
 
-fn resolve_actor_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_ActorName_by_name>(name.as_bytes()) {
+fn resolve_booth_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, BoothNameKey, BoothName>::new(store.clone());
+    for hit in t.scan::<__OkmIndex_BoothName_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -336,13 +336,13 @@ fn resolve_actor_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
         }
     }
     let mut max_id = 0u32;
-    for (pk, _) in t.scan::<__OkmIndex_ActorName_by_name>(&[]) {
+    for (pk, _) in t.scan::<__OkmIndex_BoothName_by_name>(&[]) {
         if pk.decoded.id > max_id {
             max_id = pk.decoded.id;
         }
     }
     let id = max_id + 1;
-    t.put(&ActorNameKey { id }, &ActorName { name: name.to_string() });
+    t.put(&BoothNameKey { id }, &BoothName { name: name.to_string() });
     Ok(id)
 }
 
@@ -426,14 +426,14 @@ pub fn part_id_of(part: &str) -> u64 {
 pub const SINGLETON: &str = "__singleton__";
 
 /// The subscriber's cursor (0 = nothing consumed).
-pub fn cursor(store: &MqStore, event: &str, part: &str, actor: &str) -> anyhow::Result<u64> {
+pub fn cursor(store: &MqStore, event: &str, part: &str, booth: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
-    let actor_id = resolve_actor_id(store, actor)?;
+    let booth_id = resolve_booth_id(store, booth)?;
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
         part_id: part_id_of(part),
-        actor_id,
+        booth_id,
     })
     .map(|c| c.cursor)
     .unwrap_or(0))
@@ -444,14 +444,14 @@ pub fn advance(
     store: &MqStore,
     event: &str,
     part: &str,
-    actor: &str,
+    booth: &str,
     seq: u64,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
-    let actor_id = resolve_actor_id(store, actor)?;
+    let booth_id = resolve_booth_id(store, booth)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
-        &MqCursorKey { event_id, part_id: part_id_of(part), actor_id },
+        &MqCursorKey { event_id, part_id: part_id_of(part), booth_id },
         &MqCursor { cursor: seq },
     );
     Ok(())
@@ -513,7 +513,7 @@ pub fn skip_to_now(
     store: &MqStore,
     event: &str,
     part: &str,
-    actor: &str,
+    booth: &str,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let part_id = part_id_of(part);
@@ -521,7 +521,7 @@ pub fn skip_to_now(
         .get(&MqHeadKey { event_id, part_id })
         .map(|h| h.last_time)
         .unwrap_or(0);
-    advance(store, event, part, actor, head)
+    advance(store, event, part, booth, head)
 }
 
 // ---------------------------------------------------------------------------
@@ -530,45 +530,45 @@ pub fn skip_to_now(
 // `routes_of` (activation binding) and the watermark denominator.
 // ---------------------------------------------------------------------------
 
-/// Persist one subscription: (event, actor type) → key field declaration.
+/// Persist one subscription: (event, booth type) → key field declaration.
 /// Idempotent (a re-register overwrites the same row).
 pub fn route_put(
     store: &MqStore,
     event: &str,
-    actor_type: &str,
+    booth_type: &str,
     key_field: &str,
     is_wildcard: bool,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
-    let actor_id = resolve_actor_id(store, actor_type)?;
+    let booth_id = resolve_booth_id(store, booth_type)?;
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     t.put(
-        &EventRouteKey { event_id, actor_id },
-        &EventRoute { actor_id, key_field: key_field.to_string(), wildcard: u8::from(is_wildcard) },
+        &EventRouteKey { event_id, booth_id },
+        &EventRoute { booth_id, key_field: key_field.to_string(), wildcard: u8::from(is_wildcard) },
     );
     Ok(())
 }
 
-/// Drop every subscription row for one actor type (deregistration /
+/// Drop every subscription row for one booth type (deregistration /
 /// hot-swap): its cursors then fall out of the watermark denominator.
-/// The scan rides the by_actor index — the primary key is
-/// `[event_id][actor_id]`, so an actor-prefixed primary-slot scan would
-/// delete rows belonging to whoever's event id matched the actor id.
-pub fn routes_drop_actor(store: &MqStore, actor_type: &str) -> anyhow::Result<()> {
-    let actor_id = resolve_actor_id(store, actor_type)?;
+/// The scan rides the by_booth index — the primary key is
+/// `[event_id][booth_id]`, so an booth-prefixed primary-slot scan would
+/// delete rows belonging to whoever's event id matched the booth id.
+pub fn routes_drop_booth(store: &MqStore, booth_type: &str) -> anyhow::Result<()> {
+    let booth_id = resolve_booth_id(store, booth_type)?;
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let stale: Vec<u32> = t
-        .scan::<__OkmIndex_EventRoute_by_actor>(&actor_id.to_be_bytes())
+        .scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())
         .into_iter()
         .map(|(pk, _row)| pk.decoded.event_id)
         .collect();
     for event_id in stale {
-        t.delete_by_pkey(&EventRouteKey { event_id, actor_id });
+        t.delete_by_pkey(&EventRouteKey { event_id, booth_id });
     }
     Ok(())
 }
 
-/// Every subscription row for one event: (actor_id, key_field, is_wildcard).
+/// Every subscription row for one event: (booth_id, key_field, is_wildcard).
 pub fn routes_of_event(
     store: &MqStore,
     event: &str,
@@ -585,27 +585,27 @@ pub fn routes_of_event(
         if suffix.len() < 4 {
             continue;
         }
-        // suffix = [actor_id 4B] (the rest of the primary key)
+        // suffix = [booth_id 4B] (the rest of the primary key)
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
-        let actor_id = u32::from_be_bytes(b);
-        if let Some(row) = t.get(&EventRouteKey { event_id, actor_id }) {
-            out.push((actor_id, row.key_field, row.wildcard != 0));
+        let booth_id = u32::from_be_bytes(b);
+        if let Some(row) = t.get(&EventRouteKey { event_id, booth_id }) {
+            out.push((booth_id, row.key_field, row.wildcard != 0));
         }
     }
     Ok(out)
 }
 
-/// Every subscription row for one actor type: (event_id, key_field,
+/// Every subscription row for one booth type: (event_id, key_field,
 /// is_wildcard). The activation binding's persistent `routes_of`.
-pub fn routes_of_actor(
+pub fn routes_of_booth(
     store: &MqStore,
-    actor_type: &str,
+    booth_type: &str,
 ) -> anyhow::Result<Vec<(u32, String, bool)>> {
-    let actor_id = resolve_actor_id(store, actor_type)?;
+    let booth_id = resolve_booth_id(store, booth_type)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut out = Vec::new();
-    for hit in t.scan::<__OkmIndex_EventRoute_by_actor>(&actor_id.to_be_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes()) {
         if let Some(row) = &hit.1 {
             out.push((hit.0.decoded.event_id, row.key_field.clone(), row.wildcard != 0));
         }
@@ -616,11 +616,11 @@ pub fn routes_of_actor(
 // ---------------------------------------------------------------------------
 // Retention (min-watermark over registered subscribers). The watermark's
 // denominator comes from the ROUTE REGISTRY (the persisted @on metadata),
-// never from the raw cursor keys: a cursor row whose actor no longer has a
+// never from the raw cursor keys: a cursor row whose booth no longer has a
 // route for this event must not pin the watermark. Eviction (instance
 // scale-to-zero) does NOT deregister — the type's route remains, the
 // instance replays its backlog on re-activation; deregistration (type
-// hot-swap / actor deletion) drops the route, and the stale cursor row
+// hot-swap / booth deletion) drops the route, and the stale cursor row
 // falls out of the denominator (its row is removable by prefix scan).
 // ---------------------------------------------------------------------------
 
@@ -655,7 +655,7 @@ pub fn delete_before(
     Ok(removed)
 }
 
-/// Every cursor row in a partition: (actor_id, cursor). The caller filters
+/// Every cursor row in a partition: (booth_id, cursor). The caller filters
 /// against the route registry.
 pub fn cursor_rows(
     store: &MqStore,
@@ -674,29 +674,29 @@ pub fn cursor_rows(
         if suffix.len() < 4 {
             continue;
         }
-        // suffix = [actor_id 4B]
+        // suffix = [booth_id 4B]
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
-        let actor_id = u32::from_be_bytes(b);
+        let booth_id = u32::from_be_bytes(b);
         let cursor = t
-            .get(&MqCursorKey { event_id, part_id, actor_id })
+            .get(&MqCursorKey { event_id, part_id, booth_id })
             .map(|c| c.cursor)
             .unwrap_or(0);
-        out.push((actor_id, cursor));
+        out.push((booth_id, cursor));
     }
     Ok(out)
 }
 
-/// The actor_id for a cursor name ("type/key") — the registry resolve the
+/// The booth_id for a cursor name ("type/key") — the registry resolve the
 /// consumer path uses; callers need it to map cursor rows back to routes.
-pub fn actor_id_of(store: &MqStore, actor: &str) -> anyhow::Result<u32> {
-    resolve_actor_id(store, actor)
+pub fn booth_id_of(store: &MqStore, booth: &str) -> anyhow::Result<u32> {
+    resolve_booth_id(store, booth)
 }
 
-/// The registered name for an actor id (None = never registered).
-pub fn actor_name_of(store: &MqStore, actor_id: u32) -> anyhow::Result<Option<String>> {
-    let t = Collection::<MqStore, ActorNameKey, ActorName>::new(store.clone());
-    Ok(t.get(&ActorNameKey { id: actor_id }).map(|a| a.name))
+/// The registered name for an booth id (None = never registered).
+pub fn booth_name_of(store: &MqStore, booth_id: u32) -> anyhow::Result<Option<String>> {
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(store.clone());
+    Ok(t.get(&BoothNameKey { id: booth_id }).map(|a| a.name))
 }
 
 /// The partition hash (exposed for realm-side watermark computation).

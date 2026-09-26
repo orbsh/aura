@@ -5,7 +5,7 @@
 //! driver may park on the queue without holding any lock other callers
 //! need. Two entry kinds share the wheel:
 //!
-//! - Deliver: wake an actor via a `__on_timer` queue job (interrupt
+//! - Deliver: wake an booth via a `__on_timer` queue job (interrupt
 //!   checks, compression wakes, cron). Durable delivery entries are a
 //!   StateStore restore concern (ctx.timer wiring lands separately).
 //! - Reclaim: nobody is coming; take resources back. Idle-TTL eviction

@@ -1,7 +1,7 @@
-# Actor API (Script Language Reference)
+# Booth API (Script Language Reference)
 
 > Script contracts and host functions per language. English primary;
-> Chinese counterpart: [actor-api.md](actor-api.md).
+> Chinese counterpart: [booth-api.md](booth-api.md).
 > Execution model and design background: [realm.md](realm.md);
 > introspection mechanism: [§5.4](realm.md#54-interface_schema).
 
@@ -10,21 +10,21 @@
 ```
 UPLOAD (set)     its own lifecycle; may never execute
   └─ host introspects once (calls interface_schema(), or derives from @on decorators)
-  └─ metadata (receives/wildcard_receives/lifecycle) extracted and persisted (the ActorDef table, data-plane okm instance — ADR-0025)
+  └─ metadata (receives/wildcard_receives/lifecycle) extracted and persisted (the BoothDef table, data-plane okm instance — ADR-0025)
   └─ receives derives the delivery routes (event → type + key field)
 EXECUTION        per message: load script (latest version) → address handler by event name → run
-  └─ interface_schema is NEVER called — it is already a static record in the ActorDef table
+  └─ interface_schema is NEVER called — it is already a static record in the BoothDef table
 VERSION CHANGE   a new `set` re-introspects once and updates the persisted metadata and routes;
                  until then the old metadata governs
 ```
 
 ## Event-Driven Model (Multi-Entry)
 
-An Actor type is **multi-entry**: `@on` decorators (steel's `on` function,
+An Booth type is **multi-entry**: `@on` decorators (steel's `on` function,
 wasm's export convention) declare which event each handler listens to,
 and the event name is the handler's addressing name. There is no single
 entry — the single-entry model was asymmetric (one way in, many ways out
-via emits) and forced actors with several handlers to split apart,
+via emits) and forced booths with several handlers to split apart,
 duplicating shared logic.
 
 ```python
@@ -39,13 +39,13 @@ def audit(args): ...
 ```
 
 **Delivery semantics: event queues, not the instance's queue**. An event
-belongs to no actor — `emit("add_to_cart", data)` writes the event into
+belongs to no booth — `emit("add_to_cart", data)` writes the event into
 the `add_to_cart` event queue; a queue for a handler with a declared
 `key` partitions by `(event, partition)` (the key field's value comes
 from the event data), a queue without a key is one queue per event. A
-queue can have **multiple subscribers** (several actor types listening
+queue can have **multiple subscribers** (several booth types listening
 to one event — one-to-many is structural, not a fan-out simulation).
-Actor instances subscribe to queues per their `@on` declarations; a
+Booth instances subscribe to queues per their `@on` declarations; a
 per-subscription cursor keeps each instance's consumption serial — the
 instance does not own the queue.
 
@@ -68,7 +68,7 @@ hand-write this one function.
 
 ## Common Contract (All Languages)
 
-A script Actor = **one source file** + **a set of handler functions**:
+A script Booth = **one source file** + **a set of handler functions**:
 
 | Function | Required | Purpose |
 |----------|----------|---------|
@@ -91,7 +91,7 @@ following — each takes one JSON argument and returns a JSON value:
 - `ctx_interface_schema(arg)` → the type's persisted interface_schema copy
   (handlers reflecting over their own declared shape)
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
-  Actor's return value (blocking wait through the unified call model;
+  Booth's return value (blocking wait through the unified call model;
   timeout = failure value)
 
 **Language capability matrix**:
@@ -199,7 +199,7 @@ No-entry semantics: define a `*result*` variable in the source.
 [中文](#nushell-2)
 
 ```nu
-# PTY-resident session: one long-lived nu REPL per actor instance,
+# PTY-resident session: one long-lived nu REPL per booth instance,
 # cross-call state in $env; ctx host functions ride a file bridge
 # (nu writes req-*.json, the host poll loop answers resp-*.json) —
 # command names are ctx-<dash-name> (nu forbids dots)
@@ -273,18 +273,18 @@ pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
   instantiation (capability refusal, not a runtime error)
 - Host imports are deliberately minimal: no fs, no network — the
   capability surface (Phase 5) decides what is granted
-- The aura engine ships **no in-process Rust actor** — framework
+- The aura engine ships **no in-process Rust booth** — framework
   mechanics (the evictor class) are plain realm logic; Rust code becomes
-  an actor through exactly one channel: compile to wasm and upload
+  an booth through exactly one channel: compile to wasm and upload
 
 ---
 
 ## Relationship to probe (restated)
 
 probe = **the operation execution plane**: `ToolCall` in → `execute()` →
-`ToolResult` out. It knows nothing about Actors, events, or the semantics
+`ToolResult` out. It knows nothing about Booths, events, or the semantics
 of `interface_schema` — all of these are **aura's field-layer concepts**.
 The same python file: as a probe operation only `execute` is called; as an
-aura Actor the introspection runs first and every `@on` handler becomes
+aura Booth the introspection runs first and every `@on` handler becomes
 one of the instance's message entries. One file, two hosts, transparent
 contracts.

@@ -4,13 +4,13 @@
 //! and the execution watchdog (max_exec budget: expiry = evict). Rust
 //! bodies keep the tests carrier-independent (exact sleep control).
 
-use aura_actor::{ActorType, Body, InstanceId};
+use aura_booth::{BoothType, Body, InstanceId};
 use aura_engine::Engine;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn actor(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> ActorType {
-    ActorType {
+fn booth(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> BoothType {
+    BoothType {
         name: name.into(),
         body: Body::Rust(Arc::new(|_ctx, args| {
             Box::pin(async move { Ok(args) })
@@ -23,8 +23,8 @@ fn actor(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> ActorTyp
     }
 }
 
-fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64) -> ActorType {
-    ActorType {
+fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64) -> BoothType {
+    BoothType {
         name: name.into(),
         body: Body::Rust(Arc::new(move |_ctx, args| {
             Box::pin(async move {
@@ -41,7 +41,7 @@ fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64
 }
 
 fn id(name: &str) -> InstanceId {
-    InstanceId { actor_type: name.into(), key: "k".into() }
+    InstanceId { booth_type: name.into(), key: "k".into() }
 }
 
 // Idle entry arms at job COMPLETION: after a job whose execution alone
@@ -86,7 +86,7 @@ async fn watchdog_evicts_on_budget_exceeded() {
 #[tokio::test]
 async fn completion_rearm_survives_first_ttl_half() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(actor("echo", Duration::from_millis(400), None)).await;
+    engine.register(booth("echo", Duration::from_millis(400), None)).await;
 
     let target = id("echo");
     engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();

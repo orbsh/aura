@@ -117,7 +117,7 @@ handle is shared, the operations pretend it is not.
   Cargo.toml is removed at that point).
 - The `&mut`-shaped plumbing in mq.rs's own helpers (`resolve_event_id(store:
   &mut MqStore, …)` and siblings) narrows to `&MqStore` mechanically; lib.rs
-  call sites like `routes_drop_actor(&mut self.mq.clone(), …)` simplify with
+  call sites like `routes_drop_booth(&mut self.mq.clone(), …)` simplify with
   them. That is mechanical follow-through of this ADR, not a separate design
   decision.
 

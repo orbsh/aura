@@ -22,7 +22,7 @@ Three facts make Inline the wrong default rather than a merely untidy one:
 - **Every call re-delivers what never changes.** A resident session loads its source once;
   re-delivery per call is only needed on cold start (and after eviction) — which is exactly
   what a content-addressed cache keys on.
-- **The definition IS the bytes.** `ActorDef` persists the full `source` string inline;
+- **The definition IS the bytes.** `BoothDef` persists the full `source` string inline;
   "version" of code is currently implicit in that string. The hash is the natural version
   token and is not yet stored at all.
 
@@ -41,11 +41,11 @@ One option means no option to choose — the Inline form is retired, not depreca
 ### 2. The blob is content-addressed, immutable, and owned by the meta plane
 
 `CodeBlob` lives in `realm/src/meta.rs` beside the definition it serves (ns 42, after
-TypeName 40 / ActorDef 41). Key = 32-byte sha256; value = the bytes. No name, no version,
+TypeName 40 / BoothDef 41). Key = 32-byte sha256; value = the bytes. No name, no version,
 no foreign key — the row is pure content. `mq.rs` is the event-queue domain and has no
 claim on it; sharing the `MqStore` engine handle is a plumbing fact, not an ownership one.
 
-`ActorDef.source: String` becomes `code_sha256: [u8; 32]` (fixed-width, key-discipline
+`BoothDef.source: String` becomes `code_sha256: [u8; 32]` (fixed-width, key-discipline
 friendly). The upload lifecycle (`register_inner`) hashes the source, writes the blob,
 and persists the hash in the definition — the version fact moves from "the string is right
 here" to "the string at this hash is right here".
@@ -97,8 +97,8 @@ node may pull), it does not mint a second authorization home.
 - **A cold remote start is two round trips (fetch + call) instead of one.** Bytes left
   the control frame and entered the data path; the cold start pays for it — cache hits
   (same code, later calls) absorb the cost entirely.
-- **The definition no longer self-contains its bytes.** A bare ActorDef row is not enough
-  to resurrect an actor — the blob must still exist under its hash. Accepted: both live
+- **The definition no longer self-contains its bytes.** A bare BoothDef row is not enough
+  to resurrect an booth — the blob must still exist under its hash. Accepted: both live
   in the same node's storage, and GC of unreferenced blobs (if ever needed) is a
   scan-the-definitions sweep, not a reference count.
 
@@ -107,10 +107,10 @@ node may pull), it does not mint a second authorization home.
 - **probe-protocol**: `CodePayload` deleted; `ToolCall.code: CodeRef { url, sha256 }`.
 - **probe**: `fetch_link` becomes the only path (cache keyed by sha256; verification
   unchanged); no other consumer changes.
-- **aura**: `meta.rs` gains `CodeBlob` (ns 42) and `ActorDef.code_sha256`;
+- **aura**: `meta.rs` gains `CodeBlob` (ns 42) and `BoothDef.code_sha256`;
   `register_inner` writes hash + blob; the remote dispatch arm builds
   `CodeRef` from the stored hash; `EngineConfig`/KDL gains `code_base_url` (no default, error at delivery);
-  `PersistedActor.source` → `code_sha256` (the seam struct follows). Boot reload
+  `PersistedBooth.source` → `code_sha256` (the seam struct follows). Boot reload
   rehydrates bytes from the local blob by hash.
 - **prism PLAN**: `GET /code/{sha256}` static export entry (beside Phase 1.8); signed-URL
   + cache-key normalization recorded as the confidentiality option, not the default.

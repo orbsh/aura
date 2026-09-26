@@ -1,5 +1,5 @@
 //! The JSON ↔ DynamicValue seam (ADR-0018): serde_json::Value is the
-//! actor-API's currency; okm DynamicValue is the storage currency. The
+//! booth-API's currency; okm DynamicValue is the storage currency. The
 //! conversion happens EXACTLY here, once — no storage path may carry
 //! JSON, no API path may carry DynamicValue.
 //!

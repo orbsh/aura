@@ -3,7 +3,7 @@
 
 use super::{Realm, SharedRealm};
 use crate::mq;
-use aura_actor::InstanceId;
+use aura_booth::InstanceId;
 use crate::event;
 
 impl Realm {
@@ -45,16 +45,16 @@ impl Realm {
                     .unwrap_or("__default__")
                     .to_string()
             };
-            // Virtual-actor activation: emitting to an instance that has
+            // Virtual-booth activation: emitting to an instance that has
             // never run activates it first, so its @on subscriptions bind
             // before the event lands in the queue.
             let target = InstanceId {
-                actor_type: route.actor_type.clone(),
+                booth_type: route.booth_type.clone(),
                 key: partition.clone(),
             };
             {
                 let realm = self_arc.lock().await;
-                if !realm.instances.contains_key(&(route.actor_type.clone(), partition.clone())) {
+                if !realm.instances.contains_key(&(route.booth_type.clone(), partition.clone())) {
                     drop(realm);
                     let mut r = self_arc.lock().await;
                     r.instance(self_arc.clone(), &target).await?;
@@ -84,7 +84,7 @@ impl Realm {
             // Retention (step 2b follow-up): min-watermark over REGISTERED
             // subscribers — the route registry is the denominator (evicted
             // instances still count: their backlog replays; a type whose
-            // @on for this event is gone does not). Cursor rows whose actor
+            // @on for this event is gone does not). Cursor rows whose booth
             // name has no matching registered (type, key) instance fall
             // out; compaction deletes mq-data below the watermark. Runs on
             // the emit path (write-path compaction per the ruling); the
@@ -117,14 +117,14 @@ impl Realm {
         // is the durable subscription set, not the in-memory router
         // and not the raw cursor keys).
         let mut min_seq: Option<u64> = None;
-        for (actor_id, cursor) in &rows {
-            let Some(name) = mq::actor_name_of(store, *actor_id)? else {
+        for (booth_id, cursor) in &rows {
+            let Some(name) = mq::booth_name_of(store, *booth_id)? else {
                 continue;
             };
             let Some((type_name, _key)) = name.split_once('/') else {
                 continue;
             };
-            let registered = match mq::actor_id_of(store, type_name) {
+            let registered = match mq::booth_id_of(store, type_name) {
                 Ok(aid) => mq::routes_of_event(store, event)?
                     .iter()
                     .any(|(r_aid, _, _)| *r_aid == aid),

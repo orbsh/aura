@@ -1,18 +1,18 @@
 //! The `ctx.store.emit(op)` executor (ADR-0026 §3): one host-bridge entry
 //! carrying okm Collection operations as data. The executor resolves the
-//! actor type's registry-allocated ns (`meta::ns_of`), rebuilds the type's
+//! booth type's registry-allocated ns (`meta::ns_of`), rebuilds the type's
 //! declared collection from the schema persisted at upload, and executes
 //! the op through okm-dynamic `DynamicCollection` — the schema-driven
 //! arm of the two-mode storage model (okm ADR-0025). The op protocol
-//! types live in aura-actor (`store_emit.rs`); JSON is the wire currency,
+//! types live in aura-booth (`store_emit.rs`); JSON is the wire currency,
 //! converted to okm-dynamic `Value` at this seam.
 //!
-//! wasm (Rust source) actors do NOT pass through here: they compile the
+//! wasm (Rust source) booths do NOT pass through here: they compile the
 //! static mode (derive + okm-core `Collection`) into the module and talk
 //! engine calls over the host bridge — same bytes, compiled schema.
 
 use crate::mq::MqStore;
-use aura_actor::{StoreOp, StoreOpKind};
+use aura_booth::{StoreOp, StoreOpKind};
 use okm_dynamic::{AccessMethod, DynamicCollection, ReduceSpec, Value, ValueMap};
 use std::collections::BTreeMap;
 use std::sync::Mutex;

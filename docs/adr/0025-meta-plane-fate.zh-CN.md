@@ -6,25 +6,25 @@
 
 ## Context
 
-ADR-0018 的无 JSON 裁决把 meta 平面（actor 定义）迁到了独立的 okm 实例。随后的一个追问瓦解了这个前提：meta 平面凭什么作为**独立实例**存在？一股压力指向更远：
+ADR-0018 的无 JSON 裁决把 meta 平面（摊位定义）迁到了独立的 okm 实例。随后的一个追问瓦解了这个前提：meta 平面凭什么作为**独立实例**存在？一股压力指向更远：
 
-1. **actor 定义就是数据。** 一份定义（source、language、entry、TTL、schema）与 mq 行、state 文档没有结构差异——都是 actor 的数据。为一张表开一个专用实例，多一个目录、多一次引擎选择、多一份配置面（`meta_engine`/`meta_dir`），什么都没换来。
+1. **摊位定义就是数据。** 一份定义（source、language、entry、TTL、schema）与 mq 行、state 文档没有结构差异——都是摊位的数据。为一张表开一个专用实例，多一个目录、多一次引擎选择、多一份配置面（`meta_engine`/`meta_dir`），什么都没换来。
 
 初始设计对 aura 的定位是存算一体：一个 aura 实例自带本地存储，自治运行。联邦化（ADR-0013）是同一思路的延续——出现分布式要求时，由**外层**协调机制负责分片、路由、同步，aura 本身不感知这些。在这个定位下，独立的 meta 平面没有存在的理由。
 
 存算一体还有组件集成的动因。Aura+probe 定位为基础组件，会在很多其它场景中复用。如果存在独立的 meta，集成复杂度随之提升——尤其 meta 需要多向同步的场景：只同步 meta 没有用，全部同步太笨重也没有意义。自带存储同样是降低集成复杂度：数据总要有地方放，让集成方自己实现存储，一是麻烦，二是不受控——无论用 Redis 还是 PostgreSQL 都会在某些方面劣化，同时用两者（常见模式）则是架构层面的劣化，同一逻辑在多个项目里各自实现也很难保证一致性。
 
-存算一体不等于与外界隔离：aura 需要和外部数据交互的接口。调用方身份（user_id/device_id）随请求参数携带——请求级数据与实例级数据（分区键）分属两个层级，混挂会逻辑冲突（见 partitioning.md 的分区设计原则）。业务层面的批量数据操作（导入/导出）不走特殊通道，通过特殊的 Actor 实现，包装数据的导入导出——与投影 Actor 同构：都是一个普通的事件接收 Actor 承担一类数据职责，不需要额外基础设施。
+存算一体不等于与外界隔离：aura 需要和外部数据交互的接口。调用方身份（user_id/device_id）随请求参数携带——请求级数据与实例级数据（分区键）分属两个层级，混挂会逻辑冲突（见 partitioning.md 的分区设计原则）。业务层面的批量数据操作（导入/导出）不走特殊通道，通过特殊的摊位实现，包装数据的导入导出——与投影摊位同构：都是一个普通的事件接收摊位承担一类数据职责，不需要额外基础设施。
 
 meta 平面原设计为走 raft 同步的数据（如用户认证信息），服务于集中式分布式协调。但只同步认证信息是不够的，于是干脆不同步，由外层框架决定如何处理——权衡应用形式、因果关系等因素。这个解就是联邦模式，而非集中式的分布式协调。
 
 ## 方案 A（已实现，终态）：单一存储面，定义作为一张表
 
-**meta 实例删除。actor 定义成为数据面 okm 实例里的一张 `ActorDef` 表**（`realm/src/meta.rs`，ns 41，与 mq 表、state 文档并列）。
+**meta 实例删除。摊位定义成为数据面 okm 实例里的一张 `BoothDef` 表**（`realm/src/meta.rs`，ns 41，与 mq 表、state 文档并列）。
 
 - `Engine.meta_store` 没有了；`meta_engine`/`meta_dir` 配置面没有了；一个引擎、一个目录、一次引擎选择。
 - `register` 仍持久化定义、boot 仍重载（`load_all` → `engine.register`）——但走的是 mq 表所在的同一实例。4.5b 的**语义**（upload 是独立生命周期；只内省一次；执行路径 schema-free）不变，只有物理位置塌缩了。
-- 身份模型保持平面内 registry 模式（TypeName registry + MAX watermark reduce；id 永不复用）——与 ActorName、state 表的身份解析同构。一个模式，三处使用。
+- 身份模型保持平面内 registry 模式（TypeName registry + MAX watermark reduce；id 永不复用）——与 BoothName、state 表的身份解析同构。一个模式，三处使用。
 - `aura-storage` crate 已删除（aura 内不再有任何 JSON 存储）。
 - 内省 schema 继续按原文 JSON 文本携带——接口产物（LLM/脚本侧契约），不是存储编码。
 
@@ -44,6 +44,6 @@ meta 平面原设计为走 raft 同步的数据（如用户认证信息），服
 
 ## Consequences
 
-- 现在：aura 一个 okm 实例；`meta_engine`/`meta_dir` 从配置移除；`actor_defs` 与 mq/state 并列；全仓零 JSON 存储。
+- 现在：aura 一个 okm 实例；`meta_engine`/`meta_dir` 从配置移除；`booth_defs` 与 mq/state 并列；全仓零 JSON 存储。
 - 永久：一个 aura 实例拥有自己的本地存储并自治运行。分布式需求（分片、路由、同步）是外层联邦机制的职责；aura 保持不感知。
 - 先例成立：aura 拥有计算、投递和自己的存储；外层拥有跨自治实例的协调。

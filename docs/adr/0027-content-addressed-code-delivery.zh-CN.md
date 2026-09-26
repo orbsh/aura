@@ -17,7 +17,7 @@
   的唯一例外。AI 生成的函数体恰恰是会变大的那类载荷。
 - **每次调用都在重投不变的东西。** 驻留 session 只加载一次源码；逐调用重投只在冷启动
   （及逐出后）才必要——而这恰是内容寻址缓存的键所定义的范围。
-- **定义即字节。** `ActorDef` 目前把完整 `source` 字符串内联持久化；代码的「版本」隐含在
+- **定义即字节。** `BoothDef` 目前把完整 `source` 字符串内联持久化；代码的「版本」隐含在
   那个字符串里。哈希才是天然的版本令牌，而它目前根本未被存储。
 
 ## Decision
@@ -34,11 +34,11 @@
 
 ### 2. blob 是内容寻址、不可变的，归 meta 平面所有
 
-`CodeBlob` 住在 `realm/src/meta.rs`，紧挨它服务的定义（ns 42，TypeName 40 / ActorDef 41
+`CodeBlob` 住在 `realm/src/meta.rs`，紧挨它服务的定义（ns 42，TypeName 40 / BoothDef 41
 之后）。键 = 32 字节 sha256；值 = 字节本身。无名字、无版本、无外键——这行就是纯粹内容。
 `mq.rs` 是事件队列域，对它没有所有权；共用 `MqStore` 引擎句柄是管路事实，不是归属理由。
 
-`ActorDef.source: String` 改为 `code_sha256: [u8; 32]`（定宽，对键纪律友好）。upload
+`BoothDef.source: String` 改为 `code_sha256: [u8; 32]`（定宽，对键纪律友好）。upload
 生命周期（`register_inner`）对源码做哈希、写入 blob、把哈希持久化进定义——版本事实从
 「字符串就在这儿」变成「这个哈希处的字符串是它」。
 
@@ -78,7 +78,7 @@ URL 搭乘部署声明的前缀：`node {}` 配置块里的 `code_base_url`（KD
   需要的是端点，不是枚举臂。
 - **冷启动远程执行变成两次往返（fetch + call）。** 字节离开控制帧、进入数据路径；冷启动
   为它付账——缓存命中（同一份代码的后续调用）把开销完全吸收。
-- **定义不再自含字节。** 光一行 ActorDef 不足以复活一个 actor——blob 必须还在它的哈希下
+- **定义不再自含字节。** 光一行 BoothDef 不足以复活一个摊位——blob 必须还在它的哈希下
   存在。接受：两者同住本节点存储，而无引用 blob 的 GC（若真需要）是一次「扫定义表」的
   清理，不是引用计数。
 
@@ -86,9 +86,9 @@ URL 搭乘部署声明的前缀：`node {}` 配置块里的 `code_base_url`（KD
 
 - **probe-protocol**：`CodePayload` 删除；`ToolCall.code: CodeRef { url, sha256 }`。
 - **probe**：`fetch_link` 成为唯一路径（缓存按 sha256 键控；校验不变）；其余消费面无改动。
-- **aura**：`meta.rs` 增 `CodeBlob`（ns 42）与 `ActorDef.code_sha256`；`register_inner`
+- **aura**：`meta.rs` 增 `CodeBlob`（ns 42）与 `BoothDef.code_sha256`；`register_inner`
   写哈希 + blob；远程 dispatch 臂按存储的哈希构造 `CodeRef`；`EngineConfig`/KDL 增
-  `code_base_url`（无默认，投递处报错）；`PersistedActor.source` → `code_sha256`（接缝
+  `code_base_url`（无默认，投递处报错）；`PersistedBooth.source` → `code_sha256`（接缝
   结构体随之）。boot reload 按哈希从本地 blob 重新注水字节。
 - **prism PLAN**：`GET /code/{sha256}` 静态导出条目（Phase 1.8 旁）；signed URL +
   cache-key 归一化记为机密性选项，不是默认。

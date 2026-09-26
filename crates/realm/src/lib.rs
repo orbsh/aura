@@ -1,4 +1,4 @@
-//! Realm: the event/call fabric. Phase 1 — virtual-actor registry, runtime
+//! Realm: the event/call fabric. Phase 1 — virtual-booth registry, runtime
 //! loop driving queuees, idle-TTL eviction (scale-to-zero: on_sleep →
 //! drop, on_wake on reactivation). Event routing (emit/on) arrives in
 //! Phase 3; the unified CallSlot model in Phase 3.5.
@@ -17,8 +17,8 @@ pub mod events;
 pub mod remote;
 pub mod ctx;
 
-use aura_actor::call::{CallId, CallSpec, PendingEntry, Waited};
-use aura_actor::{ActorType, Instance, InstanceId};
+use aura_booth::call::{CallId, CallSpec, PendingEntry, Waited};
+use aura_booth::{BoothType, Instance, InstanceId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,8 +27,8 @@ use std::time::Duration;
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 
 pub struct Realm {
-    /// Registered actor types by name.
-    types: HashMap<String, ActorType>,
+    /// Registered booth types by name.
+    types: HashMap<String, BoothType>,
     /// Live instances by (type, key).
     instances: HashMap<(String, String), Instance>,
     /// Queue capacity per instance.
@@ -54,14 +54,14 @@ pub struct Realm {
     /// Code reference prefix for remote delivery (ADR-0027): a remote
     /// call carries `CodeRef { url: base + hex(sha256), sha256 }`.
     /// None = remote types are undeliverable in this realm (the dispatch
-    /// arm answers with an error value; in-process actors never read it).
+    /// arm answers with an error value; in-process booths never read it).
     pub code_base_url: Option<String>,
     /// In-flight remote calls awaiting the probe's Result frame. The
     /// instance id scopes the ctx-bridge host calls the probe makes while
     /// executing this call (state fields are the instance's own).
     pub pending_remote:
         HashMap<String, RemotePending>,
-    /// Static call declarations per actor type (Phase 3.5). Defaults to
+    /// Static call declarations per booth type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
     /// Registered calls awaiting results (Phase 3.5). Hot in-flight calls
@@ -69,12 +69,12 @@ pub struct Realm {
     /// session for re-entry routing.
     pending_calls: HashMap<CallId, PendingEntry>,
     call_seq: u64,
-    /// Storage plans per actor type (ADR-0026): ns + parsed collections,
+    /// Storage plans per booth type (ADR-0026): ns + parsed collections,
     /// resolved once from the type registry + the persisted interface_schema
     /// (4.5b upload copy). The ctx store executor rebuilds the
     /// DynamicCollection from here per op — schema data, no host objects.
     store_plans: HashMap<String, store_exec::StorePlan>,
-    /// Persisted interface_schema copies per actor type (the uploaded
+    /// Persisted interface_schema copies per booth type (the uploaded
     /// version, engine.register seeds from the introspected schema —
     /// `ctx.interface_schema` reads THIS, never a re-introspection).
     persisted_schemas: HashMap<String, Option<serde_json::Value>>,
@@ -116,8 +116,8 @@ impl Default for Realm {
 /// unit suffix ("300s" / "5m" / "2h"). Introspection failure or missing
 /// declaration = `None`, never a registration error — declaration is
 /// optional metadata.
-pub async fn introspect_schema(actor: &aura_actor::ActorType) -> Option<serde_json::Value> {
-    let aura_actor::Body::Script { language, source } = &actor.body else {
+pub async fn introspect_schema(booth: &aura_booth::BoothType) -> Option<serde_json::Value> {
+    let aura_booth::Body::Script { language, source } = &booth.body else {
         return None; // Rust types declare TTL via the builder
     };
     let raw = tokio::task::spawn_blocking({
@@ -135,8 +135,8 @@ pub async fn introspect_schema(actor: &aura_actor::ActorType) -> Option<serde_js
 }
 
 /// Extract `lifecycle.idle_ttl` from a script type's introspected schema.
-pub async fn introspect_idle_ttl(actor: &aura_actor::ActorType) -> Option<Duration> {
-    let result = introspect_schema(actor).await?;
+pub async fn introspect_idle_ttl(booth: &aura_booth::BoothType) -> Option<Duration> {
+    let result = introspect_schema(booth).await?;
     let ttl = result.get("lifecycle")?.get("idle_ttl")?;
     match ttl {
         serde_json::Value::Number(n) => n.as_u64().map(Duration::from_secs),

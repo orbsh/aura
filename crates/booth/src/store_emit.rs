@@ -1,5 +1,5 @@
 //! The `ctx.store.emit(op)` protocol (ADR-0026 §3): one host-bridge entry
-//! carrying okm Collection operations as data. aura-actor declares the
+//! carrying okm Collection operations as data. aura-booth declares the
 //! protocol; the realm side translates each op onto okm's dynamic-document
 //! Collection API. The op set stays at the COLLECTION semantic layer —
 //! raw VirtualStorage primitives are not exposed (a raw put would skip

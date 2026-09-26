@@ -1,8 +1,8 @@
 //! Gateway: resolve the probe's host-function calls against the realm.
 //! appends to probes.rs — the reader loop gains a Frame::Host(Call) arm.
 
-use aura_actor::InstanceId;
-use aura_actor::call::CallSlot;
+use aura_booth::InstanceId;
+use aura_booth::call::CallSlot;
 use aura_realm::SharedRealm;
 
 /// Execute one host op against the realm, scoped to the instance the
@@ -17,14 +17,14 @@ pub async fn resolve_host_call(
     match op {
         HostOp::Invoke { target_type, target_key, handler, args } => {
             let target = InstanceId {
-                actor_type: target_type.clone(),
+                booth_type: target_type.clone(),
                 key: target_key.clone(),
             };
             // Unified call model: wait hot (script ctx_invoke semantics —
             // the probe blocks until the reply, same as in-process).
             let slot = aura_realm::Realm::call(
                 realm,
-                Some(&format!("probe/{}", instance.actor_type)),
+                Some(&format!("probe/{}", instance.booth_type)),
                 target,
                 handler,
                 args.clone(),

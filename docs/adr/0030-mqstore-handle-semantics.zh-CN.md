@@ -100,5 +100,5 @@ engine. Cheap; shares all state."。契约的两处表述互相矛盾：句柄�
   Cargo.toml 的临时 `[patch]` 节）。
 - mq.rs 自己的辅助函数中的 `&mut` 形状管线（`resolve_event_id(store: &mut
   MqStore, …)` 及同族）机械收窄为 `&MqStore`；lib.rs 的
-  `routes_drop_actor(&mut self.mq.clone(), …)` 类调用点随之简化。那是本 ADR
+  `routes_drop_booth(&mut self.mq.clone(), …)` 类调用点随之简化。那是本 ADR
   的机械跟进，不是独立设计决策。

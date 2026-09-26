@@ -1,5 +1,5 @@
 //! The meta plane as okm documents (ADR-0018 follow-through: NO
-//! exceptions — actor definitions are documents over a SEPARATE okm
+//! exceptions — booth definitions are documents over a SEPARATE okm
 //! instance, exactly like the data plane; serialized JSON is never a
 //! storage representation).
 //!
@@ -15,11 +15,11 @@
 //! dictionary): the interface-artifact attribute (the LLM/script-side
 //! contract consumed by introspection surfaces) is unchanged, but the
 //! storage shape is a first-class dynamic document — no JSON-text detour,
-//! no opaque blob. The `PersistedActor` struct (aura-actor) is the seam
+//! no opaque blob. The `PersistedBooth` struct (aura-booth) is the seam
 //! type; JSON exists only at that seam (script/LLM currency).
 
 use crate::mq::MqStore;
-use aura_actor::PersistedActor;
+use aura_booth::PersistedBooth;
 use okm_core::document::Collection;
 use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
 
@@ -45,7 +45,7 @@ pub struct TypeName {
     /// groups land in the derive).
     pub id: u32,
     /// The type's own storage ns (ADR-0026): allocated at first
-    /// registration from the actor base block, never reused.
+    /// registration from the booth base block, never reused.
     pub ns: u32,
     /// Single-group discriminator (always 0): the derive rejects empty
     /// group lists, so the registry-wide watermark declares a constant
@@ -55,10 +55,10 @@ pub struct TypeName {
 
 use __OkmIndex_TypeName_by_name as TypeNameByName;
 
-/// The first ns a registered actor type receives (ADR-0026 §1): the low
-/// block is aura's own (mq 30–35, meta/state 40–41); actor types allocate
+/// The first ns a registered booth type receives (ADR-0026 §1): the low
+/// block is aura's own (mq 30–35, meta/state 40–41); booth types allocate
 /// from a fixed base above it, and ids are never reused within the node.
-pub const ACTOR_NS_BASE: u32 = 100;
+pub const BOOTH_NS_BASE: u32 = 100;
 
 fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let mut t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
@@ -86,7 +86,7 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
         &TypeName {
             name: name.to_string(),
             id,
-            ns: ACTOR_NS_BASE + id,
+            ns: BOOTH_NS_BASE + id,
             global: 0,
         },
     );
@@ -94,15 +94,15 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// The definition document: one per actor type.
+// The definition document: one per booth type.
 // ---------------------------------------------------------------------------
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct ActorDefKey {
+pub struct BoothDefKey {
     pub type_id: u32,
 }
 
-/// One document per actor type. `Option` maps to a sentinel encoding:
+/// One document per booth type. `Option` maps to a sentinel encoding:
 /// `idle_ttl_secs` 0 = realm default (a zero TTL is meaningless — it
 /// would evict on arrival).
 ///
@@ -112,9 +112,9 @@ pub struct ActorDefKey {
 /// artifact attribute (the LLM/script-side contract) is unchanged; only
 /// the storage shape stopped being an opaque text blob.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(ActorDefKey)]
+#[ok_ref(BoothDefKey)]
 #[ok_ns(41)]
-pub struct ActorDef {
+pub struct BoothDef {
     /// The raw type name (observability; the id is the addressing).
     pub name: String,
     pub language: String,
@@ -129,7 +129,7 @@ pub struct ActorDef {
 // ---------------------------------------------------------------------------
 // CodeBlob (ADR-0027): content-addressed code bytes, meta plane ns 42.
 // Pure content rows: key = the sha256, value = the bytes. No name, no
-// version, no foreign key — every relational fact lives in ActorDef, the
+// version, no foreign key — every relational fact lives in BoothDef, the
 // single source of reference. Immutable by construction: a "different
 // content at the same key" is a hash collision, not a state.
 // ---------------------------------------------------------------------------
@@ -189,8 +189,8 @@ pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> Option<Vec<u8>> {
 /// this table's declared set is fixed above).
 const SCHEMA_FIELD: &str = "schema";
 
-impl ActorDef {
-    fn of(def: &PersistedActor) -> (Self, Option<okm_core::obj_dynamic::DynamicValue>) {
+impl BoothDef {
+    fn of(def: &PersistedBooth) -> (Self, Option<okm_core::obj_dynamic::DynamicValue>) {
         (
             Self {
                 name: def.name.clone(),
@@ -208,9 +208,9 @@ impl ActorDef {
     fn into_persisted(
         self,
         schema: Option<okm_core::obj_dynamic::DynamicValue>,
-    ) -> (PersistedActor, [u8; 32]) {
+    ) -> (PersistedBooth, [u8; 32]) {
         (
-            PersistedActor {
+            PersistedBooth {
                 name: self.name,
                 language: self.language,
                 source: String::new(), // filled by the blob hydrate below
@@ -237,20 +237,20 @@ pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
             }
         }
     }
-    anyhow::bail!("no storage ns for unregistered actor type `{name}`")
+    anyhow::bail!("no storage ns for unregistered booth type `{name}`")
 }
 
 /// Persist one definition (latest version wins per type name; the id is
 /// stable across versions — the registry resolve).
-pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
-    let type_id = resolve_type_id(meta, &actor.name)?;
-    let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
-    let (row, schema) = ActorDef::of(actor);
+pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
+    let type_id = resolve_type_id(meta, &booth.name)?;
+    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let (row, schema) = BoothDef::of(booth);
     // The bytes must exist before the pointer to them is published: a
-    // definition whose blob is missing is an unloadable actor (boot
+    // definition whose blob is missing is an unloadable booth (boot
     // reload errors instead of resurrecting a hash with no content).
-    put_blob(meta, row.code_sha256, actor.source.as_bytes())?;
-    t.put(&ActorDefKey { type_id }, &row);
+    put_blob(meta, row.code_sha256, booth.source.as_bytes())?;
+    t.put(&BoothDefKey { type_id }, &row);
     // Schema rides the dynamic segment (structured nTLV, no JSON text);
     // absent schema = the field is absent (sentinel by absence).
     let dynamic = schema
@@ -260,20 +260,20 @@ pub fn persist(meta: &MqStore, actor: &PersistedActor) -> anyhow::Result<()> {
             m
         })
         .unwrap_or_default();
-    t.put_fields(&ActorDefKey { type_id }, &dynamic);
+    t.put_fields(&BoothDefKey { type_id }, &dynamic);
     Ok(())
 }
 
-/// The type's ns + persisted storage schema in one resolve: the actor
+/// The type's ns + persisted storage schema in one resolve: the booth
 /// ctx bridge's store-executor assembly input (ns from the type registry,
-/// schema from the ActorDef's dynamic segment — the uploaded copy).
+/// schema from the BoothDef's dynamic segment — the uploaded copy).
 /// `schema: None` = the type declared no storage (no ctx.store surface).
 pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
     let ns = ns_of(meta, name)?;
     let type_id = resolve_type_id(meta, name)?;
-    let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
+    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
-        .get_fields(&ActorDefKey { type_id })
+        .get_fields(&BoothDefKey { type_id })
         .and_then(|f| f.get(SCHEMA_FIELD).cloned())
         .map(|v| crate::value::dyn_to_json(&v));
     Ok((ns, schema))
@@ -283,8 +283,8 @@ pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Opti
 /// the export surface (slot-0 primary entries only); each payload
 /// materializes through the row's own typed decoder — the same codec
 /// put wrote, no second one.
-pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
-    let mut t = Collection::<MqStore, ActorDefKey, ActorDef>::new(meta.clone());
+pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
+    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let mut out = Vec::new();
     for (suffix, payload) in t.scan_documents_raw() {
         // suffix = [type_id 4B]: the primary key of the row (u32 BE).
@@ -294,11 +294,11 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let type_id = u32::from_be_bytes(b);
-        let key = ActorDefKey { type_id };
+        let key = BoothDefKey { type_id };
         let schema = t
             .get_fields(&key)
             .and_then(|f| f.get(SCHEMA_FIELD).cloned());
-        let row = ActorDef::decode_payload(&payload);
+        let row = BoothDef::decode_payload(&payload);
         let (mut def, sha) = row.into_persisted(schema);
         // Hydrate the source through the row's own content address —
         // definitions outlive the process, and so does their blob (same
@@ -307,11 +307,11 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedActor>> {
             Some(bytes) => {
                 def.source = String::from_utf8(bytes)
                     .map_err(|_| anyhow::anyhow!(
-                        "actor `{}`: code blob is not valid UTF-8", def.name
+                        "booth `{}`: code blob is not valid UTF-8", def.name
                     ))?;
             }
             None => anyhow::bail!(
-                "actor `{}`: no code blob under sha256 {} (definition without content)",
+                "booth `{}`: no code blob under sha256 {} (definition without content)",
                 def.name, code_hex(&sha)
             ),
         }
@@ -327,7 +327,7 @@ mod ns_schema_tests {
     #[test]
     fn ns_and_schema_resolves_after_persist() {
         let meta = MqStore::mem();
-        let def = PersistedActor {
+        let def = PersistedBooth {
             name: "sc".into(),
             language: "steel".into(),
             source: "x".into(),
@@ -357,7 +357,7 @@ mod ns_schema_tests {
             serde_json::json!({"a": [1, 2, 3]}),
             serde_json::json!({"a": {"b": 0}}),
         ] {
-            let def = PersistedActor { name: "p".into(), language: "steel".into(), source: "x".into(), idle_ttl_secs: None, schema: Some(probe.clone()) };
+            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), idle_ttl_secs: None, schema: Some(probe.clone()) };
             let m2 = MqStore::mem();
             persist(&m2, &def).unwrap();
             let all = load_all(&m2).unwrap();
@@ -375,7 +375,7 @@ mod ns_schema_tests {
                 "slots": {"primary":0,"dynamic":1,"dict_id":2,"dict_name":3,"declared_index_base":4096,"declared_reduce_base":8192,"junction_base":12288}
             }}}}
         });
-        let def = PersistedActor {
+        let def = PersistedBooth {
             name: "big".into(),
             language: "steel".into(),
             source: "(define (execute a) a)".into(),
@@ -392,8 +392,8 @@ mod ns_schema_tests {
 mod tests {
     use super::*;
 
-    fn sample(name: &str) -> PersistedActor {
-        PersistedActor {
+    fn sample(name: &str) -> PersistedBooth {
+        PersistedBooth {
             name: name.into(),
             language: "steel".into(),
             source: "(define (execute args) args)".into(),
@@ -440,8 +440,8 @@ mod tests {
         persist(&meta, &sample("stats")).unwrap();
         let ns_cart = ns_of(&meta, "cart").unwrap();
         let ns_stats = ns_of(&meta, "stats").unwrap();
-        // Each type owns one real ns from the actor base block.
-        assert!(ns_cart >= ACTOR_NS_BASE && ns_stats >= ACTOR_NS_BASE);
+        // Each type owns one real ns from the booth base block.
+        assert!(ns_cart >= BOOTH_NS_BASE && ns_stats >= BOOTH_NS_BASE);
         assert_ne!(ns_cart, ns_stats, "two types never share a ns");
         // Re-resolve (re-registration path) is stable — no reallocation.
         assert_eq!(ns_cart, ns_of(&meta, "cart").unwrap());

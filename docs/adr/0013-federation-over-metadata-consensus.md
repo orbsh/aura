@@ -4,8 +4,8 @@
 
 ## Context
 
-The pre-federation architecture synced metadata (Actor registry, shard map,
-config) across nodes via Openraft consensus while Actor state stayed
+The pre-federation architecture synced metadata (Booth registry, shard map,
+config) across nodes via Openraft consensus while Booth state stayed
 node-local (Fjall) or lake-backed (SlateDB+S3). The premise was that
 metadata-first routing is enough for multi-node: a user arriving at any node
 gets routed to wherever their state lives.
@@ -32,7 +32,7 @@ partition.
 **Nodes are autonomous federation members (Matrix-style), not peers in a
 consensus cluster. No consensus layer, no metadata sync.**
 
-- **Metadata is per-node**: the meta okm instance (Actor registry, shard
+- **Metadata is per-node**: the meta okm instance (Booth registry, shard
   map, config) is written by the node's control plane (single logical
   writer) and read from node-local cache. A single logical writer makes
   consensus structurally unnecessary — there is nothing to agree on.
@@ -47,7 +47,7 @@ consensus cluster. No consensus layer, no metadata sync.**
   its node domain is a feature (Matrix's `@user:domain`), not a defect.
   Cross-domain interaction is explicit addressing; only intra-domain
   emit/on is transparent.
-- If a scenario ever genuinely requires Actor-state strong-consistent
+- If a scenario ever genuinely requires Booth-state strong-consistent
   replication (the TiDB model), it uses an existing mechanism (TiKV /
   FoundationDB) — building a consensus layer into this architecture is
   permanently off the table.
@@ -65,7 +65,7 @@ consensus cluster. No consensus layer, no metadata sync.**
   messages, identity, namespace isolation) rather than an infrastructure
   illusion — this is where future design effort goes.
 - Placement planning (consistent hashing across nodes) dissolves: there
-  is no global Actor space to place into, only domains.
+  is no global Booth space to place into, only domains.
 
 > Errata (2026-09-25, PLAN 4.10): the "isolated per user namespace"
 > phrasing above predates the namespace-binding demotion — the namespace

@@ -23,7 +23,7 @@ A declared `@on("order_created")` and an `emit("order.created")` mismatch is
 caught only if **all** of these hold: both scripts registered, both use string
 literals, and the check runs after the pair exists. None is guaranteed:
 
-- The emitter registers first; the subscribing actor uploads three weeks
+- The emitter registers first; the subscribing booth uploads three weeks
   later. The emitter's validation passed at registration against a receiver
   set that has since changed — the check is only a snapshot, not a fact.
 - `emit(event_type, data)` with a computed name (common in AI-generated
@@ -37,18 +37,18 @@ reports real ones.
 
 ### 2. Warm-up and placement — worse than nothing when wrong
 
-Pre-activating subscribers or co-locating emitter-dense actors on one node
+Pre-activating subscribers or co-locating emitter-dense booths on one node
 assumes the static graph is the true graph. But static collection cannot
 guarantee that (see above: literals only, snapshot only). Acting on an
 incorrect graph wastes the exact resources the optimization was meant to
-save — activating instances that will never receive, placing actors by a
+save — activating instances that will never receive, placing booths by a
 topology the real traffic does not follow. Meanwhile the runtime delivery
 log already produces an accurate emitter→receiver record as a byproduct of
 doing the delivery it is accountable for.
 
 ### 3. A second copy of the same fact — the drift argument
 
-`emit()` call sites are the single source of truth for what an actor emits.
+`emit()` call sites are the single source of truth for what an booth emits.
 Collecting them into metadata duplicates that fact into a second location
 that must be kept aligned: every edit to an emit call becomes a potential
 silent divergence between the code and the declared graph. This is the same
@@ -93,5 +93,5 @@ dropped accordingly; the emits whitelist check in the current emit path
 - Misnamed events surface as dead-ring entries, not registration errors —
   monitoring must treat dead-ring growth as a signal (it already exists as
   a bounded, observable structure).
-- The meta-store record for an actor type carries `receives` /
+- The meta-store record for an booth type carries `receives` /
   `wildcard_receives` / lifecycle only.

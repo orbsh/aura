@@ -8,7 +8,7 @@
 //!     realm "default"
 //! }
 //!
-//! // data plane: actor state
+//! // data plane: booth state
 //! data {
 //!     engine "fjall"
 //!     path "/var/lib/aura/data"
@@ -41,7 +41,7 @@ pub struct NodeConfig {
     pub realm: String,
     /// Prefix remote code references are assembled under (ADR-0027):
     /// prism's `/code/` export or a CDN base. Absent = this node never
-    /// serves remote actors (remote delivery errors as a value; there is
+    /// serves remote booths (remote delivery errors as a value; there is
     /// deliberately no default — pointing code at nobody is a guess).
     #[knus(child, unwrap(argument))]
     pub code_base_url: Option<String>,

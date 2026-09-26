@@ -1,36 +1,36 @@
-//! Registry plane: actor types, storage plans, persisted schemas.
+//! Registry plane: booth types, storage plans, persisted schemas.
 //! Split out of lib.rs per ADR-0029.
 
 use super::Realm;
 use crate::{mq, store_exec};
-use aura_actor::ActorType;
-use aura_actor::call::CallSpec;
+use aura_booth::BoothType;
+use aura_booth::call::CallSpec;
 use std::time::Duration;
 
 impl Realm {
-    pub fn register_type(&mut self, actor: ActorType) {
+    pub fn register_type(&mut self, booth: BoothType) {
         self.call_specs
-            .entry(actor.name.clone())
+            .entry(booth.name.clone())
             .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
         // Storage plan resolve (ADR-0026): ns from the type registry, the
         // declared collections from the persisted interface_schema copy.
         // Failure = no plan = no ctx.store surface (surface absence is
         // the correct form for "declared no storage" — never a panic).
-        let (ns, schema) = match crate::meta::ns_and_schema_of(&self.mq, &actor.name) {
+        let (ns, schema) = match crate::meta::ns_and_schema_of(&self.mq, &booth.name) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("storage plan resolve failed for `{}`: {e}", actor.name);
+                eprintln!("storage plan resolve failed for `{}`: {e}", booth.name);
                 (0, None)
             }
         };
-        self.persisted_schemas.insert(actor.name.clone(), schema.clone());
-        self.store_plans.remove(&actor.name);
+        self.persisted_schemas.insert(booth.name.clone(), schema.clone());
+        self.store_plans.remove(&booth.name);
         if let Some(schema) = schema {
             match store_exec::StorePlan::from_schema(ns as u16, &schema) {
                 Ok(plan) => {
-                    self.store_plans.insert(actor.name.clone(), plan);
+                    self.store_plans.insert(booth.name.clone(), plan);
                 }
-                Err(e) => eprintln!("storage plan parse failed for `{}`: {e}", actor.name),
+                Err(e) => eprintln!("storage plan parse failed for `{}`: {e}", booth.name),
             }
         }
         // One declaration surface per type: routes assemble from the
@@ -44,9 +44,9 @@ impl Realm {
         // reload) and the PERSISTED EventRoute table (mq): subscription
         // facts survive restart and are readable by ops without
         // introspecting scripts.
-        self.router.drop_actor(&actor.name);
-        if let Err(e) = mq::routes_drop_actor(&self.mq, &actor.name) {
-            eprintln!("route drop failed for {}: {e}", actor.name);
+        self.router.drop_booth(&booth.name);
+        if let Err(e) = mq::routes_drop_booth(&self.mq, &booth.name) {
+            eprintln!("route drop failed for {}: {e}", booth.name);
         }
         // Hot replacement reaches execution too: resident sessions hold
         // the PREVIOUS source, so instances of this type are reclaimed —
@@ -57,24 +57,24 @@ impl Realm {
         let stale: Vec<_> = self
             .instances
             .keys()
-            .filter(|(t, _)| t == &actor.name)
+            .filter(|(t, _)| t == &booth.name)
             .cloned()
             .collect();
         for (t, k) in stale {
             self.instances.remove(&(t.clone(), k.clone()));
             self.sessions.evict(&format!("{t}/{k}"));
         }
-        for decl in &actor.receives {
+        for decl in &booth.receives {
             if decl.wildcard {
-                self.router.on_wildcard(&decl.event, &actor.name);
+                self.router.on_wildcard(&decl.event, &booth.name);
             } else {
-                self.router.on(decl.event.clone(), &actor.name, &decl.key_field);
+                self.router.on(decl.event.clone(), &booth.name, &decl.key_field);
             }
-            if let Err(e) = mq::route_put(&self.mq, &decl.event, &actor.name, &decl.key_field, decl.wildcard) {
-                eprintln!("route persist failed for {}/{}: {e}", decl.event, actor.name);
+            if let Err(e) = mq::route_put(&self.mq, &decl.event, &booth.name, &decl.key_field, decl.wildcard) {
+                eprintln!("route persist failed for {}/{}: {e}", decl.event, booth.name);
             }
         }
-        self.types.insert(actor.name.clone(), actor);
+        self.types.insert(booth.name.clone(), booth);
     }
 
     pub fn plan_of(&self, type_name: &str) -> Option<&store_exec::StorePlan> {
@@ -85,7 +85,7 @@ impl Realm {
         self.persisted_schemas.get(type_name)
     }
 
-    pub fn actor_type(&self, name: &str) -> Option<&ActorType> {
+    pub fn booth_type(&self, name: &str) -> Option<&BoothType> {
         self.types.get(name)
     }
 }

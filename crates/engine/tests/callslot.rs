@@ -19,6 +19,10 @@ fn echo() -> BoothType {
     BoothType::script("echo", "steel", ECHO)
 }
 
+// slow_echo IS the slow handler the deadline tests need (PTY spawn
+// latency) — without the nushell feature activation fails fast with a
+// carrier error and the timeout assertion compares the wrong value.
+#[cfg(feature = "nushell")]
 fn slow_echo() -> BoothType {
     const SLOW: &str = r#"
 export def execute [args] {
@@ -32,7 +36,7 @@ export def execute [args] {
 #[tokio::test]
 async fn hot_call_parks_and_returns() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    engine.register(echo()).await;
+    engine.register(echo()).await.unwrap();
     let waited = engine
         .call(
             InstanceId { booth_type: "echo".into(), key: "a".into() },
@@ -47,12 +51,13 @@ async fn hot_call_parks_and_returns() {
     }
 }
 
+#[cfg(feature = "nushell")]
 #[tokio::test]
 async fn hot_timeout_is_failure_value() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     let mut slow = slow_echo();
     slow.on_wake = None;
-    engine.register(slow).await;
+    engine.register(slow).await.unwrap();
     // 50ms deadline vs 500ms handler: the caller gets a failure value at
     // ~50ms, not the result at 500ms.
     engine
@@ -84,7 +89,7 @@ async fn cold_call_returns_pending_without_parking() {
         ECHO,
     );
     approval.on_wake = None;
-    engine.register(approval).await;
+    engine.register(approval).await.unwrap();
     engine
         .realm
         .try_lock()
@@ -128,12 +133,13 @@ async fn resolve_unknown_call_is_noop() {
         .await);
 }
 
+#[cfg(feature = "nushell")]
 #[tokio::test]
 async fn deadline_scan_fails_expired_hot_calls() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     let mut slow = slow_echo();
     slow.on_wake = None;
-    engine.register(slow).await;
+    engine.register(slow).await.unwrap();
     engine
         .realm
         .try_lock()

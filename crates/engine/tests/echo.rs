@@ -30,7 +30,7 @@ fn echo_type() -> BoothType {
 #[tokio::test]
 async fn invoke_returns_handler_result() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
 
     let out = engine
         .invoke(
@@ -46,7 +46,7 @@ async fn invoke_returns_handler_result() {
 #[tokio::test]
 async fn ctx_invoke_routes_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
 
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
     // booth sees; target resolution is registry-declared.
@@ -83,7 +83,7 @@ async fn unknown_booth_type_is_error_value() {
 #[tokio::test]
 async fn instance_key_activates_distinct_instances() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
 
     for key in ["a1", "a2"] {
         let out = engine
@@ -209,7 +209,7 @@ async fn script_unknown_language_is_error_value() {
             "koto",
             "1 + 2",
         ))
-        .await;
+        .await.unwrap();
 
     let err = engine
         .invoke(
@@ -229,7 +229,7 @@ async fn idle_ttl_evicts_automatically() {
     // via the realm to keep the test fast — the tick loop itself is
     // exercised by the running engine.
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
 
     let target = InstanceId { booth_type: "echo".into(), key: "ttl".into() };
     engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
@@ -254,8 +254,8 @@ async fn per_type_idle_ttl_overrides_realm_default() {
     // shape). "echo": no override — realm default applies.
     let dweller = BoothType::script("dweller", "steel", ECHO)
         .with_idle_ttl(Duration::from_secs(600));
-    engine.register(dweller).await;
-    engine.register(echo_type()).await;
+    engine.register(dweller).await.unwrap();
+    engine.register(echo_type()).await.unwrap();
 
     engine
         .invoke(
@@ -304,7 +304,7 @@ async fn steel_script_ctx_bridge() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
 
     // Target invoked from the script: echoes back its args.
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
     engine
         .register(aura_booth::BoothType::script(
             "steel-ctx",
@@ -349,7 +349,7 @@ async fn steel_script_ctx_bridge() {
 #[tokio::test]
 async fn python_script_ctx_bridge() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(echo_type()).await;
+    engine.register(echo_type()).await.unwrap();
     engine
         .register(aura_booth::BoothType::script(
             "py-ctx",

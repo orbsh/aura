@@ -52,7 +52,7 @@ async fn idle_is_measured_from_completion() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     // TTL (500ms) shorter than this job's own execution (2s): the
     // pre-revision evictor would have expired the instance mid-job.
-    engine.register(sleeper("slow", Duration::from_millis(500), None, 2)).await;
+    engine.register(sleeper("slow", Duration::from_millis(500), None, 2)).await.unwrap();
 
     let target = id("slow");
     engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
@@ -70,7 +70,7 @@ async fn idle_is_measured_from_completion() {
 #[tokio::test]
 async fn watchdog_evicts_on_budget_exceeded() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(sleeper("hog", Duration::from_secs(60), Some(Duration::from_millis(300)), 2)).await;
+    engine.register(sleeper("hog", Duration::from_secs(60), Some(Duration::from_millis(300)), 2)).await.unwrap();
 
     let target = id("hog");
     let _ = engine.invoke(target.clone(), "execute", serde_json::json!(null)).await;
@@ -86,7 +86,7 @@ async fn watchdog_evicts_on_budget_exceeded() {
 #[tokio::test]
 async fn completion_rearm_survives_first_ttl_half() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(booth("echo", Duration::from_millis(400), None)).await;
+    engine.register(booth("echo", Duration::from_millis(400), None)).await.unwrap();
 
     let target = id("echo");
     engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();

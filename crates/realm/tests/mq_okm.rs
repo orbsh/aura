@@ -5,7 +5,7 @@ fn mq_roundtrip() {
     // ADR-0018 step 1: the mq tables bind to a BYTE engine (bytes in,
     // bytes out) — no JSON state store, no base64 bridge. The in-memory
     // byte stand-in keeps the test honest without an engine feature.
-    let mut vs = mq::MqStore::mem();
+    let vs = mq::MqStore::mem();
     let seq1 = mq::append(&vs, "add_to_cart", "alice", &serde_json::json!({"item": "book"})).unwrap();
     let seq2 = mq::append(&vs, "add_to_cart", "alice", &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}})).unwrap();
     // The sort key is LOGICAL time (ms via MqHead): monotonic, never
@@ -33,7 +33,7 @@ fn mq_roundtrip() {
 
 #[test]
 fn event_route_registry_persists_and_scans_by_booth() {
-    let mut vs = mq::MqStore::mem();
+    let vs = mq::MqStore::mem();
 
     // Register two subscribers on one event, one on another; one wildcard.
     mq::route_put(&vs, "order_created", "cart", "user_id", false).unwrap();
@@ -66,7 +66,7 @@ fn routes_drop_booth_targets_only_its_own_rows() {
     // invisible when the ids coincide (as in the test above). Register
     // several events for one booth AND the same events for others, so the
     // booth's id collides with a DIFFERENT event's id in another row.
-    let mut vs = mq::MqStore::mem();
+    let vs = mq::MqStore::mem();
     // event ids allocate in first-seen order: e1=1, e2=2, e3=3.
     // booth ids: a=1, b=2, c=3.
     mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, booth 1)

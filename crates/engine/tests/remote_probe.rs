@@ -50,7 +50,7 @@ async fn remote_probe_roundtrip() {
         on_wake: None,
         receives: vec![],
     })
-    .await;
+    .await.unwrap();
 
     // Local target for ctx_invoke from the probe script.
     engine.register(
@@ -60,7 +60,7 @@ async fn remote_probe_roundtrip() {
             r#"(define (execute args) args)"#,
         )
     )
-    .await;
+    .await.unwrap();
 
     // Probe side: dial in (runs until the test ends).
     let config = probe_config_shim(port);

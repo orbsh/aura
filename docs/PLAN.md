@@ -216,6 +216,24 @@ Deferred gates:
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
 
+## 会话记录（2026-09-26，booth 改名 + 消费者饥饿修复）
+
+- ADR-0032：参与者 actor → booth（中文 摊位）全链路改名落地（aura 代码/文档 +
+  probe/prism/gravity/okm/wiki 同批对齐；策略 A 无兼容别名——meta 持久行清空重注册）。
+- **真 bug 修复**：instance.rs 消费者任务旧形如 `for subs { loop }`——多队列实例
+  只排第一条队列，其余饥饿（clippy::never_loop 是表象，非误报）。重写为单循环扫
+  全部队列；回归锁 `multi_route_instance_drains_every_queue`（旧码 RED：count 1，
+  新码 GREEN：count 2，实测验证）。修复顺带暴露并从根上堵住旧形态的 Arc 泄漏
+  （无订阅实例的 poll loop 永不退出、持 store 引用 → fjall "Locked"）：消费者对
+  空 subs 直接 return。
+- 存量测试卫生：engine/realm 测试 22× unused-Result（register().await; →
+  .unwrap()）、4× redundant mut、1× redundant pattern 清零，工作树 clippy 警告
+  回到 HEAD 基线（仅余 okm derive 宏展开处的 3 个存量命名/ptr_arg 警告）。
+- callslot 两超时测试 + wasm_guest e2e 按 echo.rs 惯例补 feature 门控
+  （nushell/wasmtime 缺席时此前是假跑/必挂）。
+- 全绿口径：默认 features + `--features "steel python wasmtime nushell fjall"`
+  全量；prism cargo test 全绿。
+
 ## 会话记录（2026-09-23，自 HANDOFF 简报合并）
 
 起点 `ffb9a5c`（timer wheel 批次收尾），终点 aura `8a92122` / probe `9da8ed8`，

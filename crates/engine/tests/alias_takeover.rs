@@ -27,7 +27,7 @@ fn dial(port: u16) -> tokio::task::JoinHandle<()> {
         .await
         .unwrap();
         // Keep the connection open until cancelled.
-        while let Some(_) = stream.next().await {}
+        while stream.next().await.is_some() {}
     })
 }
 

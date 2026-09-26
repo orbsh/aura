@@ -30,6 +30,8 @@ fn wasm_booth() -> BoothType {
 /// the ctx store bridge → the realm executor resolves them against the
 /// type's ns → the value reads back through the module's own reader.
 #[tokio::test]
+#[cfg(feature = "wasmtime")] // needs the wasmtime carrier — ungated it fails fast with
+// "language not resident-carried by this probe build" without the feature
 async fn wasm_booth_storage_end_to_end() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
 

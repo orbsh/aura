@@ -11,7 +11,7 @@
 - **异 key 并行**：不同 key 的实例完全独立，互不阻塞
 - **通配订阅例外**：`on_wildcard` 的摊位绑定单例 `__singleton__`，不参与分区（监听全局事件的观察者天然无状态分片意义）
 
-instance key 的提取方式现在和终态不同：当前是路由表声明 `instance_key_field`（从事件 payload 按字段名取值，取不到落 `__default__` 兜底实例）；终态（动态 schema 落地后）是事件名映射到 okm ns，通过该 ns 的访问方法扫描出 id——扫描天然一对多，一次 emit 可投递多个实例。
+instance key 的提取方式现在和终态不同：当前是路由表声明 `instance_key_field`（从事件 payload 按字段名取值，取不到落 `__default__` 兜底实例）；终态（动态 schema 落地后）是事件名映射到 okm ns，通过该 ns 的访问方法扫描出 id——扫描天然一对多，一次 emit 可投递多个实例（排期：PLAN Phase 4.13，前置=动态 schema）。
 
 ## 2. booth_type：类型与实例
 

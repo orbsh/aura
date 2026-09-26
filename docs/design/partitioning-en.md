@@ -26,7 +26,8 @@ the target state: today the route table declares an `instance_key_field`
 `__default__` catch-all instance). In the target state (once dynamic schema
 lands), the event name maps to an okm ns and the routing resolves ids
 through that ns's access methods — a scan is one-to-many by nature, so a
-single emit can deliver to multiple instances.
+single emit can deliver to multiple instances (sequenced: PLAN Phase 4.13,
+precondition = dynamic schema).
 
 ## 2. booth_type: type vs instance
 

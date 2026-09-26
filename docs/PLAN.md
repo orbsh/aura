@@ -192,6 +192,33 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   swept in the same pass; PLAN 3.6/4.5/4.9 historical entries keep landing-time wording
   (log rule); ADR-0026 twins got dated Update notes.
 
+- [ ] **Phase 4.13 — Routing final form: instance key via okm access methods (PRIORITY; precondition = dynamic schema)**
+  - Target (recorded in partitioning.md §1): instance-key extraction moves from the
+    route table's `instance_key_field` (single payload field, `__default__` fallback,
+    one event → one instance) to the event name resolving through the owning ns's
+    ACCESS METHODS — an index scan over the type's collections yields the target ids;
+    scans are structurally one-to-many, so one emit may deliver to MANY instances
+    (the keyed-fan-out the single-field rule cannot express).
+  - This is the same end-state the Phase 2.5 "Remaining" note rejected-then-deferred:
+    per-event dynamic ns was rejected for the CURRENT landing (ns space is the
+    application budget; the EventRoute registry + hash partition serves it); the
+    final form returns it from the other side — not "event allocates ns" but "event
+    routes through the type's already-allocated ns via its declared access methods".
+    ns allocation stays bounded by declared types.
+  - Precondition: dynamic schema (okm runtime-ns / DynamicCollection assembly —
+    okm ADR-0025 is the storage-side half; the schema-declaration surface is the
+    other). Until then route resolution stays field-extraction; no interim
+    half-implementation is scheduled.
+  - Touch points when it lands: `router.on` signature (key field → access-method
+    reference), emit delivery path (resolve targets per event via the ns's scan),
+    EventRoute registry row shape (persist access-method references), consumer
+    spawn (one instance per resolved id — the queue cursor model already per-(event,
+    partition), instances subscribe as today).
+  - Open for the phase to decide: whether the access method is named per event in
+    the schema block (`receives` declares the resolve path) or the type declares a
+    default + per-event override; and the multi-target failure semantics (partial
+    delivery failure = per-target dead-ring entries, consistent with ADR-0012).
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.

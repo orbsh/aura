@@ -159,7 +159,8 @@ export def execute [args] {
 }
 "#,
         ))
-        .await;
+        .await
+        .unwrap();
 
     let out = engine
         .invoke(
@@ -326,7 +327,8 @@ async fn steel_script_ctx_bridge() {
     (hash "present" (if (void? cur) #f #t) "visits" (if (void? cur) 1 (+ 1 (hash-ref cur "count"))) "echo" (hash-ref echoed "hello"))))
 "#,
         ))
-        .await;
+        .await
+        .unwrap();
 
     let out = engine
         .invoke(
@@ -497,9 +499,11 @@ async fn script_booth_definition_survives_restart() {
     // there is no separate meta instance/config anymore.
     let dir = tempfile::tempdir().unwrap();
 
-    let mut cfg = aura_config::EngineConfig::default();
-    cfg.engine = aura_config::Engine::Fjall;
-    cfg.data_dir = Some(dir.path().to_path_buf());
+    let cfg = aura_config::EngineConfig {
+        engine: aura_config::Engine::Fjall,
+        data_dir: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
 
     // Node 1: register a script booth (declares idle_ttl via
     // interface_schema — introspection happens at upload).
@@ -667,7 +671,7 @@ async fn re_register_replaces_routes() {
         assert_eq!(realm.router.matches("evt.a").len(), 1, "no duplicate after re-register");
         assert!(realm.router.matches("evt.b").is_empty(), "dropped declaration stops routing");
         // Persisted registry agrees with the router (same-side durability).
-        let rows = aura_realm::mq::routes_of_booth(&mut realm.mq.clone(), "swapper").unwrap();
+        let rows = aura_realm::mq::routes_of_booth(&realm.mq.clone(), "swapper").unwrap();
         assert_eq!(rows.len(), 1, "EventRoute table holds only evt.a: {rows:?}");
     }
     // Execution rides the NEW source: the v1 session was reclaimed, the

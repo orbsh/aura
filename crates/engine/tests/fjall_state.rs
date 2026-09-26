@@ -6,10 +6,9 @@
 
 #[cfg(feature = "fjall")]
 mod fjall_tests {
-    use aura_booth::{BoothType, Ctx, InstanceId, futures_boxed::BoxFuture};
+    use aura_booth::{BoothType, InstanceId};
     use aura_config::{Engine as EngineKind, EngineConfig};
     use aura_engine::Engine;
-    use std::sync::Arc;
 
     fn fjall_config(data_dir: &std::path::Path) -> EngineConfig {
         EngineConfig {

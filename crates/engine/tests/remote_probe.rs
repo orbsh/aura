@@ -89,12 +89,14 @@ async fn remote_probe_roundtrip() {
         "ctx invoke resolved over the wire"
     );
 
-    // A remote execution node holds NO state: the ctx bridge over the wire
-    // carries ctx_invoke only (persistence goes through ctx_store_emit,
-    // which needs a resolved storage plan — remote types are not
-    // introspected; that path is the 4.5b upload lifecycle's, not this
-    // test's). The retired instance-document assertions are gone with the
-    // model (ADR-0026 §3).
+    // A remote execution node holds NO state. The ctx bridge over the
+    // wire carries ctx_invoke (plus the ADR-0034 iterate verbs and —
+    // Phase 4.14 gate 1 — ctx_store_emit, which executes against the
+    // type's resolved storage plan; remote types register no schema, so
+    // that arm answers the named no-plan error here — the store round
+    // trip over a live plan is locked in exec_booth.rs's bgi test). The
+    // retired instance-document assertions are gone with the model
+    // (ADR-0026 §3).
 
     // Phase 2.6 acceptance (c/d): connection drop flips registry presence,
     // and the call path fails fast with the normal error-value semantics

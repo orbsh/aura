@@ -38,6 +38,11 @@
 
 - **绑定是结构性的**：每个 ctx 存储句柄在注册时即构造为绑定所属类型的 ns——跨类型访问不可表达，与今天 mq namespace 前缀的构造期保证同型。ns 内部，类型自己的代码以完整接口面受信。
 - **脚本侧协议：一个 `emit`，okm 指令载荷**（确立 §1 的 emit 命名在此处的角色）：`ctx.store` 只暴露一个接口——`ctx.store.emit(op)`，op 是一条 okm 指令（collection 名 + 操作 + 参数，DynamicValue 载荷），返回值同为 DynamicValue。语言侧的形态分两档：
+  <!-- 勘误（2026-09-28，ADR-0037）：能力合同成立（单一入口、Collection
+       语义层、raw 不可绕）。下方"翻译成文档"的形态被取代：进程内载体
+       直接绑定 okm 的 DynamicCollection（零翻译）；进程外接缝变为一条
+       host 通道上的类型化帧；JSON 指令文档是点名的过渡形态。见
+       docs/adr/0037-typed-storage-plane.zh-CN.md。 -->
   - **python**：脚本内实现 okm 的 `VirtualStorage` 适配器，内部把每个引擎调用翻译成一次 `ctx.store.emit`——此后脚本里直接用 `Collection` API（put/get/scan/… 的类型化门面），桥接成本只在适配器写一次。
   - **steel / nushell**：无适配器，直接 `emit` 单条指令（指令集 = op 收窄项定稿的集合；op 停留在 Collection 语义层，不下沉 VirtualStorage 原语）。
   - **wasm（Rust 源码）是完全体路径**：okm 本体编译进模块——脚本在 `aura_host` imports 之上实现 `VirtualStorage`（每次引擎调用 = 一次 emit op 过 host 桥），模块内运行真正的 `Collection` API。静态 derive 宏在 wasm 构建期生效；动态指令路径是给摊位用的，不是给 wasm 用的。此时 wasm 摊位的存储代码与原生 Rust 摊位无差别：同一套 derive、同一套不变量、编译期校验。

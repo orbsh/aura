@@ -38,6 +38,12 @@ Serialization semantics are unchanged: same `(type, key)` serial through the ins
 
 - **Binding is structural**: every ctx storage handle is constructed against the owning type's ns at registration — cross-type access is not expressible, the same construction-time guarantee the mq namespace prefixes give today. Inside the ns, the type's own code is trusted with the full surface.
 - **Script-side protocol: one `emit` carrying okm ops** (this fixes the role of the §1 emit naming on the storage path): `ctx.store` exposes exactly ONE interface — `ctx.store.emit(op)`, where op is one okm instruction (collection name + operation + arguments, `DynamicValue` payload), returning DynamicValue. Two shapes by language:
+  <!-- ERRATUM (2026-09-28, ADR-0037): the capability contract stands (one
+       entry, Collection semantic layer, no raw bypass). The translation
+       FORM below is superseded: in-process carriers BIND okm's
+       DynamicCollection (zero translation); the out-of-process seam becomes
+       typed frames on one host channel; the JSON instruction document is a
+       declared transitional shape. See docs/adr/0037-typed-storage-plane.md. -->
   - **python**: the script implements okm's `VirtualStorage` adapter, translating each engine call into one `ctx.store.emit` — from there the script uses the `Collection` API directly (the typed facade over put/get/scan/…); the bridging cost is paid once, in the adapter.
   - **steel / nushell**: no adapter — direct single-op `emit` calls (op set = the narrowed set from the op-set work item; ops stay at the Collection semantic layer, not raw VirtualStorage primitives).
   - **wasm (Rust source) is the full-power path**: okm itself compiled into the module — the script implements `VirtualStorage` over `aura_host` imports (each engine call = one emit op through the host bridge) and runs the REAL `Collection` API in-module. Static derive macros work at wasm build time; the dynamic op-instruction path exists for the booth, not for wasm. A wasm booth's storage code is then indistinguishable from a native Rust booth's: same derive, same invariants, compile-time checked.

@@ -209,3 +209,45 @@ async fn exec_oneshot_booth_through_realm() {
     // discipline of every failed send).
     assert_eq!(realm.lock().await.streams.len(), 0, "no orphaned stream entry");
 }
+
+/// Phase 4.14 gate 1: `ctx_store_emit` over the bgi seam into the REALM
+/// store. The fixture's `store_round_trip` forwards two okm Collection
+/// instructions (put, read-back) as host frames — pure transport, the
+/// child never parses them — and the parent answers from the type's own
+/// plan (the bgi fixture's hand-written `interface_schema` declares the
+/// `counters` collection; the plan resolves at registration through the
+/// same 4.5b introspection path the script carriers use). This is the
+/// gate for the nushell PTY retirement: the in-process bridge's storage
+/// capability now provably crosses the process boundary.
+#[tokio::test]
+async fn bgi_booth_store_emit_roundtrip() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(BoothType::script("bin-store", "bgi", bin("bgi_loop")))
+        .await
+        .unwrap();
+
+    // The type's schema introspected at upload: a plan resolved.
+    assert!(
+        engine.realm.lock().await.plan_of("bin-store").is_some(),
+        "the bgi fixture's declared storage resolves a plan"
+    );
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "bin-store".into(), key: "s1".into() },
+            "store_round_trip",
+            serde_json::json!({
+                "put": { "collection": "counters", "op": "put_document",
+                         "key": { "id": 1 }, "doc": { "count": 42 } },
+                "get": { "collection": "counters", "op": "get_document",
+                         "key": { "id": 1 } },
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out["read_back"]["count"], 42,
+        "the put landed in the type's store and the get read it back through the wire"
+    );
+}

@@ -261,16 +261,31 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     ctx-reply read verified), so the nu BGI adapter is a two-fifo shim, not
     a protocol rewrite. bash/Rust/any line-reader are unaffected (A+B full
     speed — exec_loop fixture IS Rust, bash `read` verified clean).
+  - **LANDED (gate 1, 2026-09-28): the `HostOp::StoreEmit` wire arm.**
+    One okm Collection instruction travels as DATA
+    (`{"op":"store_emit","instruction":{…}}` — the payload field is
+    `instruction`, not `op`: the discriminator collides). The probe never
+    parses it (the schema lives with the type registration — the withdrawn
+    KV executor's lesson, applied); the control plane resolves the type's
+    plan + mq handle under the realm lock, CLONED out (the ctx_for
+    discipline), and answers through `store_exec::execute` — no plan =
+    the named error (ADR-0026's remote-boundary ruling, now an enforced
+    message not an absent arm). bgi needed no carrier change (its
+    `exchange()` answers any named host fn from the realm's table).
+    Locked by three tests: probe-protocol contract (wire shape), aura
+    exec_booth `bgi_booth_store_emit_roundtrip` (child → pipes → realm
+    store → back, plan resolved from the fixture's hand-written schema
+    literal), plus the stale `state_*` rows corrected in probe USAGE en+zh
+    (ADR-0026 retirement catch-up). The bgi fixture declares a `counters`
+    storage collection for this.
   - **Still pending (the phase's last items, never standalone):** the nu
     BGI fifo adapter (the user's `loop { open pipe | lines | each }`
     shape, round trip verified incl. the inline ctx-reply read — nu lands
-    on bare exec meanwhile), the `HostOp::store_emit` wire arm (in-process
-    nushell bridge reaches store ops through the host-fn table; bgi needs
-    them as frames), and PTY retirement (NushellResident, bridge.nu,
-    pump_quiet + regression locks) once bgi carries store_emit and the
-    nushell store-emit-roundtrip passes on it — the roundtrip is live acceptance
-    today, so deletion is gated behind it or the suite turns red. One
-    execution shape per language, ever.
+    on bare exec meanwhile) and PTY retirement (NushellResident, bridge.nu,
+    pump_quiet + regression locks) once the nu store-emit-roundtrip passes
+    on bgi — the roundtrip is live acceptance today, so deletion is gated
+    behind it or the suite turns red. One execution shape per language,
+    ever.
   - Trust tiers unchanged (ADR-0035 §7): exec is the trusted posture
     (bwrap = deployment-level jail for host-trusted code, same posture as
     the embedded carriers); wasm keeps the untrusted tier (import-list
@@ -297,6 +312,26 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - ADR-0034 carries an erratum (decisions stand, forms superseded; body
     preserved as decided).
 
+- [ ] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; design accepted, implementation pending)**
+  - Amends ADR-0026 §3: python/steel booths BIND okm's `DynamicCollection`
+    (`okm-python` registers it today; `okm-steel`'s Collection method face is
+    the gap — an okm-repo cut), zero translation; the out-of-process seam
+    becomes typed frames on ONE host channel (invoke / iterate / store as
+    frame types), with whole-channel CBOR as ADR-0035 §3's already-planned
+    encoding upgrade (Windmill criterion — not a storage-only encoding).
+    The gate-1 JSON instruction document (`HostOp::StoreEmit`) is the
+    declared transitional shape: op set FROZEN (no new ops ride it), retires
+    with CBOR. The bgi shim (4.14 gate 2) does NOT bind the storage face —
+    the channel is typed frames, nu reads them.
+  - Touch points: probe (python carrier registers the Collection binding;
+    `exchange()` frame typing), okm (`okm-steel` Collection face), aura
+    (`ctx_store_emit` JSON entry retires with CBOR; `store_exec` survives
+    whole). wasm untouched (its OpFrame byte seam already IS this stance).
+  - **Sequenced AFTER Phase 4.15** — 4.14 gates 2/3 ride the transitional
+    JSON seam meanwhile (shim and seam shape are decoupled, ADR-0037 §3.1);
+    the 4.15 envelope merge gives the host channel its frame envelope, so
+    typed payloads land on settled protocol.
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.
@@ -320,6 +355,32 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-28c，闸门 1 落地 + ADR-0037 裁决）
+
+- **闸门 1 已提交（本条同批）**：`HostOp::StoreEmit` 线臂——一条 okm
+  Collection 指令作为 DATA 过线（载荷字段名 `instruction`，不叫 `op`：
+  与内部 tag 判别符碰撞）；probe 端透传不解析（schema 住类型注册处），
+  aura 端 `resolve_host_call` 锁下取 plan+mq 克隆执行（ctx_for 纪律），
+  无 plan=点名错误（0026"远程 ctx_store_emit 需 resolved plan"从缺席臂
+  变成有信息的错误值）。bgi 载体零改动（`exchange()` 查表即答）。三测
+  试锁定：probe-protocol 线形状契约、aura exec_booth
+  `bgi_booth_store_emit_roundtrip`（child→管道→realm store→回程，夹具
+  手写 storage literal 解析出 plan）、remote_probe 过期注释更新。
+  USAGE 双语的 `state_*` 残留行随 0026 退役一并修正（勘误非扩面）。
+- **ADR-0037 裁决（typed 存储面 + 进程内绑定）**：用户的 okm 绑定事实
+  戳破 0026 §3 的实现措辞——python/steel 进程内**直接绑 DynamicCollection**
+  （零翻译；steel 缺 Collection 方法面是实施项），进程外=一条 host 通道
+  上的**类型化帧**（invoke/iterate/store 是帧类型，bgi 垫片【不】绑存储
+  面——垫片只做帧循环+派发），CBOR 是整通道编码（0035 §3 既有计划，
+  Windmill 判据落点，非为存储新造）。闸门 1 的 JSON 指令文档=点名的过渡
+  形态：op set 冻结、随 CBOR 退役。JSON 缝的真实缺陷校准：不破坏不变量
+  （两边都走 Collection 补偿），是 schema 拼写错误静默落动态段——校验
+  层从语言边界降级到 from_value。0026 §3 双语已挂 erratum。排期 4.16，
+  在 4.14 闸门 2/3（走过渡缝，垫片与缝形态解耦）与 4.15 之后。
+- **教训入档**：`instruction` 字段命名=serde 内部 tag 碰撞检查要过一遍
+  所有新增 HostOp 载荷字段；python feature 门控的既有测试（sibling 用
+  python booth）单跑必红——按 feature 组合跑是默认，不是例外。
 
 ## 会话记录（2026-09-28b，iterate 落地 + ADR-0035/0036 裁决）
 

@@ -247,6 +247,19 @@ Deferred gates:
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
 
+## 会话记录（2026-09-28，ADR-0031：远程摊位不采用）
+
+- ADR-0031 经复核与初始设定冲突，整篇改写为**「远程摊位：为什么不采用」**（同一编号，
+  不新开 ADR）：对外访问是摊位代码的事，不是 realm 基础设施——逻辑归摊位、访问配置
+  非全局，摊位内部自选客户端（脚本体 HTTP 库；wasm 经 wasi-http host，属 carrier
+  能力任务非 realm 配置）。tier-1 远程执行（probe + ADR-0027 内容寻址）不受影响，
+  是唯一的远程形态；浏览器会话归 prism 会话平面（会话≠摊位）。草稿的两个观察
+  （actor 模型不要求确定性、调用模型目标无关）作为「什么幸存」留档。代码零改动，
+  仅两处措辞修正（kdl.rs 注释、instance.rs probe 臂错误串 "remote booth"→"remote probe"）。
+- prism docs/PLAN.md Phase 1.8 的 DESIGN CONSTRAINTS 块按该裁决改写：拨出/CBOR/远程
+  摊位注册删除；站得住的部分（Node 保持 transport-only、auth block + 前缀戳、Phase 1
+  流式 = fluxen 接收面）本就是 prism 自有能力，不依赖远程摊位概念。
+
 ## 会话记录（2026-09-26，booth 改名 + 消费者饥饿修复）
 
 - ADR-0032：参与者 actor → booth（中文 摊位）全链路改名落地（aura 代码/文档 +
@@ -300,6 +313,17 @@ callslot deadline 属 feature 组合误判——见下）。
 
 ### 遗留待办（未动）
 
+- [ ] **wasm 出网 HTTP（carrier 能力，2026-09-28 立项——gravity 需求触发）**：wasmtime
+      booth 需访问外部 HTTP（首个工作负载 = gravity 调 OpenAI API）。按 ADR-0031 裁决，
+      这是 carrier 运行时能力任务，**不是 realm 配置**（不往节点 KDL 加 outbound_http）。
+      实施落点 = probe 仓 `carrier/wasmtime.rs`（`WasmSession`）：今天是 core-module ABI
+      （`aura_host` 主机导入 + CBOR 线性内存，非 component model），故走 **wasi-preview1
+      http 主机钩子**（wasmtime_wasi_http，proxy-wasi 形态）——guest 用标准 HTTP 客户端
+      库（rust: `ureq`/`reqwest` wasm 目标经 wasi；不发明专用语法），host 侧出口 + 超时 +
+      失败作为值返回 guest。安全边界：出网是实例级能力，`interface_schema` 声明 `egress`
+      主机才接线该 import（未声明 = 缺 import，实例化失败——沿用 aura_host capability-refusal
+      先例）；密钥不进模块，由 ctx/host 注入或环境代理。与 `ctx_invoke` 复用同一 host bridge
+      同步口。验收：wasm booth 一次真实 OpenAI round-trip 的 e2e（mock HTTP server 锁 wire 形态）。
 - [ ] events_matching 增量化（可选小优化）：通配订阅每轮 50ms 全量重扫；可缓存
       上轮展开 + EventName registry 水位，registry 不变即跳过。通配订阅多/词汇大
       时才值得（Windmill 判据）。

@@ -237,7 +237,7 @@ impl Realm {
                     },
                     None => {
                         let _ = job.reply.send(Err(anyhow::anyhow!(
-                            "remote booth '{node_alias}': no code_base_url configured \
+                            "remote probe '{node_alias}': no code_base_url configured \
                              (ADR-0027 — code is content-addressed; set node {{ code_base_url }})"
                         )));
                         return;

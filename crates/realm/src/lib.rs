@@ -56,6 +56,13 @@ pub struct Realm {
     /// None = remote types are undeliverable in this realm (the dispatch
     /// arm answers with an error value; in-process booths never read it).
     pub code_base_url: Option<String>,
+    /// Live iterate streams (ADR-0034 §2): stream_id -> the producer
+    /// binding (target instance + handler + start args). A frame
+    /// identity, no new machinery — Next/Dispose jobs resolve their
+    /// routing through this map the way `pending_remote` correlates
+    /// invoke replies. Streams die with the realm (eviction of the
+    /// producer session = failed pulls, per the ADR).
+    pub streams: HashMap<String, StreamEntry>,
     /// In-flight remote calls awaiting the probe's Result frame. The
     /// instance id scopes the ctx-bridge host calls the probe makes while
     /// executing this call (state fields are the instance's own).
@@ -163,6 +170,17 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 pub struct RemotePending {
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     pub instance: InstanceId,
+}
+
+/// One live iterate stream (ADR-0034 §2): the producer binding a
+/// Next/Dispose job needs to re-address the same handler under the same
+/// stream id. Start args ride along because envelope-mode handlers are
+/// stateless per call and need their full args every turn (the guard
+/// state is theirs, in module globals); generator mode ignores them.
+pub struct StreamEntry {
+    pub target: InstanceId,
+    pub handler: String,
+    pub args: serde_json::Value,
 }
 
 /// One live probe connection's registry entry: the writer channel plus

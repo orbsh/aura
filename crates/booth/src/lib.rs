@@ -174,6 +174,11 @@ pub struct Ctx {
     pub self_id: InstanceId,
     /// Call surface — the single controlled path (ADR-0011).
     invoke: Invoke,
+    /// Streaming call surface (ADR-0034): iterate/dispose ride the same
+    /// dispatch machinery as invoke — a stateful producer pulled by the
+    /// consumer. `None` only on the introspection ctx (no realm to
+    /// dispatch against); a booth handler always has it.
+    iterate: Option<iterate_handle::IterateHandle>,
     /// Type-scoped storage executor (ADR-0026 §3): one entry carrying okm
     /// Collection ops as data (`ctx.store.emit(op)`). The runtime injects
     /// the handle bound to the OWNING TYPE's ns — cross-type access is not
@@ -209,6 +214,140 @@ pub mod dispatch_handle {
     >;
 }
 
+/// One stream verb for the iterate dispatch path (ADR-0034). Only
+/// Start names a target — the realm mints the stream id and the
+/// registry resolves Next/Dispose back to the producer, so the cursor
+/// and the script host fns route by id alone after start (the id is
+/// unguessable and globally scoped within the realm — a stream is an
+/// addressing fact, never a permission you re-present).
+pub enum IterateOp {
+    Start { target: InstanceId, handler: String, args: Value },
+    Next { stream_id: String },
+    Dispose { stream_id: String },
+}
+
+pub mod iterate_handle {
+    use super::*;
+    pub type IterateHandle = Arc<
+        dyn Fn(IterateOp) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
+            + Send
+            + Sync,
+    >;
+}
+
+/// The per-pull wire envelope (ADR-0034 §1): a typed `done` field, never
+/// a sentinel value. `item` rides inside `ok` (failure is a value,
+/// ADR-0012 — mid-stream errors surface through the Result the cursor
+/// hands back, not a second channel in the envelope).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Envelope {
+    pub done: bool,
+    pub item: Option<Value>,
+}
+
+impl Envelope {
+    /// Decode the JSON envelope a session returned. Structural errors
+    /// (non-object, missing `done`, `done` alongside `item`) are failure
+    /// values — the pull itself failed, distinct from a mid-stream
+    /// producer error.
+    pub fn from_value(v: &Value) -> anyhow::Result<Self> {
+        if v.is_null() {
+            // generator-mode Start replies with null (no item yet).
+            return Ok(Envelope { done: false, item: None });
+        }
+        let obj = v
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("iterate: envelope must be an object, got {v}"))?;
+        let done = obj
+            .get("done")
+            .and_then(|d| d.as_bool())
+            .ok_or_else(|| anyhow::anyhow!("iterate: envelope needs a boolean `done` field, got {v}"))?;
+        let item = obj.get("item").cloned();
+        if done && item.is_some() {
+            anyhow::bail!("iterate: envelope with `done: true` must not carry an `item`");
+        }
+        Ok(Envelope { done, item })
+    }
+}
+
+/// A live stream cursor (ADR-0034): the consumer's handle to a producer
+/// session's state. Lazily started — the first `next()` sends Start (the
+/// stream id is minted by the realm) and then pulls; every later `next()`
+/// pulls. Exhaustion is terminal: pulls after `done: true` are rejected.
+/// Abandoning mid-stream requires `dispose()` in carriers without a
+/// destructor hook; the python wrapper sends it automatically on
+/// GeneratorExit. A stream never disposed is released by residency
+/// eviction, not by magic.
+pub struct StreamCursor {
+    iterate: iterate_handle::IterateHandle,
+    target: InstanceId,
+    handler: String,
+    args: Value,
+    /// Set after the lazy Start: the realm-minted stream id. The id
+    /// alone routes Next/Dispose (the realm's registry owns the binding).
+    stream_id: Option<String>,
+    done: bool,
+}
+
+impl StreamCursor {
+    pub(crate) fn new(
+        iterate: iterate_handle::IterateHandle,
+        target: InstanceId,
+        handler: String,
+        args: Value,
+    ) -> Self {
+        Self { iterate, target, handler, args, stream_id: None, done: false }
+    }
+
+    /// Pull one envelope. First call starts the stream — the Start
+    /// round trip IS the first pull (the realm delivers the first
+    /// envelope together with the minted stream id).
+    pub async fn next(&mut self) -> anyhow::Result<Envelope> {
+        if self.done {
+            anyhow::bail!("iterate: stream already exhausted");
+        }
+        let v = match self.stream_id.clone() {
+            None => {
+                let reply = (self.iterate)(IterateOp::Start {
+                    target: self.target.clone(),
+                    handler: self.handler.clone(),
+                    args: self.args.clone(),
+                })
+                .await?;
+                let id = reply
+                    .get("stream_id")
+                    .and_then(|s| s.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("iterate: start reply missing stream_id"))?
+                    .to_string();
+                self.stream_id = Some(id);
+                reply
+            }
+            Some(id) => (self.iterate)(IterateOp::Next { stream_id: id }).await?,
+        };
+        let env = Envelope::from_value(&v)?;
+        if env.done {
+            self.done = true;
+        }
+        Ok(env)
+    }
+
+    /// The realm-minted stream id, once the stream has started
+    /// (script-side wrappers need it to drive the host fns).
+    pub fn stream_id(&self) -> Option<&str> {
+        self.stream_id.as_deref()
+    }
+
+    /// Abandon the stream mid-flight (ADR-0034 §3). Idempotent; a stream
+    /// never started disposes nothing.
+    pub async fn dispose(&mut self) -> anyhow::Result<()> {
+        if let Some(id) = self.stream_id.take() {
+            (self.iterate)(IterateOp::Dispose { stream_id: id }).await?;
+        }
+        self.done = true;
+        Ok(())
+    }
+}
+
 pub mod store_emit_handle {
     use super::*;
     use crate::StoreOp;
@@ -228,10 +367,15 @@ impl Invoke {
 }
 
 impl Ctx {
-    pub fn new(self_id: InstanceId, dispatch: dispatch_handle::DispatchHandle) -> Self {
+    pub fn new(
+        self_id: InstanceId,
+        dispatch: dispatch_handle::DispatchHandle,
+        iterate: iterate_handle::IterateHandle,
+    ) -> Self {
         Self {
             self_id,
             invoke: Invoke { dispatch },
+            iterate: Some(iterate),
             store_emit: None,
             interface_schema: None,
         }
@@ -277,6 +421,25 @@ impl Ctx {
     pub fn invoke_handle(&self) -> dispatch_handle::DispatchHandle {
         self.invoke.dispatch.clone()
     }
+
+    /// Begin a streaming call (ADR-0034): returns a cursor into the
+    /// target handler's stateful producer. Nothing crosses until the
+    /// cursor's first pull (lazy start). `dispose` is the mandatory
+    /// dual — mid-stream abandonment without it is the dead-ring
+    /// problem wearing a request badge (released only by eviction).
+    pub fn iterate(&self, target: InstanceId, handler: &str, args: Value) -> StreamCursor {
+        let iterate = self
+            .iterate
+            .clone()
+            .expect("booth ctx always carries the iterate handle (only the introspection ctx lacks it)");
+        StreamCursor::new(iterate, target, handler.to_string(), args)
+    }
+
+    /// The iterate dispatch handle, for the script ctx bridge (host fns
+    /// drive the same machinery the Rust cursor rides).
+    pub fn iterate_handle(&self) -> Option<iterate_handle::IterateHandle> {
+        self.iterate.clone()
+    }
 }
 
 /// The booth-visible storage surface: one method, `emit`. The op is the
@@ -305,14 +468,34 @@ pub struct Queue {
     pub rx: mpsc::Receiver<Job>,
 }
 
-/// A unit of work: call args + the reply channel (oneshot, `reply_to`
-/// semantics; the general call model lands at Phase 3.5).
+/// A unit of work: the verb + handler name + args, and the reply channel
+/// (oneshot, `reply_to` semantics; the general call model lands at
+/// Phase 3.5). ADR-0034: the iterate verbs ride this same machinery —
+/// an `Invoke` job runs the handler once; an `Iterate*` job drives the
+/// session's stream state, correlated by `stream`.
 pub struct Job {
+    /// What to do with this job's handler (ADR-0034).
+    pub kind: JobKind,
+    /// Stream identity for `Iterate*` kinds (realm-minted at start;
+    /// `None` for Invoke).
+    pub stream: Option<String>,
     /// Handler name the delivery addresses: the event name for event
     /// delivery, the caller-declared function for direct invocation.
     pub handler: String,
     pub args: Value,
     pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>>,
+}
+
+/// The verb a Job carries (ADR-0034: three verbs, one mechanism — the
+/// iterate calls are frame-level calls riding the existing call
+/// machinery, never a second queue).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JobKind {
+    #[default]
+    Invoke,
+    IterateStart,
+    IterateNext,
+    IterateDispose,
 }
 
 impl Queue {

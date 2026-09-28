@@ -69,6 +69,7 @@ pub enum Waited {
 
 /// The single wait surface — always the same one line at the call site:
 /// `slot.wait().await`. Which tier runs was decided at entry.
+#[derive(Debug)]
 pub enum CallSlot {
     Hot {
         rx: tokio::sync::oneshot::Receiver<anyhow::Result<Value>>,

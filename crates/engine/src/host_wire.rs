@@ -42,5 +42,44 @@ pub async fn resolve_host_call(
                 }
             }
         }
+        // ADR-0034 consumer legs over the wire: a remote script booth
+        // drives a stream through the realm — start routes by the target
+        // in the op; Next/Dispose route by the stream id alone (the
+        // realm's registry names the producer). Each call parks the
+        // probe's host thread on one hot pull, exactly like Invoke.
+        op @ (HostOp::Iterate { .. } | HostOp::IterateNext { .. } | HostOp::IterateDispose { .. }) => {
+            let iterate_op = match op {
+                HostOp::Iterate { target_type, target_key, handler, args } => {
+                    aura_booth::IterateOp::Start {
+                        target: InstanceId {
+                            booth_type: target_type.clone(),
+                            key: target_key.clone(),
+                        },
+                        handler: handler.clone(),
+                        args: args.clone(),
+                    }
+                }
+                HostOp::IterateNext { stream_id } => {
+                    aura_booth::IterateOp::Next { stream_id: stream_id.clone() }
+                }
+                HostOp::IterateDispose { stream_id } => {
+                    aura_booth::IterateOp::Dispose { stream_id: stream_id.clone() }
+                }
+                _ => unreachable!(),
+            };
+            let slot = aura_realm::Realm::iterate(realm, iterate_op)
+                .await
+                .map_err(|e| e.to_string())?;
+            match slot {
+                CallSlot::Hot { rx, .. } => match rx.await {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("iterate reply dropped".to_string()),
+                },
+                CallSlot::Cold { .. } => {
+                    Err("iterate is hot-tier only (ADR-0034 §5)".into())
+                }
+            }
+        }
     }
 }

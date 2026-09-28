@@ -6,6 +6,24 @@ use crate::{mq, store_exec};
 use aura_booth::InstanceId;
 use std::sync::Arc;
 
+/// Iterate dispatch for the ctx handle (ADR-0034): ride the realm's hot
+/// iterate path, then wait the reply — same single-value wait shape as
+/// `dispatch_call` for invoke. `IterateStart` answers with the first
+/// envelope (stream_id merged by run_job), so the cursor reads both
+/// from one reply.
+async fn aura_realm_call(
+    realm: &SharedRealm,
+    op: aura_booth::IterateOp,
+) -> anyhow::Result<serde_json::Value> {
+    use aura_booth::call::Waited;
+    match Realm::iterate(realm, op).await?.wait().await? {
+        Waited::Done(result) => result,
+        Waited::Pending(_) => {
+            Err(anyhow::anyhow!("iterate is hot-tier only (ADR-0034 §5) — no pending slot exists"))
+        }
+    }
+}
+
 impl Realm {
     pub(crate) fn ctx_for(
         self_arc: SharedRealm,
@@ -23,6 +41,7 @@ impl Realm {
         // reference cycle (realm → sessions → session → closure → realm)
         // that keeps the fjall Database open forever after engine drop.
         let dispatch_realm = Arc::downgrade(&self_arc);
+        let iterate_realm = Arc::downgrade(&self_arc);
         let mut ctx = aura_booth::Ctx::new(
             id.clone(),
             Arc::new(move |target, handler: &str, args| {
@@ -33,6 +52,18 @@ impl Realm {
                         anyhow::anyhow!("realm dropped: dispatch after engine shutdown")
                     })?;
                     dispatch_call(realm, target, &handler, args).await
+                })
+            }),
+            // ADR-0034: the iterate dispatch handle rides the same Weak
+            // realm discipline — the cursor lives inside the consumer's
+            // resident session and may outlive single jobs.
+            Arc::new(move |op| {
+                let realm = iterate_realm.clone();
+                Box::pin(async move {
+                    let realm = std::sync::Weak::upgrade(&realm).ok_or_else(|| {
+                        anyhow::anyhow!("realm dropped: iterate after engine shutdown")
+                    })?;
+                    aura_realm_call(&realm, op).await
                 })
             }),
         );
@@ -80,9 +111,11 @@ impl Realm {
         let handle = tokio::runtime::Handle::current();
 
         let mut fns: std::collections::BTreeMap<String, HostFn> = Default::default();
+        let invoke_handle = handle.clone();
         fns.insert(
             "ctx_invoke".into(),
             Arc::new(move |arg: serde_json::Value| {
+                let handle = &invoke_handle;
                 // arg: { "type": ..., "key": ..., "args": ... }. Blocks the
                 // script thread on the unified call model (Phase 3.5) — the
                 // script itself runs in spawn_blocking, so this is bounded
@@ -99,6 +132,51 @@ impl Realm {
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
+        // ADR-0034: the iterate host fns. The cursor loop lives on the
+        // script side (the python wrapper is a native generator over
+        // these three); each host call is one round trip through the
+        // same dispatch machinery invoke rides. Start returns the first
+        // envelope with the realm-minted stream_id merged in.
+        if let Some(iterate) = ctx.iterate_handle() {
+            let h = handle.clone();
+            for name in ["ctx_iter_start", "ctx_iter_next", "ctx_iter_dispose"] {
+                let iterate = iterate.clone();
+                let handle = h.clone();
+                let op_kind = match name {
+                    _ if name.ends_with("start") => 0u8,
+                    _ if name.ends_with("next") => 1u8,
+                    _ => 2u8,
+                };
+                fns.insert(
+                    name.into(),
+                    Arc::new(move |arg: serde_json::Value| {
+                        use aura_booth::IterateOp;
+                        let obj = arg
+                            .as_object()
+                            .ok_or_else(|| anyhow::anyhow!("{name}: expects an object"))?;
+                        let gs = |k: &str| obj.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                        let op = match op_kind {
+                            0 => IterateOp::Start {
+                                target: InstanceId {
+                                    booth_type: gs("type").to_string(),
+                                    key: gs("key").to_string(),
+                                },
+                                handler: gs("handler").to_string(),
+                                args: obj
+                                    .get("args")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                            },
+                            // Next/Dispose route by stream id alone —
+                            // the realm's registry names the producer.
+                            1 => IterateOp::Next { stream_id: gs("stream_id").to_string() },
+                            _ => IterateOp::Dispose { stream_id: gs("stream_id").to_string() },
+                        };
+                        handle.block_on(iterate(op))
+                    }) as HostFn,
+                );
+            }
+        }
         // Type-scoped storage (ADR-0026 §3): ONE entry, okm Collection
         // instructions as data. The handle is bound to the owning type's
         // ns at ctx construction — the fn itself carries no addressing.

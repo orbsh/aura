@@ -40,14 +40,20 @@ emit/on/invoke 并列。** 返回游标；游标在每类 carrier 里包装为�
 { "error": "..." }                ← 流中途失败（ADR-0012）
 ```
 
-终止是类型化字段，绝不是哨兵字符串。有原生迭代的语言做翻译：wrapper 在
-`done: true` 时抛 `StopIteration`——生产方 handler 用原生生成器写
-（python `yield`、steel 闭包、rust `Iterator`），完全看不见线路协议；
-框架驱动生成器，生成器耗尽对称地编码为 `done: true`。
+终止是类型化字段，绝不是哨兵字符串。有可被宿主驱动的生成器的语言做翻译：
+wrapper 在 `done: true` 时抛 `StopIteration`——生产方 handler 用原生生
+成器写（python `yield`），完全看不见线路协议；框架驱动生成器，生成器耗尽
+对称地编码为 `done: true`。
 
-无原生迭代的语言（nushell；wasm 只做消费方，见 §4）：handler 是【可重复
-调用的函数，显式返回信封】——`done: true` 是写出来的，不是推导出来的。
-除信封外没有新发明；守卫值就是 schema 字段。
+无宿主可驱动生成器的语言（steel、nushell、wasm）：handler 是【可重复调用
+的函数，显式返回信封】——`done: true` 是写出来的，不是推导出来的。除信封
+外没有新发明；守卫值就是 schema 字段。wasm 没有特例：它就是既有的主机桥
+函数调用（4.5b ABI 不需要新东西），Rust 写的模块在 guest 内部映射
+`Iterator`——流状态与 `.next()` 调用住在模块状态里，耗尽时在 ABI 边缘投影
+为显式信封。生成器语义在迭代协议所在之处成立：python 的生成器由宿主跨
+FFI 边界驱动；wasm 内部由 guest 自己驱动。（steel 的 `(yield)` 生成器基于
+call/cc，跨多次宿主驱动的引擎调用不可靠地续跑——记为被否决的 carrier
+变体；信封模式才是那里的诚实形态。）
 
 ### 2. 流身份与 session 绑定
 
@@ -79,9 +85,11 @@ wrapper 挂 `GeneratorExit`）自动发 dispose；没有的（nushell，以及�
 
 ### 6. LLM 服务面的生产方在脚本 carrier
 
-provider 摊位模式：python（或 steel）handler——`httpx.stream`、解析
-SSE、每个 token 事件一次 `yield`——carrier 的原生生成的器驱动信封。wasm
-留在消费侧（拉到 done 的循环）：wasm 没有可 yield 的生成器形态，而它的
+provider 摊位模式：python handler——`httpx.stream`、解析
+SSE、每个 token 事件一次 `yield`——carrier 的原生生成器驱动信封。wasm
+两侧都服务：作为消费方跑拉到 done 的循环（没有可停放的宿主驱动生成器），
+作为生产方显式写信封——与 nushell 同一形态，Rust guest 在模块状态内映射
+`Iterator`（§1）。它的
 对外 HTTP 需求（本原语存在的原因）由消费兄弟摊位解决，不由 wasi-http
 主机接线解决（aura PLAN 2026-09-28 的 wasi-http 条目被本 ADR 取代并撤销；
 ADR-0031 的裁决原样成立：摊位在自己的代码里决定访问方式——兄弟摊位就是
@@ -112,7 +120,8 @@ circuit breaking、依赖 transcript 的重试——一切需要本轮上下文�
 ## 后果
 
 - **aura：** ctx 表面 + iterate/dispose 的帧管道；carrier 包装
-  （python/steel 原生；nushell 显式；wasm 消费循环）；ADR-0011 的 ctx
+  （python 宿主驱动原生生成器；steel/nushell/wasm 显式信封；python 消费
+  wrapper 在 GeneratorExit 上自动 dispose）；ADR-0011 的 ctx
   边界清单加 iterate/dispose——实例绑定、Host 管控的能力。
 - **gravity：** provider 摊位 = python 摊位类型（传输适配器）；Phase 1
   LLM 层经 iterate 消费。

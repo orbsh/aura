@@ -318,19 +318,37 @@ callslot deadline 属 feature 组合误判——见下）。
 
 ### 遗留待办（未动）
 
-- [ ] **iterate 原语实施（ADR-0034 裁决已定，代码未动）**：与 emit/on/invoke
-      并列的流式调用。范围：① ctx 表面（aura-booth `Ctx::iterate/dispose` 句柄，
-      ADR-0011 边界清单加条目）；② 帧管道（iterate pull/dispose 骑既有调用机件，
-      stream_id 关联走 pending_remote 同形）；③ 信封 `{item,done,error?}`——
-      有原生迭代的 carrier（python `yield`/steel 闭包/rust Iterator）框架驱动生成器、
-      耗尽编码 done；无迭代协议的（nushell）handler 显式返回信封；消费方 wrapper
-      python/steel 挂 `GeneratorExit` 自动 dispose，无钩子的必须显式
-      `cursor.dispose()`；wasm 只做消费侧（拉到 done 循环）；④ 驻留计时：每次 pull
-      重置 idle 计时，流停止（耗尽/dispose）经 timer API 重武装，常规 idle_ttl
-      驱逐（不声明流长上界）；⑤ tier 只做 hot（cold 流式无消费者，不铺）。
-      验收：python 生产摊位 → wasm/python 消费 e2e，中途 break 的 dispose 断言、
-      流中途失败的 error 信封断言。probe-protocol 加两种调用臂（远程生产/消费方
-      骑同一信封）。
+- [x] **iterate 原语实施（ADR-0034，LANDED 2026-09-28）**：与 emit/on/invoke
+      并列的流式调用。范围：① ctx 表面（aura-booth `Ctx::iterate` 游标 +
+      `StreamCursor::next/dispose`，ADR-0011 errata 加条目）；② 帧管道
+      （`Realm::iterate` 骑 hot 调用机件——Job 加 kind/stream 两字段，
+      stream_id 由 realm call_seq 铸造、registry（`streams`）解析
+      Next/Dispose 的 target——id 即路由，不再重呈地址；Start 应答合并
+      stream_id 进首个信封）；③ 信封 `{item,done}`——host 可驱动生成器的
+      carrier（python `yield`：框架停放 generator、StopIteration 编码 done、
+      dispose 走 `close()`）框架驱动；无宿主可驱动生成器的（steel/nushell/
+      wasm）handler 显式返回信封（框架注入 `{stream_id,op}` 并校验布尔
+      `done`；Rust-wasm guest 在模块状态内映射 `Iterator`，ABI 不变）；
+      消费方 wrapper：python 载 entry `ctx_iterate`（原生 generator，
+      GeneratorExit→finally 自动 dispose），Rust 经 `StreamCursor`，其余
+      手拉循环；wasm 两侧都服务（生产 = 信封、消费 = 拉到 done 循环——
+      本 PLAN 条目按 ADR 当日修订口径落地，推翻"只做消费侧"）；④ 驻留计时
+      零新代码：每次 pull 就是 Job→run_job 的 last_activity 重置 + idle
+      重武装，done/失败 pull 时 realm registry 移除条目；⑤ tier 只做 hot。
+      验收（engine tests/iterate.rs，6 项全绿）：python 生成器生产→python
+      消费、中途 break 的 dispose 断言（registry 排空）、未知 stream 失败值
+      + 幂等 dispose、流中途 raise 的 error 值断言、nushell 信封往返、Rust
+      body 的 iterate 错误值（Rust 生产方=记录残余：closure body 无常驻
+      状态可持迭代器）。probe-protocol：ToolCall 加 kind/stream（远程生产
+      腿）、HostOp 加 iterate/next/dispose（远程消费腿），远程腿 e2e 留待
+      remote_probe 测试扩展（残余）。**残余（机制在、验证/旋钮未铺）**：
+      ① wasm 消费侧 e2e——host 桥臂对 wasm 通用自动注册（aura_host import
+      族），但验收点名的 wasm 消费测试未写；② `pull(n)` 批量旋钮（ADR
+      声称"可用作旋钮"——当前仅逐条，快生产者上跳数是真实成本）；
+      ③ Rust body 生产方（closure 无常驻状态可持迭代器）。
+      **GIL 修复（e2e 逼出的真 bug）**：python host fn 原持 GIL block_on——
+      两 python 摊位互调必死锁；现
+      `py.allow_threads` 释放 GIL 再阻塞。
 - [x] **wasm 出网 HTTP——已撤销（2026-09-28 当日，被 ADR-0034 取代）**：立项后复核
       两条路都不可取：wasi-http 主机钩子要求 component model（wasmtime 34 不支持
       core module，carrier 迁移是平台级工程且破 4.5b 落地面）；aura_host 族新主机

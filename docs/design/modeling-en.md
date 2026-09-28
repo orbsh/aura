@@ -143,11 +143,14 @@ The engine provides no business-data channel; bulk interaction with external sto
 
 Work with sequential output (token streams, paginated fetches, long scans):
 the producer writes an `iterate` handler — in python that is just a `yield`
-generator; languages without iteration protocol (nushell) write a repeatedly
+generator; languages without a host-drivable generator (steel, nushell,
+wasm — a Rust wasm guest maps its own `Iterator` in module state and
+projects exhaustion into the envelope at the ABI edge) write a repeatedly
 callable function returning the `{item, done}` envelope explicitly
-(`done: true` is written, not a magic value). Consumers get a native
-iterable from `ctx.iterate(target, handler, args)` and loop it; `break`
-without a destructor hook must call `cursor.dispose()`. Termination,
+(`done: true` is written, not a magic value). Consumers in python loop the
+native `ctx_iterate(...)` generator (break auto-disposes via GeneratorExit);
+Rust booths get a cursor from `ctx.iterate(target, handler, args)`;
+carriers without a destructor hook must call `dispose` explicitly. Termination,
 backpressure, and consumer liveness fall out of the pull structure — as
 opposed to the WS-shaped emit-per-item (sentinel by convention, no consumer
 binding, no backpressure). Residency accounting matches the usual rules:

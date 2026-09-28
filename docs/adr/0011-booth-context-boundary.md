@@ -52,3 +52,12 @@ The timer rejection narrows: **blocking / self-scheduling forms** (`ctx.sleep()`
   (`probe:<node_id>:<cap>`) land on `ctx.invoke()` under this rule with no signature change.
 - The wiki (aura-architecture.md §5.3) carries the user-facing statement of this boundary;
   this ADR is the decision record.
+
+## Errata (2026-09-28)
+
+The bounded list above (state / metadata / invoke) predates ADR-0034. The ctx
+surface now also carries `iterate` and its dual `dispose` — streaming calls
+between booths, riding the same dispatch machinery as invoke. They join this
+list under the same criterion that governed the original cut: instance-bound
+(the stream cursor belongs to the calling instance) and Host-controlled
+(the realm mints stream ids and owns the registry). No other rule changes.

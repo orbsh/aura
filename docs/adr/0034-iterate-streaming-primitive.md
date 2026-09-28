@@ -49,14 +49,23 @@ Every pull round-trip exchanges an envelope:
 Termination is a typed field, never a sentinel string. Languages WITH
 native iteration translate: the wrapper raises `StopIteration` on
 `done: true` — the producer handler written as a native generator
-(python `yield`, steel closure, rust `Iterator`) never sees the wire
-protocol; the framework drives the generator, and generator exhaustion
-encodes `done: true` symmetrically.
+(python `yield`) never sees the wire protocol; the framework drives the
+generator, and generator exhaustion encodes `done: true` symmetrically.
 
-Languages WITHOUT native iteration (nushell; wasm is consumer-side only,
-see §4): the handler is a **repeatedly callable function that returns the
-envelope explicitly** — `done: true` is written, not derived. No framework
-invention beyond the envelope itself; the guard value is the schema field.
+Languages WITHOUT a host-drivable generator (steel, nushell, wasm): the
+handler is a **repeatedly callable function that returns the envelope
+explicitly** — `done: true` is written, not derived. No framework
+invention beyond the envelope itself; the guard value is the schema
+field. Wasm carries no special case: it is ordinary host-bridged
+function calls (the 4.5b ABI needs nothing new), and a module written in
+Rust maps `Iterator` inside the guest — the stream state and the
+`.next()` call live in module state, exhaustion projects into the
+explicit envelope at the ABI edge. The generator semantics hold where
+the iteration protocol lives: the host drives python's generators
+across the FFI seam; inside wasm the guest drives its own.
+(Steel's `(yield)` generators are call/cc-based and not reliably
+resumable across separate host-driven engine calls — recorded as a
+rejected carrier variant; envelope mode is the honest shape there.)
 
 ### 2. Stream identity and session binding
 
@@ -94,15 +103,18 @@ and the cold-tier discipline says don't pave for absent traffic.
 
 ### 6. The producer side of LLM serving is script carriers
 
-The provider booth pattern: python (or steel) handler — `httpx.stream`,
-parse SSE, `yield` per token event — the carrier's native generator drives
-the envelope. wasm remains consumer-side (pull-until-done loop): wasm has
-no generator shape to yield from, and its outbound HTTP need — the reason
-this primitive exists — is served by consuming a sibling booth, not by
-wasi-http host plumbing (the PLAN 2026-09-28 wasi-http entry is superseded
-and withdrawn by this ADR; ADR-0031's ruling stands: the booth decides its
-access method inside its own code — the sibling booth IS that code, reached
-through the field, which keeps the realm's observation surface honest).
+The provider booth pattern: python handler — `httpx.stream`, parse SSE,
+`yield` per token event — the carrier's native generator drives
+the envelope. wasm serves BOTH sides: as consumer it runs the
+pull-until-done loop (no host-drivable generator to park), and as
+producer it writes the envelope explicitly — the same shape as nushell,
+a Rust guest mapping `Iterator` in module state (§1). Its outbound HTTP
+need — the reason this primitive exists — is served by consuming a
+sibling booth, not by wasi-http host plumbing (the PLAN 2026-09-28
+wasi-http entry is superseded and withdrawn by this ADR; ADR-0031's
+ruling stands: the booth decides its access method inside its own code —
+the sibling booth IS that code, reached through the field, which keeps
+the realm's observation surface honest).
 
 ## Responsibility cut (what moves out of gravity)
 
@@ -135,7 +147,9 @@ socket-per-turn work, which gravity-as-wasm cannot do natively (§6).
 ## Consequences
 
 - **aura:** ctx surface + frame plumbing for iterate/dispose; carrier
-  wrappers (python/steel native; nushell explicit; wasm consumer-loop);
+  wrappers (python generator-native host-driven; steel/nushell/wasm
+  explicit envelope; the python consumer wrapper auto-disposes on
+  GeneratorExit);
   ADR-0011's ctx-boundary list gains iterate/dispose as instance-bound
   host-gated capabilities.
 - **gravity:** provider booth as python booth type (transport adapter);

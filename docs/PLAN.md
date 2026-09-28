@@ -223,31 +223,55 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     default + per-event override; and the multi-target failure semantics (partial
     delivery failure = per-target dead-ring entries, consistent with ADR-0012).
 
-- [ ] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; design accepted, implementation pending)**
-  - One mechanism, two modes: **A (resident bridge)** = spawn per booth
-    instance, length-prefixed CBOR frames over the child's stdin/stdout
-    (JSON-lines as documented debug form), maps onto ResidentSession
-    (load=spawn+handshake, call=frame pair, evict=close+SIGKILL);
-    supervision reuses bwrap — the child's only fds are the two pipes.
-    **B (one-shot)** = A without the loop: spawn per call, args in,
-    result out, exit — the SKILL shape (invoke-only, no storage surface,
-    never a booth). The founding "CGI-like" is a misnomer on record: the
-    booth mode is the FastCGI shape; CGI (B) carries invoke alone.
-  - Language = spawn spec in the probe registry, not a carrier: `nu`
-    over the probe-shipped frame-loop shim; a Rust booth = `["./booth"]`
-    against the documented frame contract (no guest crate — the contract
-    IS the ABI, as aura_alloc is for wasm).
-  - Wire-parity gap this phase closes: `HostOp` gains the `store_emit`
-    arm — the in-process nushell bridge reaches store ops through the
-    host-fn table; stdio mode A needs them as frames. iterate (ADR-0034)
-    crosses unchanged — the envelope is CBOR-encodable schema.
-  - **Last item, never standalone: retire the nushell PTY carrier**
-    (NushellResident, bridge.nu, pump_quiet + regression locks) once mode
-    A carries store_emit and echo.rs::nushell_store_emit_roundtrip's
-    shape passes on it. Gate before deletion: the PTY roundtrip is live
-    acceptance today; removing it first turns the suite red and reopens
-    the dual-maintenance door. One execution shape per language, ever.
-  - Trust tiers unchanged (ADR-0035 §6): exec is the trusted posture
+- [~] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; modes A+B LANDED 2026-09-28, nu adapter + PTY retirement pending)**
+  - **LANDED (probe 7476209, 504bfd1 + same-day rename):** two shapes —
+    **bgi (framed resident)**: spawn per booth instance, newline-delimited
+    JSON frames over stdin/stdout (the shipped shape; CBOR framing is the
+    planned payload optimization, §3), maps onto ResidentSession
+    (call=frame pair, evict=close+SIGKILL); bwrap wraps the spawn (mount
+    policy before exec, the child's capability surface = two pipes + jail).
+    **exec (bare one-shot, NO protocol)**: spawn per call — one JSON
+    document written to stdin (closed = the script's cue), stdout read
+    whole as the result; the script implements nothing (the php-fpm
+    lineage refined from the user's fcgi-vs-cgi analysis: stateless by
+    DEFINITION — iterate is a named error, no ctx channel exists, nothing
+    to sweep). `sweep_dead`: a dead bgi child is evicted from the registry
+    (WNOHANG reap — try_wait leaves zombies), try_lock never queues behind
+    a running call. ctx seam crosses the boundary (child→host_reply round
+    trip verified against a real sibling booth). exec_booth e2e: bgi
+    invoke, bgi ctx round trip, bgi Realm::iterate over a child-guarded
+    stream, eviction reaps + cold-starts; exec invoke through the realm +
+    the named iterate error + failed-Start registry rollback (run_job
+    bookkeeping now undoes the Start registration on any failed start).
+    Language strings: `"bgi"` (framed resident) / `"exec"` (one-shot) —
+    the earlier `mode A/B` naming (and the half-baked "framed one-shot")
+    is superseded; fixtures renamed bgi_loop / one_shot.
+  - The founding "CGI-like" is a misnomer on record: A is the FastCGI
+    shape (process persists); B carries invoke alone. The wrapper earns a
+    name — **BGI, Booth Gateway Interface** (ADR-0035 §5): one per-language
+    outer loop turning "read a line" into "dispatch this event"; recorded
+    as design (nu `run_bgi {|e|...}`, python `@bgi.event`) — not required
+    to ship this phase. BGI wraps the §3 line protocol, never a second one;
+    no guest crate / guest SDK — the contract IS the ABI (aura_alloc precedent).
+  - **nushell ruling (user, 2026-09-28): bare exec first, bgi waits on a
+    fifo adapter.** Probe-verified: nu cannot block-read non-TTY stdin and
+    `open` delivers at writer-EOF, so stdin-direct A is impossible; the
+    user's mkfifo + `loop { open pipe | lines | each }` shape streams
+    per-writer-session batches correctly (full round trip incl. the inline
+    ctx-reply read verified), so the nu BGI adapter is a two-fifo shim, not
+    a protocol rewrite. bash/Rust/any line-reader are unaffected (A+B full
+    speed — exec_loop fixture IS Rust, bash `read` verified clean).
+  - **Still pending (the phase's last items, never standalone):** the nu
+    BGI fifo adapter (the user's `loop { open pipe | lines | each }`
+    shape, round trip verified incl. the inline ctx-reply read — nu lands
+    on bare exec meanwhile), the `HostOp::store_emit` wire arm (in-process
+    nushell bridge reaches store ops through the host-fn table; bgi needs
+    them as frames), and PTY retirement (NushellResident, bridge.nu,
+    pump_quiet + regression locks) once bgi carries store_emit and the
+    nushell store-emit-roundtrip passes on it — the roundtrip is live acceptance
+    today, so deletion is gated behind it or the suite turns red. One
+    execution shape per language, ever.
+  - Trust tiers unchanged (ADR-0035 §7): exec is the trusted posture
     (bwrap = deployment-level jail for host-trusted code, same posture as
     the embedded carriers); wasm keeps the untrusted tier (import-list
     capability refusal fd framing cannot offer). The exec carrier makes
@@ -296,6 +320,35 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-28b，iterate 落地 + ADR-0035/0036 裁决）
+
+- **已提交**：aura 70b61a5（iterate 代码+测试）、36c2d35（0034 修订 docs）、
+  probe e85c933（iterate carrier+协议）；probe 7476209 + aura 504bfd1
+  （exec/bgi 载体首刀，含 GIL 修复与 stream bookkeeping 上提修复）；
+  aura 15fa114（pull(n) 措辞降级）。
+- **裁决链**：用户推翻 0034"wasm 仅消费侧"（不能 HTTP ≠ 不能生成器）→
+  0034 修订；invoke/iterate 对称性 → **ADR-0036**（一套信封，
+  `done` 恒布尔、终止轮 `{done:true,value?}`；ctx 动词保留两个；
+  关联从 done 导出废位置性启发式）→ PLAN Phase 4.15（排 4.14 后）。
+  exec 载体 → **ADR-0035**；同日 fcgi-vs-cgi 分析把"两模式一套帧"更正为
+  **两形态**：bgi（带帧常驻，循环住子进程——作者自写或 probe 垫片）/
+  exec（裸 cgi 一次性，【无协议】：一进一出各一个 JSON，stateless by
+  definition——php-fpm 血统点名，iterate 是点名错误值）。BGI 名字采纳。
+- **nushell 实证（探针，勿重新发明）**：非 TTY stdin 不能阻塞读（`input`
+  报错）；`open` 在写方 EOF 交付（父常持 O_RDWR fd 会饿死 `lines`）；
+  用户的 mkfifo + `loop { open pipe | lines | each }` 逐写方会话派发成立
+  （含内联 ctx 应答读的双 fifo 验证）。裁决：nushell 先走裸 exec，
+  bgi 等 fifo 垫片；PTY 退役闸门等垫片。
+- **未提交（检查点待审）**：两仓的 exec→bgi/exec 重构（fixture 改名
+  bgi_loop/one_shot、OneShotSession 无 ResidentSession 帧、aura run_job
+  的 failed-Start 注册回滚、0035 双语 §1/§2/§3/§5/§6/§7 词汇更正、
+  PLAN 4.14 改写）；0036 双语 + 0034 erratum + PLAN 4.15 已随
+  0ccc064/57884f0 提交（本条更正：0036/erratum 在 0ccc064，0035+BGI
+  的 0035 首次落地在 57884f0，本轮重构是 0035 的同日更正）。
+- **闸门与残余**：4.14 剩 `HostOp::store_emit` 臂 + nu BGI fifo 垫片 +
+  PTY 退役（闸门=nu store-emit 往返过 bgi）；4.15=信封合并；iterate
+  残余=pull(n) 旋钮、Rust body 生产方。GIL 教训已入 aura-dev skill。
 
 ## 会话记录（2026-09-28，ADR-0031：远程摊位不采用）
 

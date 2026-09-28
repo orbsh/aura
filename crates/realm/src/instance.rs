@@ -220,7 +220,7 @@ impl Realm {
         let probes = realm.probes.clone();
         let probes_base_url = realm.code_base_url.clone();
         drop(realm);
-        let result = match body {
+        let mut result = match body {
             aura_booth::Body::RemoteProbe { node_alias, language, source } => {
                 // Remote probe execution (Phase 3): find the probe's live
                 // outbound connection, send Frame::Call (inline payload),
@@ -329,16 +329,14 @@ impl Realm {
                 // session.iterate (generator mode parks the native
                 // generator in the session; envelope mode re-invokes the
                 // handler with the injected `{stream_id, op}` — the
-                // handler never sees a second protocol). Start also
-                // delivers the first envelope (lazy semantics preserved:
-                // the cursor's first pull IS the start).
+                // handler never sees a second protocol).
                 let handler_for_call = job.handler.clone();
                 let args_for_call = job.args.clone();
                 let sjob = match job.kind {
                     aura_booth::JobKind::Invoke => None,
                     _ => Some(stream_op(&job)),
                 };
-                let mut result = tokio::task::spawn_blocking(move || {
+                tokio::task::spawn_blocking(move || {
                     sessions.with_session(
                         &instance_key,
                         &language,
@@ -352,37 +350,37 @@ impl Realm {
                     )
                 })
                 .await
-                .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")));
-                // Stream bookkeeping on the reply path:
-                // - Start: merge the realm-minted stream id into the
-                //   first envelope (the cursor reads it back; the
-                //   session never invents identities).
-                // - Next: exhaustion is terminal — the routing entry
-                //   goes when the producer says done (the session-side
-                //   entry already dropped itself). A stream never
-                //   disposed dies with eviction, per ADR-0034 §3.
-                if job.kind == aura_booth::JobKind::IterateStart {
-                    if let (Some(sid), Ok(serde_json::Value::Object(map))) = (&job.stream, &mut result)
-                    {
-                        map.insert("stream_id".into(), serde_json::Value::String(sid.clone()));
-                    }
-                }
-                if job.kind == aura_booth::JobKind::IterateNext {
-                    let ended = match &result {
-                        Ok(v) => v.get("done").and_then(|d| d.as_bool()) != Some(false),
-                        // failed pull: the producer side is dead —
-                        // drop the routing entry too.
-                        Err(_) => true,
-                    };
-                    if ended {
-                        if let Some(sid) = &job.stream {
-                            self_arc.lock().await.streams.remove(sid);
-                        }
-                    }
-                }
-                result
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")))
             }
         };
+        // Stream bookkeeping on the reply path — carrier-independent
+        // (ADR-0034 §2: a frame identity, and the identity travels the
+        // same way for in-process and remote producers):
+        // - Start: merge the realm-minted stream id into the first
+        //   envelope (the consumer reads it back; no carrier — session
+        //   or remote probe — invents identities).
+        // - Next: exhaustion is terminal — the routing entry goes when
+        //   the producer says done (the producer-side entry already
+        //   dropped itself). A stream never disposed dies with
+        //   eviction, per §3.
+        if job.kind == aura_booth::JobKind::IterateStart {
+            if let (Some(sid), Ok(serde_json::Value::Object(map))) = (&job.stream, &mut result) {
+                map.insert("stream_id".into(), serde_json::Value::String(sid.clone()));
+            }
+        }
+        if job.kind == aura_booth::JobKind::IterateNext {
+            let ended = match &result {
+                Ok(v) => v.get("done").and_then(|d| d.as_bool()) != Some(false),
+                // failed pull: the producer side is dead — drop the
+                // routing entry too.
+                Err(_) => true,
+            };
+            if ended {
+                if let Some(sid) = &job.stream {
+                    self_arc.lock().await.streams.remove(sid);
+                }
+            }
+        }
         // ADR-0016 revised §3: idle_ttl is measured from job COMPLETION.
         // Cancel the watchdog (budget consumed by a finished job is not a
         // violation) and re-arm idle from now. last_activity keeps its

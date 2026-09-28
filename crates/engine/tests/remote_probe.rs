@@ -233,3 +233,176 @@ async fn remote_code_travels_as_reference() {
     assert_eq!(out["doubled"], 42, "probe fetched + verified via {hex}");
     probe.abort();
 }
+
+// ---- ADR-0034: the iterate verbs cross the remote probe wire ----
+
+/// Producer lives on the PROBE (remote python booth, generator handler);
+/// the local consumer pulls through Realm::iterate — each pull is one
+/// ToolCall frame (kind=iterate_next) and the envelope rides home as the
+/// ToolResult. This is the remote producer leg.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn remote_python_booth_produces_stream_locally_consumed() {
+    const SRC: &str = r#"
+def tokens(args):
+    for t in args["list"]:
+        yield t
+"#;
+    let http_port = serve_code_source(SRC);
+    let engine = Engine::start(&aura_config::EngineConfig {
+        code_base_url: Some(format!("http://127.0.0.1:{http_port}")),
+        ..Default::default()
+    })
+    .await
+    .expect("engine boot");
+
+    let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = gw.local_addr().unwrap().port();
+    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), gw));
+    let mut config = probe_config_shim(port);
+    config.capabilities.carriers = vec!["python".into()];
+    std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
+    let probe = tokio::spawn(probe_runtime::remote::run(config));
+
+    engine
+        .register(BoothType {
+            name: "remote-prod".into(),
+            body: Body::RemoteProbe {
+                node_alias: "test-node".into(),
+                language: "python".into(),
+                source: SRC.into(),
+            },
+            idle_ttl: Some(Duration::from_secs(60)),
+            max_exec: None,
+            on_sleep: None,
+            on_wake: None,
+            receives: vec![],
+        })
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let target = InstanceId { booth_type: "remote-prod".into(), key: "p1".into() };
+    let mut got = Vec::new();
+    let mut sid: Option<String> = None;
+    loop {
+        let op = match &sid {
+            None => aura_booth::IterateOp::Start {
+                target: target.clone(),
+                handler: "tokens".into(),
+                args: serde_json::json!({ "list": ["x", "y", "z"] }),
+            },
+            Some(s) => aura_booth::IterateOp::Next { stream_id: s.clone() },
+        };
+        let slot = aura_realm::Realm::iterate(&engine.realm, op).await.unwrap();
+        let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
+            panic!("iterate is hot-only");
+        };
+        let env = result.expect("remote pull must succeed");
+        if env.get("stream_id").and_then(|s| s.as_str()).is_some() {
+            sid = Some(env["stream_id"].as_str().unwrap().to_string());
+        }
+        let e = aura_booth::Envelope::from_value(&env).unwrap();
+        if e.done {
+            break;
+        }
+        got.push(e.item.unwrap());
+        if got.len() > 5 {
+            panic!("remote stream must terminate: {got:?}");
+        }
+    }
+    assert_eq!(got, vec!["x", "y", "z"], "generator across the wire, item by item");
+    assert_eq!(engine.realm.lock().await.streams.len(), 0, "done drains the registry");
+
+    probe.abort();
+}
+
+/// Consumer lives on the PROBE (remote python booth running the loaded
+/// ctx_iterate wrapper); the producer is a LOCAL booth. The host fns
+/// ctx_iter_start/next/dispose cross back over Frame::Host — the remote
+/// consumer leg.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn remote_python_booth_consumes_local_stream() {
+    const PROD: &str = r#"
+def tokens(args):
+    for t in args["list"]:
+        yield t
+"#;
+    const CONS: &str = r#"
+def consume(args):
+    got = []
+    for tok in ctx_iterate("local-prod", "p1", "tokens", {"list": args["list"]}):
+        got.append(tok)
+        if len(got) == 2:
+            break
+    return {"got": got}
+"#;
+    // Serve the CONS bytes (the registered remote source) — the local
+    // producer needs no fetch; the probe's CodeRef addresses CONS alone.
+    let http_port = serve_code_source(CONS);
+    let engine = Engine::start(&aura_config::EngineConfig {
+        code_base_url: Some(format!("http://127.0.0.1:{http_port}")),
+        ..Default::default()
+    })
+    .await
+    .expect("engine boot");
+
+    let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = gw.local_addr().unwrap().port();
+    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), gw));
+    let mut config = probe_config_shim(port);
+    config.capabilities.carriers = vec!["python".into()];
+    std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
+    let probe = tokio::spawn(probe_runtime::remote::run(config));
+
+    engine.register(BoothType::script("local-prod", "python", PROD)).await.unwrap();
+    engine
+        .register(BoothType {
+            name: "remote-cons".into(),
+            body: Body::RemoteProbe {
+                node_alias: "test-node".into(),
+                language: "python".into(),
+                source: CONS.into(),
+            },
+            idle_ttl: Some(Duration::from_secs(60)),
+            max_exec: None,
+            on_sleep: None,
+            on_wake: None,
+            receives: vec![],
+        })
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "remote-cons".into(), key: "c1".into() },
+            "consume",
+            serde_json::json!({ "list": ["a", "b", "c", "d"] }),
+        )
+        .await
+        .expect("remote consumer");
+    assert_eq!(out, serde_json::json!({ "got": ["a", "b"] }), "break after two of four");
+
+    // The remote consumer's wrapper auto-disposed on GeneratorExit; the
+    // local producer's stream must be gone from the registry.
+    assert_eq!(
+        engine.realm.lock().await.streams.len(),
+        0,
+        "dispose crossed Frame::Host and drained the local registry"
+    );
+    probe.abort();
+}

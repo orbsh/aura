@@ -84,3 +84,91 @@ async fn wasm_booth_storage_end_to_end() {
         .expect("peek after evict");
     assert_eq!(v, serde_json::json!(2), "guest-written document survives eviction");
 }
+
+// ---- ADR-0034 consumer side: wasm pulls a python generator's stream ----
+
+/// The consumer fixture module (probe `cargo build -p actor-guest
+/// --example stream_puller --target wasm32-unknown-unknown`): its exports
+/// drive the ctx_iter_start/next/dispose host imports to completion.
+fn puller_booth() -> BoothType {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../probe/target/wasm32-unknown-unknown/debug/examples/stream_puller.wasm"
+    );
+    let bytes = std::fs::read(path).expect(
+        "stream_puller.wasm missing — build it in ~/world/probe: cargo build -p actor-guest --example stream_puller --target wasm32-unknown-unknown",
+    );
+    let source = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    BoothType::script("wasm-puller", "wasmtime", source)
+}
+
+#[cfg(feature = "python")]
+fn producer_booth() -> BoothType {
+    BoothType::script(
+        "py-prod",
+        "python",
+        r#"
+def tokens(args):
+    for t in args["list"]:
+        yield t
+"#,
+    )
+}
+
+/// Full drain: the wasm loop terminates on the typed `done` field —
+/// structural, not a sentinel. Three yields, three items across.
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn wasm_consumer_pulls_python_generator_to_done() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine.register(puller_booth()).await.unwrap();
+    #[cfg(feature = "python")]
+    engine.register(producer_booth()).await.unwrap();
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "wasm-puller".into(), key: "w1".into() },
+            "pull_all",
+            serde_json::json!({
+                "type": "py-prod", "key": "p1", "handler": "tokens",
+                "args": { "list": ["a", "b", "c"] },
+            }),
+        )
+        .await
+        .expect("wasm pull_all");
+    assert_eq!(out, serde_json::json!({ "got": ["a", "b", "c"] }));
+
+    // The producer exhausted itself: the realm's registry is empty.
+    assert_eq!(engine.realm.lock().await.streams.len(), 0, "done releases the entry");
+}
+
+/// Mid-stream break: the wasm consumer calls dispose explicitly (no
+/// destructor hook exists across the import seam) — the registry drains
+/// and the producer's generator sees GeneratorExit on close().
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn wasm_consumer_break_disposes() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine.register(puller_booth()).await.unwrap();
+    #[cfg(feature = "python")]
+    engine.register(producer_booth()).await.unwrap();
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "wasm-puller".into(), key: "w1".into() },
+            "pull_break",
+            serde_json::json!({
+                "type": "py-prod", "key": "p1", "handler": "tokens",
+                "args": { "list": ["a", "b", "c"] },
+            }),
+        )
+        .await
+        .expect("wasm pull_break");
+    assert_eq!(out, serde_json::json!({ "got": ["a", "b"] }), "abandoned after two of three");
+
+    assert_eq!(
+        engine.realm.lock().await.streams.len(),
+        0,
+        "explicit dispose must drain the registry (no leak through the import seam)"
+    );
+}

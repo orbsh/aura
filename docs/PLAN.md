@@ -259,6 +259,11 @@ Deferred gates:
 - prism docs/PLAN.md Phase 1.8 的 DESIGN CONSTRAINTS 块按该裁决改写：拨出/CBOR/远程
   摊位注册删除；站得住的部分（Node 保持 transport-only、auth block + 前缀戳、Phase 1
   流式 = fluxen 接收面）本就是 prism 自有能力，不依赖远程摊位概念。
+- 追加（同日）：wasm 出网需求复核后定案 ADR-0034——`ctx.iterate` 成为与 emit/on/
+  invoke 并列的第四原语（生成器语义：类型化 `{item,done,error?}` 信封、dispose 对偶、
+  pull 重置 idle 计时、流停止经 timer API 重武装、只做 hot 层）；wasi-http 与
+  aura_host 代理两条路都撤销（前者要 component model 迁移，后者把外部访问上移框架层，
+  违背 0031 精神）。provider 摊位（python 生成器适配 OpenAI SSE）是第一个应用实例。
 
 ## 会话记录（2026-09-26，booth 改名 + 消费者饥饿修复）
 
@@ -313,17 +318,26 @@ callslot deadline 属 feature 组合误判——见下）。
 
 ### 遗留待办（未动）
 
-- [ ] **wasm 出网 HTTP（carrier 能力，2026-09-28 立项——gravity 需求触发）**：wasmtime
-      booth 需访问外部 HTTP（首个工作负载 = gravity 调 OpenAI API）。按 ADR-0031 裁决，
-      这是 carrier 运行时能力任务，**不是 realm 配置**（不往节点 KDL 加 outbound_http）。
-      实施落点 = probe 仓 `carrier/wasmtime.rs`（`WasmSession`）：今天是 core-module ABI
-      （`aura_host` 主机导入 + CBOR 线性内存，非 component model），故走 **wasi-preview1
-      http 主机钩子**（wasmtime_wasi_http，proxy-wasi 形态）——guest 用标准 HTTP 客户端
-      库（rust: `ureq`/`reqwest` wasm 目标经 wasi；不发明专用语法），host 侧出口 + 超时 +
-      失败作为值返回 guest。安全边界：出网是实例级能力，`interface_schema` 声明 `egress`
-      主机才接线该 import（未声明 = 缺 import，实例化失败——沿用 aura_host capability-refusal
-      先例）；密钥不进模块，由 ctx/host 注入或环境代理。与 `ctx_invoke` 复用同一 host bridge
-      同步口。验收：wasm booth 一次真实 OpenAI round-trip 的 e2e（mock HTTP server 锁 wire 形态）。
+- [ ] **iterate 原语实施（ADR-0034 裁决已定，代码未动）**：与 emit/on/invoke
+      并列的流式调用。范围：① ctx 表面（aura-booth `Ctx::iterate/dispose` 句柄，
+      ADR-0011 边界清单加条目）；② 帧管道（iterate pull/dispose 骑既有调用机件，
+      stream_id 关联走 pending_remote 同形）；③ 信封 `{item,done,error?}`——
+      有原生迭代的 carrier（python `yield`/steel 闭包/rust Iterator）框架驱动生成器、
+      耗尽编码 done；无迭代协议的（nushell）handler 显式返回信封；消费方 wrapper
+      python/steel 挂 `GeneratorExit` 自动 dispose，无钩子的必须显式
+      `cursor.dispose()`；wasm 只做消费侧（拉到 done 循环）；④ 驻留计时：每次 pull
+      重置 idle 计时，流停止（耗尽/dispose）经 timer API 重武装，常规 idle_ttl
+      驱逐（不声明流长上界）；⑤ tier 只做 hot（cold 流式无消费者，不铺）。
+      验收：python 生产摊位 → wasm/python 消费 e2e，中途 break 的 dispose 断言、
+      流中途失败的 error 信封断言。probe-protocol 加两种调用臂（远程生产/消费方
+      骑同一信封）。
+- [x] **wasm 出网 HTTP——已撤销（2026-09-28 当日，被 ADR-0034 取代）**：立项后复核
+      两条路都不可取：wasi-http 主机钩子要求 component model（wasmtime 34 不支持
+      core module，carrier 迁移是平台级工程且破 4.5b 落地面）；aura_host 族新主机
+      函数则把外部访问逻辑上移框架层——违背 ADR-0031「访问方式由摊位代码决定」的
+      精神。定案：wasm 摊位的对外 HTTP = **消费兄弟摊位**——provider 摊位（python
+      生成器，httpx.stream + yield）经新原语 `ctx.iterate` 被消费（ADR-0034，
+      生成器语义流式调用）。实施任务随 ADR-0034 落到 iterate 原语本身。
 - [ ] events_matching 增量化（可选小优化）：通配订阅每轮 50ms 全量重扫；可缓存
       上轮展开 + EventName registry 水位，registry 不变即跳过。通配订阅多/词汇大
       时才值得（Windmill 判据）。

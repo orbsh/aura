@@ -139,6 +139,26 @@ Key points:
 
 The engine provides no business-data channel; bulk interaction with external storage (S3, files, external databases) is carried by an ordinary booth: `@on("import_users")` receives a batch → the handler writes through the external channel → emits a completion event. Isomorphic to a projection booth — the same event model covers it, no second class of infrastructure.
 
+## Streaming calls: iterate (generator semantics, ADR-0034)
+
+Work with sequential output (token streams, paginated fetches, long scans):
+the producer writes an `iterate` handler — in python that is just a `yield`
+generator; languages without iteration protocol (nushell) write a repeatedly
+callable function returning the `{item, done}` envelope explicitly
+(`done: true` is written, not a magic value). Consumers get a native
+iterable from `ctx.iterate(target, handler, args)` and loop it; `break`
+without a destructor hook must call `cursor.dispose()`. Termination,
+backpressure, and consumer liveness fall out of the pull structure — as
+opposed to the WS-shaped emit-per-item (sentinel by convention, no consumer
+binding, no backpressure). Residency accounting matches the usual rules:
+each pull resets the idle timer, stream end (exhaustion or dispose) rearms
+it, standard `idle_ttl` eviction. A stream is not durable and not
+replayable; mid-flight eviction = a failed pull (error envelope); a need
+for at-least-once belongs to events, not this primitive. First application:
+the provider booth (python consuming OpenAI SSE via `httpx.stream`,
+`yield` per token) feeding gravity-as-wasm — wasm's outbound HTTP need is
+served by consuming a sibling booth (ADR-0031's ruling shape).
+
 ## Quick reference
 
 | Need | Shape |
@@ -148,6 +168,7 @@ The engine provides no business-data channel; bulk interaction with external sto
 | Global observation / audit | Wildcard-subscribed singleton booth |
 | Cross-partition stats / reverse lookup | Projection booth (partitioned by the aggregation dimension) |
 | Request-response | `ctx_invoke` (declares the handler); prefer events |
+| Streaming sequential output (tokens/pagination/scans) | `ctx.iterate` — generator/envelope handler as producer, native iterable as consumer (ADR-0034); not a durable stream — need at-least-once? use events |
 | External data import/export | Dedicated booth wrapper |
 | Long waits on external results | Timer wheel / event re-entry, no residency held |
 | Residency decision | per-type `idle_ttl`: mutation flows don't stay; shared high-frequency queries stay briefly (cache shape); long sessions / LLM calls stay long |

@@ -130,6 +130,10 @@ prism 按 payload.user_id 找到该用户的 WS 连接，逐一下发
 
 ## 第五步：业务数据导入导出走专用摊位引擎不提供业务数据面通道；与外部存储（S3、文件、外部数据库）的批量数据交互，用一个普通摊位承担：`@on("import_users")` 收一批数据 → handler 内经外部通道写入 → emit 完成事件。与投影摊位同构——同一套事件模型覆盖，不引入第二类基础设施。
 
+## 流式调用：iterate（生成器语义，ADR-0034）
+
+需要顺序输出的工作（token 流、分页拉取、长扫描），生产方用 `iterate` handler——python 里就是一个 `yield` 生成器；无迭代协议的语言（nushell）写成可重复调用的函数、显式返回 `{item, done}` 信封（`done: true` 是写出来的，不是魔法值）。消费方 `ctx.iterate(target, handler, args)` 得到原生可迭代对象，`for` 循环消费，中途 `break` 时无析构钩子的语言必须 `cursor.dispose()`。终止/背压/消费方活性由拉取结构内建，不靠约定——这与逐条 emit 的 WS 式形状相对立（sentinel 靠协调、无消费方绑定、无背压）。驻留计时与常规一致：每次拉取重置 idle 计时，流停止（耗尽/dispose）时重武装，`idle_ttl` 照常驱逐。流不是持久的、不可重放；中途驱逐 = 拉取失败（错误值信封）；需要 at-least-once 的需求属于事件，不属于本原语。典型应用：provider 摊位（python 经 `httpx.stream` 消费 OpenAI SSE → `yield` per token）供 gravity-as-wasm 消费——wasm 侧对外 HTTP 由消费兄弟摊位解决（ADR-0031 的裁决形状）。
+
 ## 选型速查
 
 | 需求 | 形态 |
@@ -139,6 +143,7 @@ prism 按 payload.user_id 找到该用户的 WS 连接，逐一下发
 | 全局观察/审计 | 通配订阅单例摊位 |
 | 跨分区统计/反查 | 投影摊位（按聚合维度分区） |
 | 请求-响应 | `ctx_invoke`（声明 handler），事件优先 |
+| 流式顺序输出（token/分页/扫描） | `ctx.iterate` 生产方生成器/信封 handler，消费方原生可迭代对象（ADR-0034）；不是持久流——要 at-least-once 用事件 |
 | 外部数据导入导出 | 专用摊位包装 |
 | 长时等待外部结果 | timer wheel / 事件回投，不占驻留 |
 | 驻留决策 | per-type `idle_ttl`：改状态类不留；共享高频查询短留（缓存形态）；长会话/LLM 调用长留 |

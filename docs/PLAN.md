@@ -223,6 +223,37 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     default + per-event override; and the multi-target failure semantics (partial
     delivery failure = per-target dead-ring entries, consistent with ADR-0012).
 
+- [ ] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; design accepted, implementation pending)**
+  - One mechanism, two modes: **A (resident bridge)** = spawn per booth
+    instance, length-prefixed CBOR frames over the child's stdin/stdout
+    (JSON-lines as documented debug form), maps onto ResidentSession
+    (load=spawn+handshake, call=frame pair, evict=close+SIGKILL);
+    supervision reuses bwrap — the child's only fds are the two pipes.
+    **B (one-shot)** = A without the loop: spawn per call, args in,
+    result out, exit — the SKILL shape (invoke-only, no storage surface,
+    never a booth). The founding "CGI-like" is a misnomer on record: the
+    booth mode is the FastCGI shape; CGI (B) carries invoke alone.
+  - Language = spawn spec in the probe registry, not a carrier: `nu`
+    over the probe-shipped frame-loop shim; a Rust booth = `["./booth"]`
+    against the documented frame contract (no guest crate — the contract
+    IS the ABI, as aura_alloc is for wasm).
+  - Wire-parity gap this phase closes: `HostOp` gains the `store_emit`
+    arm — the in-process nushell bridge reaches store ops through the
+    host-fn table; stdio mode A needs them as frames. iterate (ADR-0034)
+    crosses unchanged — the envelope is CBOR-encodable schema.
+  - **Last item, never standalone: retire the nushell PTY carrier**
+    (NushellResident, bridge.nu, pump_quiet + regression locks) once mode
+    A carries store_emit and echo.rs::nushell_store_emit_roundtrip's
+    shape passes on it. Gate before deletion: the PTY roundtrip is live
+    acceptance today; removing it first turns the suite red and reopens
+    the dual-maintenance door. One execution shape per language, ever.
+  - Trust tiers unchanged (ADR-0035 §6): exec is the trusted posture
+    (bwrap = deployment-level jail for host-trusted code, same posture as
+    the embedded carriers); wasm keeps the untrusted tier (import-list
+    capability refusal fd framing cannot offer). The exec carrier makes
+    no currently-fast path faster — it buys the full-Rust booth path
+    (gravity) and any-language entry, priced by the consumer.
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.

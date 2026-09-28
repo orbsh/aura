@@ -254,6 +254,25 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     no currently-fast path faster — it buys the full-Rust booth path
     (gravity) and any-language entry, priced by the consumer.
 
+- [ ] **Phase 4.15 — Envelope unification: invoke is iterate's 1-stream (ADR-0036, docs/adr/0036-one-envelope.md en+zh; design accepted, implementation pending)**
+  - One wire envelope replaces ADR-0034's invoke/iterate protocol split (the
+    ctx surface keeps both verbs): `done` always present, always boolean;
+    terminal round `{done:true, value?}`, non-terminal round `{done:false,
+    item, stream_id? on the first reply}`; plain returns wrap to terminal
+    envelopes at the carrier; python generators project
+    `StopIteration.value`; stream association derives from `done`, not from
+    the positional stream_id heuristic (0036 §4).
+  - Touch points: probe (`ResidentSession::call` folded into the stream
+    seam, envelope_pull terminal-value validation), aura (`JobKind::Invoke`
+    removed, `Realm::call` becomes Start+unwrap sugar, `Envelope.value`,
+    `StreamCursor::value()`), the six iterate.rs tests re-shaped.
+    probe-protocol wire format unchanged (the envelope is schema).
+  - **Sequenced AFTER Phase 4.14 lands** — the exec carrier implements
+    against the unified envelope from its first frame; it must not chase a
+    moving protocol. The store_emit arm is orthogonal to the merge.
+  - ADR-0034 carries an erratum (decisions stand, forms superseded; body
+    preserved as decided).
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.

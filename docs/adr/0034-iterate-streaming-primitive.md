@@ -166,3 +166,19 @@ application), ADR-0011 (ctx boundary), ADR-0012 (failure is a value —
 mid-stream errors), ADR-0016 (timer API — TTL rearm at stream stop),
 Phase 2.6 (residency — the stateful producer), Phase 3.5 (hot tier —
 every pull), modeling.md (streaming-consumption pattern section).
+
+## Errata (2026-09-28, ADR-0036)
+
+The decisions above stand unchanged. Two FORMS are superseded:
+
+- **§1 envelope:** the `{item, done}` pair generalizes to one envelope
+  shared with invoke — a terminal round carries `value` instead of `item`
+  (`{done: true, value}` / `{done: true}`), and `done` is always a present
+  boolean. Invoke is the stream whose first reply is terminal (ADR-0036 §1).
+- **"Three verbs, one mechanism":** now "two verbs, one envelope" — invoke
+  and iterate keep their ctx names (distinct consumer intents, ADR-0036 §3)
+  but ride one wire shape. Stream association is derived from `done`, not
+  from the positional presence of a `stream_id` field (ADR-0036 §4 closes
+  that looseness in the landed protocol).
+
+The body above is preserved as decided on 2026-09-28.

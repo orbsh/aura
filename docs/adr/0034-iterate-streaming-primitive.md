@@ -128,10 +128,12 @@ socket-per-turn work, which gravity-as-wasm cannot do natively (§6).
 
 ## Honest semantic cost
 
-- **Pull is a round-trip per item batch.** Default pull granularity is one
-  item; `pull(n)` batching is available as a knob. LLM token latency is
-  dominated by generation, not by the hop — but on fast producers the hop
-  is real cost, priced at the consumer's choice.
+- **Pull is a round-trip per item.** Default and only pull granularity
+  today is one item; `pull(n)` batching is planned — the Windmill
+  criterion applies (build the knob when a fast producer makes the hop
+  cost real, not before). LLM token latency is dominated by generation,
+  not by the hop — the first consumer has no measured need yet. But on
+  fast producers the hop is real cost, priced at the consumer's choice.
 - **iterate is invoke-many with a stateful producer.** Nothing about MQ
   delivery, cursors, queues changes — and nothing helps you either: a
   stream is NOT durable, NOT replayable. Producer eviction mid-stream =

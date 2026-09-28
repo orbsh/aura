@@ -390,12 +390,10 @@ callslot deadline 属 feature 组合误判——见下）。
       + 幂等 dispose、流中途 raise 的 error 值断言、nushell 信封往返、Rust
       body 的 iterate 错误值（Rust 生产方=记录残余：closure body 无常驻
       状态可持迭代器）。probe-protocol：ToolCall 加 kind/stream（远程生产
-      腿）、HostOp 加 iterate/next/dispose（远程消费腿），远程腿 e2e 留待
-      remote_probe 测试扩展（残余）。**残余（机制在、验证/旋钮未铺）**：
-      ① wasm 消费侧 e2e——host 桥臂对 wasm 通用自动注册（aura_host import
-      族），但验收点名的 wasm 消费测试未写；② `pull(n)` 批量旋钮（ADR
-      声称"可用作旋钮"——当前仅逐条，快生产者上跳数是真实成本）；
-      ③ Rust body 生产方（closure 无常驻状态可持迭代器）。
+      腿）、HostOp 加 iterate/next/dispose（远程消费腿）。
+      **残余**：① `pull(n)` 批量旋钮（ADR-0034 措辞已同日降级为
+      "planned"——Windmill 判据，快生产者把跳数变成真实成本时再建）；
+      ② Rust body 生产方（closure 无常驻状态可持迭代器）。
       **GIL 修复（e2e 逼出的真 bug）**：python host fn 原持 GIL block_on——
       两 python 摊位互调必死锁；现
       `py.allow_threads` 释放 GIL 再阻塞。

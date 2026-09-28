@@ -535,19 +535,29 @@ impl Realm {
     }
 
     pub fn spawn_evictor(realm: &SharedRealm) {
-        // Evictor task (post-ADR-0016-revision): only the pending-call
-        // deadline sweep remains. Idle eviction is fully timer-driven —
-        // the wheel's reclaim entries fire `evict_instance` on expiry
-        // (idle measured from job completion), so the O(instances) linear
-        // scan per tick is gone.
+        // Evictor task (post-ADR-0016-revision): idle eviction is fully
+        // timer-driven — the wheel's reclaim entries fire `evict_instance`
+        // on expiry (idle measured from job completion), so the O(instances)
+        // linear scan per tick is gone. Two sweeps remain on the 5s tick:
+        // pending-call deadlines, and the exec registry's dead children
+        // (ADR-0035: a crashed child must not hold its instance resident
+        // until the next call fails — the slot is a cache entry whose
+        // process died; sweep reaps it and the next call cold-starts).
         let realm = Arc::downgrade(realm);
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(5));
             loop {
                 tick.tick().await;
                 let Some(realm) = realm.upgrade() else { break };
-                let mut locked = realm.lock().await;
-                locked.sweep_deadlines().await;
+                let sessions;
+                {
+                    let mut locked = realm.lock().await;
+                    locked.sweep_deadlines().await;
+                    sessions = locked.sessions.clone();
+                }
+                // The exec sweep takes only the registry lock briefly per
+                // slot — never held across anything blocking.
+                let _dead = sessions.sweep_dead();
             }
         });
     }

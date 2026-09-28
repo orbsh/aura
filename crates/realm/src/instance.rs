@@ -364,8 +364,22 @@ impl Realm {
         //   dropped itself). A stream never disposed dies with
         //   eviction, per §3.
         if job.kind == aura_booth::JobKind::IterateStart {
-            if let (Some(sid), Ok(serde_json::Value::Object(map))) = (&job.stream, &mut result) {
-                map.insert("stream_id".into(), serde_json::Value::String(sid.clone()));
+            let started = match &mut result {
+                Ok(serde_json::Value::Object(map)) => {
+                    if let Some(sid) = &job.stream {
+                        map.insert("stream_id".into(), serde_json::Value::String(sid.clone()));
+                    }
+                    true
+                }
+                _ => false,
+            };
+            // A failed Start never became a stream — undo the
+            // registration (the same rollback discipline as a
+            // queue-full send: no orphaned routing entries).
+            if !started {
+                if let Some(sid) = &job.stream {
+                    self_arc.lock().await.streams.remove(sid);
+                }
             }
         }
         if job.kind == aura_booth::JobKind::IterateNext {

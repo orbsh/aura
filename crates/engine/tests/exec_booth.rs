@@ -1,36 +1,35 @@
-//! ADR-0035 exec carrier e2e (aura side): a native binary speaking the
-//! line protocol registers as an booth type (`language = "exec"`, source
-//! = argv) and runs through the realm's resident-session path — plain
-//! invoke, and the ctx seam crossing back into the realm (the child's
-//! host frame answers as a real ctx_invoke against a sibling booth).
-//! The child's residency is its process; idle_ttl eviction closes stdin
-//! and reaps (the same session lifecycle as every embedded carrier).
+//! ADR-0035 exec/BGI carriers through the realm path: a framed resident
+//! booth registers with `language = "bgi"` (source = the spawn spec —
+//! the `bgi_loop` fixture speaking the line protocol), and a bare
+//! one-shot booth registers with `language = "exec"` (the `one_shot`
+//! fixture: one JSON in, one JSON out, nothing survives). Both run
+//! through the realm's resident-session dispatch — the shapes differ,
+//! the machinery does not.
 //!
-//! Mode B (one-shot SKILL) is the same spec minus the loop — a spawn
-//! declaration's business, not a second code path; this file locks mode A.
+//! exec (the bare cgi shape) has no protocol and no residency — handled
+//! by the spawn declaration, not by new realm machinery; this file locks
+//! both citizenships plus the statelessness boundary.
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 
-fn exec_bin() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/target/debug/examples/exec_loop"
-    );
+fn bin(name: &str) -> String {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/target/debug/examples/");
+    let full = format!("{path}{name}");
     assert!(
-        std::path::Path::new(path).exists(),
-        "exec_loop missing — build it in ~/world/probe: cargo build -p actor-guest --example exec_loop"
+        std::path::Path::new(&full).exists(),
+        "{name} missing — build it in ~/world/probe: cargo build -p actor-guest --examples"
     );
-    path.to_string()
+    full
 }
 
-/// Plain call: the realm's script arm dispatches into the exec session
+/// Plain call: the realm's script arm dispatches into the bgi session
 /// like any carrier — the child answers the request frame with a result.
 #[tokio::test]
-async fn exec_booth_invoke() {
+async fn bgi_booth_invoke() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "exec", exec_bin()))
+        .register(BoothType::script("bin-echo", "bgi", bin("bgi_loop")))
         .await
         .unwrap();
 
@@ -45,7 +44,7 @@ async fn exec_booth_invoke() {
     assert_eq!(out, serde_json::json!({ "echoed": { "x": 1 } }));
 
     // Same child across calls: residency is the process (the second
-    // call must not cold-start — the registry key is type/kind identity).
+    // call must not cold-start — the registry key is type/key identity).
     let out = engine
         .invoke(
             InstanceId { booth_type: "bin-echo".into(), key: "k1".into() },
@@ -57,15 +56,15 @@ async fn exec_booth_invoke() {
     assert_eq!(out, serde_json::json!({ "echoed": { "y": 2 } }));
 }
 
-/// The ctx seam across the process boundary, into the REALM: the exec
+/// The ctx seam across the process boundary, into the REALM: the bgi
 /// booth's `ctx_round_trip` sends a host frame (ctx_invoke) which the
 /// host bridge answers against a sibling python booth — child → pipes →
 /// realm → child, one full round.
 #[tokio::test]
-async fn exec_booth_ctx_invoke_to_sibling() {
+async fn bgi_booth_ctx_invoke_to_sibling() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "exec", exec_bin()))
+        .register(BoothType::script("bin-echo", "bgi", bin("bgi_loop")))
         .await
         .unwrap();
     engine
@@ -94,14 +93,14 @@ def handle(args):
     assert_eq!(out, serde_json::json!({ "from": "python", "got": 42 }));
 }
 
-/// ADR-0034 over the exec seam through the realm: the iterate jobs drive
+/// ADR-0034 over the bgi seam through the realm: the iterate jobs drive
 /// the child's guard state; done drains the realm registry (the same
 /// bookkeeping the script carriers get — carrier-independent by design).
 #[tokio::test]
-async fn exec_booth_iterate_through_realm() {
+async fn bgi_booth_iterate_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-prod", "exec", exec_bin()))
+        .register(BoothType::script("bin-prod", "bgi", bin("bgi_loop")))
         .await
         .unwrap();
 
@@ -139,14 +138,15 @@ async fn exec_booth_iterate_through_realm() {
     assert_eq!(realm.lock().await.streams.len(), 0, "done drains the registry");
 }
 
-/// Eviction ends the residency: the child is closed + reaped (the
-/// session's Drop), the registry slot gone. Re-invocation cold-starts.
+/// BGI residency: eviction reaps the child, re-invocation cold-starts
+/// (the same session lifecycle as every embedded carrier).
 #[tokio::test]
-async fn exec_booth_eviction_reaps_the_child() {
+async fn bgi_booth_eviction_reaps_the_child() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
-            BoothType::script("bin-echo", "exec", exec_bin()).with_idle_ttl(std::time::Duration::from_millis(200)),
+            BoothType::script("bin-echo", "bgi", bin("bgi_loop"))
+                .with_idle_ttl(std::time::Duration::from_millis(200)),
         )
         .await
         .unwrap();
@@ -155,10 +155,57 @@ async fn exec_booth_eviction_reaps_the_child() {
     assert!(engine.realm.lock().await.is_resident(&target));
 
     // Drive eviction directly (not the 5s tick): the instance evict runs
-    // sessions.evict — the exec slot's Drop closes stdin + reaps.
+    // sessions.evict — the bgi slot's Drop closes stdin + reaps.
     aura_realm::Realm::evict_instance(engine.realm.clone(), &target).await;
 
     // Cold start: the next call spawns a fresh child and works.
     let out = engine.invoke(target.clone(), "echo", serde_json::json!("post-evict")).await.unwrap();
     assert_eq!(out, serde_json::json!({ "echoed": "post-evict" }));
+}
+
+/// exec (the bare cgi shape) through the realm: invoke works like any
+/// carrier (one JSON in, one JSON out per call); iterate is a NAMED
+/// error — statelessness by definition, the fix is bgi. The counter
+/// handler proves it: every call counts its own args, never a previous
+/// call's (a one-shot guard could not exist even if asked).
+#[tokio::test]
+async fn exec_oneshot_booth_through_realm() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(BoothType::script("bin-shot", "exec", bin("one_shot")))
+        .await
+        .unwrap();
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "bin-shot".into(), key: "s1".into() },
+            "echo",
+            serde_json::json!({ "now": 1 }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({ "echoed": { "now": 1 } }));
+
+    let realm = engine.realm.clone();
+    let slot = aura_realm::Realm::iterate(
+        &realm,
+        aura_booth::IterateOp::Start {
+            target: InstanceId { booth_type: "bin-shot".into(), key: "s1".into() },
+            handler: "count".into(),
+            args: serde_json::json!({ "total": 2 }),
+        },
+    )
+    .await
+    .unwrap();
+    let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
+        panic!("hot only");
+    };
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("stateless by definition") && err.contains("bgi"),
+        "one-shot iterate names the design: {err}"
+    );
+    // A failed Start must not leak a registry entry (the rollback
+    // discipline of every failed send).
+    assert_eq!(realm.lock().await.streams.len(), 0, "no orphaned stream entry");
 }

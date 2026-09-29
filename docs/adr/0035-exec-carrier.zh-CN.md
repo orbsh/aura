@@ -81,7 +81,10 @@ bgi 形态用一套帧编码，一行一帧。JSON-lines 是【已落地】形�
 ```
 
 `result` 只承载成功值——调用中途失败经父侧错误通道浮现（外层 Result
-纪律，ADR-0012；信封的终止形态是 Phase 4.15 的合并，ADR-0036）。
+纪律，ADR-0012）。统一信封（ADR-0036，Phase 4.15 已落地）下，派发帧的
+应答是流信封：裸 one-shot 脚本的 stdout 在【载体】包成
+`{done: true, value: <stdout>}`——脚本保持无协议（0036 §2），其后的
+流动词是点名错误值（cgi 形态不持驻留）。
 
 ### 4. 语言 = spawn 声明，不是载体
 
@@ -189,7 +192,8 @@ exec 载体不削弱任何东西，因为它不替换任何沙箱：bwrap jail �
   策略复用；nushell PTY 机件随 §6 闸门退役（`nushell` 语言字符串、PTY 模块
   与其 Cargo feature 已移除——nu 的形态是 `exec` 与 `bgi`/双 fifo）。
 - **aura：** 帧协议复用既有操作词汇（ToolCall/HostOp）；`HostOp` 加
-  `store_emit` 臂——进程内 nushell 桥与远程 stdio 桥之间的线路对齐缺口。
+  `store_emit` 臂（Phase 4.14 闸门 1）——补上远程 stdio 桥相对嵌入式载体
+  的线路对齐缺口。
   注册里的语言字符串选择 spawn 声明。ADR-0011 的 ctx 边界不动——host fn
   没有增加，是一种传输长出来了。
 - **gravity：** 全 Rust 摊位面 = bgi binary；SKILLs = exec（裸一次性）。

@@ -100,17 +100,23 @@ Frame vocabulary (the bgi duplex):
 ```
 
 `result` is a success value only — mid-call failures surface on the
-parent's error channel (the outer Result discipline, ADR-0012; the
-envelope's terminal form is Phase 4.15's merge, ADR-0036).
+parent's error channel (the outer Result discipline, ADR-0012). Under the
+unified envelope (ADR-0036, landed in Phase 4.15) a dispatch frame's reply
+is a stream envelope: a plain one-shot script's bare stdout is wrapped to
+`{done: true, value: <stdout>}` at the carrier — the script stays
+protocol-free (0036 §2), and the stream verbs after it are the named
+error value (the cgi shape holds no residency).
 
 Host calls in bgi ride the same `HostOp` vocabulary as the wire bridge
-(invoke, iterate). `ctx_store_emit` is not yet a wire arm — the in-process
-nushell bridge reaches it through the host-fn table, and bgi needs an
-explicit `store_emit` variant added to `HostOp` (recorded in Consequences
-as the wire-parity gap this carrier closes). stdio is a transport for the
-existing ops, not a new surface. The iterate envelope (ADR-0034) is
-CBOR-encodable schema: it crosses unchanged, and the frame protocol
-inherits its typing rules (`done` is a field, never a sentinel).
+(invoke, iterate). `ctx_store_emit` joined the arm set at Phase 4.14
+gate 1 (`HostOp::StoreEmit` — one okm instruction as DATA, schema-blind
+on the probe side); the JSON instruction document is ADR-0037's declared
+transitional shape, op set frozen, retiring with CBOR. stdio is a
+transport for the existing ops, not a new surface. The envelope
+(ADR-0034, unified by ADR-0036: one shape, `done` always a boolean,
+`value` on the terminal round) is CBOR-encodable schema: it crosses
+unchanged, and the frame protocol inherits its typing rules (`done` is a
+field, never a sentinel).
 
 ### 4. Language = spawn spec, not carrier
 
@@ -246,8 +252,9 @@ wasm module has nothing until the host wires it).
   (the `nushell` language string, the PTY module and its Cargo feature are
   gone — nu's shapes are `exec` and `bgi`/two-fifo).
 - **aura:** the frame protocol reuses the existing op vocabulary
-  (ToolCall/HostOp); `HostOp` gains the `store_emit` arm — the wire-parity
-  gap between the in-process nushell bridge and the remote stdio bridge.
+  (ToolCall/HostOp); `HostOp` gained the `store_emit` arm (Phase 4.14
+  gate 1) — closing the wire-parity gap the remote stdio bridge had
+  against the embedded carriers.
   The language string in registration selects a spawn spec. ADR-0011's ctx
   boundary is untouched — host fns gained nothing, a transport grew.
 - **gravity:** full-Rust booth path = bgi binary; SKILLs = exec

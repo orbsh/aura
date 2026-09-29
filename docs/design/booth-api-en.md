@@ -208,25 +208,39 @@ No-entry semantics: define a `*result*` variable in the source.
 [中文](#nushell-2)
 
 ```nu
-# PTY-resident session: one long-lived nu REPL per booth instance,
-# cross-call state in $env; ctx host functions ride a file bridge
-# (nu writes req-*.json, the host poll loop answers resp-*.json) —
-# command names are ctx-<dash-name> (nu forbids dots)
-export def execute [args] {
-    { sum: ($args.items | math sum) }
+# The bgi two-fifo shape (ADR-0035 §8; the PTY carrier retired): the
+# spawn spec is `nu <author.nu>`, and `def main [req rep]` IS the loop —
+# the parent writes frames to req (writer-close = the batch-EOF wake-up),
+# ctx answers ride a SECOND channel, rep (two readers on one fifo
+# deadlocked in measurement), results print to stdout. Cross-call state
+# lives in `$env` (the `for` batch-loop scope persists; an `each` closure
+# eats the writes).
+def --env dispatch [m] {
+    match ($m.event? | default "") {
+        "sum" => { {sum: ($m.args.items | math sum)} }
+        # … hand-written arms for the other handlers (nu has no eval and
+        # `source` rejects dynamic paths — the dispatch-table ruling: a
+        # language without a runtime name lookup hand-writes the match)
+    }
 }
+def main [req: string, rep: string] { … loop { for line in (open --raw $req | lines) { … } } }
 ```
 
-- The entry must be `export def <name>`; a bare `main` is not addressable
-  through module import and is explicitly rejected
+- The entry is `def main [req rep]` (nu auto-calls main with script args);
+  handler dispatch is a match on event names INSIDE the author's script —
+  no lookup fallback, an unknown event answers an error value
 - The argument is one parsed value (record/list), not a string; the return
   value must survive `to json --raw`
-- Handlers are addressed by event name (exported fn names = event names);
-  `interface_schema` declarations work through the generic wrapper
-  (`export def interface_schema [args]` can declare a lifecycle TTL and a
-  storage literal)
-- The ctx bridge landed 2026-09-25: `ctx-invoke` / `ctx-store-emit` /
-  `ctx-interface-schema` carry the same op set as the in-process carriers
+- Unified envelope (ADR-0036): a plain handler answers a bare value — the
+  carrier wraps it to `{done:true,value}`; only the stream verbs
+  (iterate_start/next) write `done` explicitly
+- ctx calls ride literal-name defs (`ctx-invoke` / `ctx-store-emit` —
+  the author's own helpers; the op names are the carrier's fixed
+  vocabulary) — the same op set as the other carriers
+- Measured pitfalls (do not reinvent; PLAN 2026-09-29): a non-TTY stdin
+  cannot block-read, `open` delivers at writer-EOF, `else` must sit on the
+  same line as the branch's `}`, `$env` writes do not escape an `each`
+  closure
 
 ## Wasm (written in Rust)
 

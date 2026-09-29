@@ -130,9 +130,9 @@ prism 按 payload.user_id 找到该用户的 WS 连接，逐一下发
 
 ## 第五步：业务数据导入导出走专用摊位引擎不提供业务数据面通道；与外部存储（S3、文件、外部数据库）的批量数据交互，用一个普通摊位承担：`@on("import_users")` 收一批数据 → handler 内经外部通道写入 → emit 完成事件。与投影摊位同构——同一套事件模型覆盖，不引入第二类基础设施。
 
-## 流式调用：iterate（生成器语义，ADR-0034）
+## 流式调用：iterate（生成器语义，ADR-0034；一套信封，ADR-0036）
 
-需要顺序输出的工作（token 流、分页拉取、长扫描），生产方用 `iterate` handler——python 里就是一个 `yield` 生成器；无宿主可驱动生成器的语言（steel、nushell、wasm——Rust 写的 wasm guest 在模块状态内映射自己的 `Iterator`，耗尽时在 ABI 边缘投影为信封）写成可重复调用的函数、显式返回 `{item, done}` 信封（`done: true` 是写出来的，不是魔法值）。python 消费方 `for` 循环原生 `ctx_iterate(...)`（break 经 GeneratorExit 自动 dispose）；Rust 摊位经 `ctx.iterate(target, handler, args)` 拿游标；无析构钩子的 carrier 必须显式 `dispose`。终止/背压/消费方活性由拉取结构内建，不靠约定——这与逐条 emit 的 WS 式形状相对立（sentinel 靠协调、无消费方绑定、无背压）。驻留计时与常规一致：每次拉取重置 idle 计时，流停止（耗尽/dispose）时重武装，`idle_ttl` 照常驱逐。流不是持久的、不可重放；中途驱逐 = 拉取失败（错误值信封）；需要 at-least-once 的需求属于事件，不属于本原语。典型应用：provider 摊位（python 经 `httpx.stream` 消费 OpenAI SSE → `yield` per token）供 gravity-as-wasm 消费——wasm 侧对外 HTTP 由消费兄弟摊位解决（ADR-0031 的裁决形状）。
+需要顺序输出的工作（token 流、分页拉取、长扫描），生产方用 `iterate` handler——python 里就是一个 `yield` 生成器；无宿主可驱动生成器的语言（steel、nushell、wasm——Rust 写的 wasm guest 在模块状态内映射自己的 `Iterator`，耗尽时在 ABI 边缘投影为信封）写成可重复调用的函数、显式返回信封（ADR-0036 §1：每个 handler 应答同一形状——`done` 恒为布尔，非终止轮带 `item`，终止轮可带 `value`；python 生成器的 `return x` 投影进终止轮的 `value`——宿主语言本就把两者统一）。plain handler 回裸值即可：载体把它包成 `{done: true, value}`（0036 §2）——invoke 就是首轮即终止的流，同一 handler 因此能骑两个动词。python 消费方 `for` 循环原生 `ctx_iterate(...)`（break 经 GeneratorExit 自动 dispose）；Rust 摊位经 `ctx.iterate(target, handler, args)` 拿游标；无析构钩子的 carrier 必须显式 `dispose`。终止/背压/消费方活性由拉取结构内建，不靠约定——这与逐条 emit 的 WS 式形状相对立（sentinel 靠协调、无消费方绑定、无背压）。驻留计时与常规一致：每次拉取重置 idle 计时，流停止（耗尽/dispose）时重武装，`idle_ttl` 照常驱逐。流不是持久的、不可重放；中途驱逐 = 拉取失败（错误值，ADR-0012——失败走 Result，信封内没有第二通道）；需要 at-least-once 的需求属于事件，不属于本原语。典型应用：provider 摊位（python 经 `httpx.stream` 消费 OpenAI SSE → `yield` per token）供 gravity-as-wasm 消费——wasm 侧对外 HTTP 由消费兄弟摊位解决（ADR-0031 的裁决形状）。
 
 ## 选型速查
 

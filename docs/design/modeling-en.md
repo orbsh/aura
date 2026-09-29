@@ -139,15 +139,21 @@ Key points:
 
 The engine provides no business-data channel; bulk interaction with external storage (S3, files, external databases) is carried by an ordinary booth: `@on("import_users")` receives a batch → the handler writes through the external channel → emits a completion event. Isomorphic to a projection booth — the same event model covers it, no second class of infrastructure.
 
-## Streaming calls: iterate (generator semantics, ADR-0034)
+## Streaming calls: iterate (generator semantics, ADR-0034; one envelope, ADR-0036)
 
 Work with sequential output (token streams, paginated fetches, long scans):
 the producer writes an `iterate` handler — in python that is just a `yield`
 generator; languages without a host-drivable generator (steel, nushell,
 wasm — a Rust wasm guest maps its own `Iterator` in module state and
 projects exhaustion into the envelope at the ABI edge) write a repeatedly
-callable function returning the `{item, done}` envelope explicitly
-(`done: true` is written, not a magic value). Consumers in python loop the
+callable function returning the envelope explicitly (ADR-0036 §1: one
+shape for every handler response — `done` always a boolean, non-terminal
+rounds carry `item`, the terminal round may carry `value`; python
+generators project `return x` into the terminal `value` — the host
+language already unifies it). A plain handler replies with a bare value:
+the carrier wraps it to `{done: true, value}` (0036 §2) — invoke is the
+stream whose first reply is terminal, which is why the same handler rides
+both verbs. Consumers in python loop the
 native `ctx_iterate(...)` generator (break auto-disposes via GeneratorExit);
 Rust booths get a cursor from `ctx.iterate(target, handler, args)`;
 carriers without a destructor hook must call `dispose` explicitly. Termination,
@@ -156,7 +162,8 @@ opposed to the WS-shaped emit-per-item (sentinel by convention, no consumer
 binding, no backpressure). Residency accounting matches the usual rules:
 each pull resets the idle timer, stream end (exhaustion or dispose) rearms
 it, standard `idle_ttl` eviction. A stream is not durable and not
-replayable; mid-flight eviction = a failed pull (error envelope); a need
+replayable; mid-flight eviction = a failed pull (an error value, ADR-0012
+— failure rides the Result, never a second channel inside the envelope); a need
 for at-least-once belongs to events, not this primitive. First application:
 the provider booth (python consuming OpenAI SSE via `httpx.stream`,
 `yield` per token) feeding gravity-as-wasm — wasm's outbound HTTP need is

@@ -1,8 +1,8 @@
 //! Booth model: definition, context, queue.
 //!
-//! ctx surface is bounded by ADR-0011: state / metadata / invoke only.
-//! emit/on, contracts, and hooks stay off ctx (realm-level or static
-//! contract concerns).
+//! ctx surface is bounded by ADR-0011 (errata through 2026-09-29):
+//! store / invoke / iterate(+dispose). emit/on, contracts, and hooks stay
+//! off ctx (realm-level or static contract concerns).
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -165,8 +165,10 @@ pub mod futures_boxed {
         std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 }
 
-/// Per-instance context. ADR-0011: exactly state / metadata / invoke.
-/// Metadata lands with Openraft (Phase 5); the surface reserves the name.
+/// Per-instance context. ADR-0011 (errata through 2026-09-29): exactly
+/// store / invoke / iterate(+dispose) — the former `ctx.metadata` was
+/// withdrawn (ADR-0025), the point-state model replaced by type-scoped
+/// collections (ADR-0026 §3).
 pub struct Ctx {
     /// This instance's identity: (booth type, instance key). Answers who
     /// serially processes this message (ADR-0026) — storage addressing

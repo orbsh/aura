@@ -138,18 +138,26 @@ host 函数参数为 JSON 字符串（可传原生 steel 值，自动 marshal）
 [English](#nushell-1)
 
 ```nu
-# PTY 驻留会话：一个实例一个长驻 nu REPL，跨调用内存态走 $env；
-# ctx host 函数经文件桥应答（nu 写 req-*.json，宿主 poll 循环回 resp-*.json），
-# 命令名为 ctx-<短横线名>（nu 禁点号）
-export def execute [args] {
-    { sum: ($args.items | math sum) }
+# bgi 双 fifo 形态（ADR-0035 §8；PTY 载体已退役）：spawn spec 是
+# `nu <author.nu>`，`def main [req rep]` 就是循环——父侧逐帧写 req（写关
+# 即批次 EOF 唤醒）、ctx 应答走第二条通道 rep（单 fifo 双读者实测死锁）、
+# 结果打 stdout。跨调用内存态住 `$env`（for 批次循环作用域存活，`each`
+# 闭包吞写）。
+def --env dispatch [m] {
+    match ($m.event? | default "") {
+        "sum" => { {sum: ($m.args.items | math sum)} }
+        # … 其余 handler 手写臂（nu 无 eval、source 拒动态路径——分派表
+        # 裁决：没有运行时查表的语言就手写 match 字面名）
+    }
 }
+def main [req: string, rep: string] { … loop { for line in (open --raw $req | lines) { … } } }
 ```
 
-- 入口必须 `export def <name>`；裸 `main` 不可通过模块导入寻址，会被显式拒绝
+- 入口是 `def main [req rep]`（nu 对脚本参数自动调用 main）；handler 派发在作者脚本内按事件名 match——无查表回落，未知事件回错误值
 - 参数是一个解析后的值（record/list），不是字符串；返回值必须可 `to json --raw`
-- handler 按事件名寻址（导出的函数名 = 事件名）；`interface_schema` 声明经由通用 wrapper 生效（`export def interface_schema [args]` 可声明 lifecycle TTL 与 storage 字面量）
-- ctx 桥 2026-09-25 落地：`ctx-invoke` / `ctx-store-emit` / `ctx-interface-schema` 与其余进程内 carrier 同操作集；桥的回合间回归锁见 PLAN 遗留节
+- 信封统一形态（ADR-0036）：plain handler 答裸值即可，载体包 `{done:true,value}`；流动词（iterate_start/next）才要显式写 `done`
+- ctx 调用经 `ctx-invoke` / `ctx-store-emit` 等字面名 def（作者自带 helper；操作名是载体的固定词汇）——与其余 carrier 同操作集
+- 实测坑（勿重新发明，PLAN 2026-09-29 有档）：非 TTY stdin 不能阻塞读、`open` 在写方 EOF 交付、`else` 须与分支 `}` 同行、`$env` 写不出 `each` 闭包
 
 ## Wasm（Rust 编写）
 

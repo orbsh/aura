@@ -2,11 +2,11 @@
 
 > **Languages:** [English](0036-one-envelope.md) (primary) · [中文](0036-one-envelope.zh-CN.md)
 
-**Status:** Accepted (2026-09-28). Design; implementation pending, see
-Consequences. Supersedes the protocol-level verb separation in ADR-0034
-(the ctx surface keeps two verbs; the wire carries one envelope). Raised
-by the user's symmetry: done is always a boolean field, the terminal done
-may carry a value — invoke is the done that arrives on the first round.
+**Status:** Accepted (2026-09-28); LANDED (Phase 4.15, 2026-09-29 — probe
+96c56df / aura d21397c). Supersedes the protocol-level verb separation in
+ADR-0034 (the ctx surface keeps two verbs; the wire carries one envelope).
+Raised by the user's symmetry: done is always a boolean field, the terminal
+done may carry a value — invoke is the done that arrives on the first round.
 
 ## Context
 

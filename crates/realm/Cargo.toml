@@ -27,7 +27,6 @@ fjall = ["dep:fjall"]
 steel = ["probe-runtime/steel"]
 python = ["probe-runtime/python"]
 wasmtime = ["probe-runtime/wasmtime"]
-nushell = ["probe-runtime/nushell"]
 
 [dependencies.anyhow]
 workspace = true

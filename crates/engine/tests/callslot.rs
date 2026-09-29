@@ -9,8 +9,9 @@ use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
 use std::time::Duration;
 
-// Steel script booths (4.5a). slow_echo: nushell subprocess — its natural
-// spawn latency (~100-500ms) provides the slow handler the deadline tests need.
+// Steel script booths (4.5a). slow_echo: a bgi child whose `slow`
+// handler really sleeps 500ms — the deadline tests need latency a hot
+// timeout can beat (the nushell PTY's spawn latency role, retired).
 const ECHO: &str = r#"
 (define (execute args) args)
 "#;
@@ -19,18 +20,21 @@ fn echo() -> BoothType {
     BoothType::script("echo", "steel", ECHO)
 }
 
-// slow_echo IS the slow handler the deadline tests need (PTY spawn
-// latency) — without the nushell feature activation fails fast with a
-// carrier error and the timeout assertion compares the wrong value.
-#[cfg(feature = "nushell")]
-fn slow_echo() -> BoothType {
-    const SLOW: &str = r#"
-export def execute [args] {
-    sleep 1sec
-    args
+fn bgi_bin() -> String {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/target/debug/examples/");
+    let full = format!("{path}bgi_loop");
+    assert!(
+        std::path::Path::new(&full).exists(),
+        "bgi_loop missing — build it in ~/world/probe: cargo build -p actor-guest --examples"
+    );
+    full
 }
-"#;
-    BoothType::script("slow_echo", "nushell", SLOW)
+
+// slow_echo IS the slow handler the deadline tests need (bgi child,
+// 500ms sleep) — the shape is feature-free: bgi spawns by exec, no
+// embedded interpreter gate.
+fn slow_echo() -> BoothType {
+    BoothType::script("slow_echo", "bgi", bgi_bin())
 }
 
 #[tokio::test]
@@ -51,7 +55,6 @@ async fn hot_call_parks_and_returns() {
     }
 }
 
-#[cfg(feature = "nushell")]
 #[tokio::test]
 async fn hot_timeout_is_failure_value() {
     let engine = Engine::start(&Default::default()).await.unwrap();
@@ -69,7 +72,7 @@ async fn hot_timeout_is_failure_value() {
     let err = engine
         .call(
             InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
-                "execute",
+                "slow",
             serde_json::json!(null),
         )
         .await
@@ -133,7 +136,6 @@ async fn resolve_unknown_call_is_noop() {
         .await);
 }
 
-#[cfg(feature = "nushell")]
 #[tokio::test]
 async fn deadline_scan_fails_expired_hot_calls() {
     let engine = Engine::start(&Default::default()).await.unwrap();
@@ -150,7 +152,7 @@ async fn deadline_scan_fails_expired_hot_calls() {
     let slot = engine
         .call(
             InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
-                "execute",
+                "slow",
             serde_json::json!(null),
         )
         .await

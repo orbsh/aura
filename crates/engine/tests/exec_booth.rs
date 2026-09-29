@@ -251,3 +251,63 @@ async fn bgi_booth_store_emit_roundtrip() {
         "the put landed in the type's store and the get read it back through the wire"
     );
 }
+
+/// Phase 4.14 gate 2: the same store-emit round trip over the NUSHELL
+/// bgi adapter (the two-fifo shape — spawn spec `nu <author.nu>`, the
+/// author's `def main` loop). This is the live acceptance for the PTY
+/// retirement: every ctx capability the nushell PTY bridge carried
+/// (schema upload-introspection + store emit) provably crosses the
+/// boundary on the framed resident shape, so the PTY machinery
+/// (NushellResident, bridge.nu, pump_quiet) retires without a gap.
+#[tokio::test]
+async fn bgi_nu_booth_store_emit_roundtrip() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+    );
+    assert!(std::path::Path::new(fixture).exists(), "nu bgi fixture missing: {fixture}");
+    engine
+        .register(BoothType::script("nu-store", "bgi", format!("nu {fixture}")))
+        .await
+        .unwrap();
+
+    // Upload introspection ran through the fifo seam: the schema frame
+    // round-tripped and its storage block resolved a plan.
+    assert!(
+        engine.realm.lock().await.plan_of("nu-store").is_some(),
+        "the nu fixture's declared storage resolves a plan over the fifo shape"
+    );
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "nu-store".into(), key: "s1".into() },
+            "store_round_trip",
+            serde_json::json!({
+                "put": { "collection": "counters", "op": "put_document",
+                         "key": { "id": 7 }, "doc": { "count": 99 } },
+                "get": { "collection": "counters", "op": "get_document",
+                         "key": { "id": 7 } },
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out["read_back"]["count"], 99,
+        "two host frames answered over the rep fifo; the realm store round-trips on the nu shape"
+    );
+
+    // Residency on the fifo shape: the second call rides the SAME child
+    // — the count guard lives in the child's $env (the PTY carrier's
+    // $env rule, now without the PTY).
+    let c1 = engine
+        .invoke(InstanceId { booth_type: "nu-store".into(), key: "s2".into() }, "count", serde_json::json!({}))
+        .await
+        .unwrap();
+    let c2 = engine
+        .invoke(InstanceId { booth_type: "nu-store".into(), key: "s2".into() }, "count", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!((c1["count"].as_u64(), c2["count"].as_u64()), (Some(1), Some(2)),
+        "one child per instance; $env state persists across calls");
+}

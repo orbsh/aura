@@ -307,12 +307,13 @@ impl Realm {
                 }
             }
             aura_booth::Body::Script { language, source } => {
-                // Resident sessions (Phase 2.6): one VM/PTY per booth
+                // Resident sessions (Phase 2.6): one VM/child per booth
                 // instance, loaded once, called per event. Cross-call
-                // state lives in the session (module globals / $env);
-                // eviction drops it. spawn_blocking so host fns may block
-                // on the async ctx. Nushell carries the bridge too now —
-                // host fns ride the session dir's request/response files.
+                // state lives in the session (module globals / the child's
+                // own memory); eviction drops it. spawn_blocking so host
+                // fns may block on the async ctx. The out-of-process
+                // shapes carry the bridge over their channels (bgi frames,
+                // the retired PTY's file round trips are gone).
                 let host = {
                     // Wasm full-power raw surface: the type's resolved
                     // plan carries its ns; the raw engine handle rides

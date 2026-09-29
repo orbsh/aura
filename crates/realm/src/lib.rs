@@ -42,7 +42,7 @@ pub struct Realm {
     pub idle_ttl: Duration,
     /// Event routing: table + emit matching (Phase 3).
     pub router: event::EventRouter,
-    /// Resident script sessions (Phase 2.6): per-instance VM/PTY, owned by
+    /// Resident script sessions (Phase 2.6): per-instance VM/child, owned by
     /// the realm — sessions die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
     pub sessions: probe_runtime::carrier::session::Sessions,

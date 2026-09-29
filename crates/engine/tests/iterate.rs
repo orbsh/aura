@@ -38,7 +38,7 @@ def consume(args):
     )
 }
 
-#[cfg(all(feature = "python", feature = "nushell"))]
+#[cfg(feature = "python")]
 async fn boot() -> Engine {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
@@ -50,7 +50,7 @@ async fn boot() -> Engine {
 
 // Full drain: for-loop over a sibling's generator, envelope ends with
 // done:true; the realm's stream registry is empty afterwards.
-#[cfg(all(feature = "python", feature = "nushell"))]
+#[cfg(feature = "python")]
 #[tokio::test]
 async fn python_generator_to_python_consumer() {
     let engine = boot().await;
@@ -76,7 +76,7 @@ async fn python_generator_to_python_consumer() {
 
 // Mid-stream break: the wrapper's GeneratorExit path MUST deliver
 // dispose — observable as the registry entry leaving the live set.
-#[cfg(all(feature = "python", feature = "nushell"))]
+#[cfg(feature = "python")]
 #[tokio::test]
 async fn break_sends_dispose() {
     let engine = boot().await;
@@ -105,7 +105,7 @@ async fn break_sends_dispose() {
 // A pull naming an unknown stream id fails eagerly with an error value
 // (ADR-0012) — streams are not durable and never replay. Dispose is
 // the idempotent dual: an unknown id answers success, no job, no error.
-#[cfg(all(feature = "python", feature = "nushell"))]
+#[cfg(feature = "python")]
 #[tokio::test]
 async fn unknown_stream_and_idempotent_dispose() {
     let engine = boot().await;
@@ -132,7 +132,7 @@ async fn unknown_stream_and_idempotent_dispose() {
 // Mid-stream producer failure: a raising generator fails the pull —
 // error values, never a second channel. The routing entry drops with
 // the failure (the producer side is dead).
-#[cfg(all(feature = "python", feature = "nushell"))]
+#[cfg(feature = "python")]
 #[tokio::test]
 async fn mid_stream_failure_is_error_value() {
     let engine = Engine::start(&Default::default())
@@ -184,45 +184,41 @@ def consume(args):
     assert_eq!(live, 0, "a failed stream must leave the registry");
 }
 
-// Envelope mode (nushell): the handler is a repeatedly callable def
-// writing `done: true` explicitly — no generator protocol, no magic.
-// The framework injects {stream_id, op}; the guard counter rides $env.
-// The cursor is driven Rust-side: the envelope contract is
-// carrier-independent.
-#[cfg(feature = "nushell")]
+// Envelope mode (steel — the test migrated off the retired nushell PTY:
+// the contract is carrier-side `envelope_pull`, the framework injects
+// `{stream_id, op}` into args and validates the boolean `done`; steel is
+// the embedded carrier that rides this path): the handler is a repeatedly
+// callable function writing `done: true` explicitly — no generator
+// protocol, no magic. The guard counter rides script-global state (the
+// session VM persists across calls — the PTY's $env rule, same tier).
+#[cfg(feature = "steel")]
 #[tokio::test]
-async fn nushell_envelope_producer() {
+async fn steel_envelope_producer() {
     let engine = Engine::start(&Default::default())
         .await
         .expect("engine boot");
     engine
         .register(BoothType::script(
-            "nu-prod",
-            "nushell",
-            r#"export def --env "count3" [args: record] {
-    let op = $args.iterate.op
-    if $op == "start" {
-        $env.AURA_NU_TEST_COUNT = 0
-        ({ item: 0, done: false })
-    } else if $op == "next" {
-        let cur = ($env | get AURA_NU_TEST_COUNT? | default 0) + 1
-        if $cur > 2 {
-            ({ done: true })
-        } else {
-            $env.AURA_NU_TEST_COUNT = $cur
-            ({ item: $cur, done: false })
-        }
-    } else {
-        ({ done: true })
-    }
-}
+            "steel-prod",
+            "steel",
+            r#"
+(define count3-state 0)
+(define (count3 args)
+  (let ((op (hash-ref (hash-ref args "iterate") "op")))
+    (if (string=? op "start")
+        (begin (set! count3-state 0) (hash "item" 0 "done" #f))
+        (begin
+          (set! count3-state (+ count3-state 1))
+          (if (> count3-state 2)
+              (hash "done" #t)
+              (hash "item" count3-state "done" #f))))))
 "#,
         ))
         .await
         .unwrap();
 
     let realm = engine.realm.clone();
-    let target = InstanceId { booth_type: "nu-prod".into(), key: "n1".into() };
+    let target = InstanceId { booth_type: "steel-prod".into(), key: "n1".into() };
     let mut items = Vec::new();
     let mut stream_id: Option<String> = None;
     loop {

@@ -170,18 +170,21 @@ frames), not aura-side machinery (the realm never sees it), and not
 required for exec — the bare shape has no loop to wrap; its adapter is
 the per-call spawn itself.
 
-### 6. Nushell PTY retirement, gated — no dual tracks
+### 6. Nushell PTY retirement — LANDED, no dual tracks
 
 The PTY carrier (NushellResident, bridge.nu, pump_quiet and its regression
-locks) is deleted once bgi carries the `ctx_store_emit` arm
-(`HostOp` gains the `store_emit` variant — wire parity with what the
-in-process bridge already provides) and the nushell round-trip test
-(echo.rs::nushell_store_emit_roundtrip's shape) passes on it. Retirement
-is sequenced behind that gate because
-the store-emit roundtrip is live acceptance today — deleting the PTY
-first would turn the suite red and re-open the double-maintenance door
-the same pass is meant to close. One execution shape per language, ever:
-the dual track exists only between "landed" and "gate passed".
+locks) is deleted: bgi carries the `ctx_store_emit` arm (the `HostOp`
+`store_emit` variant — wire parity with what the in-process bridge already
+provides) and the store-emit round trip passes on the two-fifo shape
+(`exec_booth.rs::bgi_nu_booth_store_emit_roundtrip`). The gate was sequenced
+ahead of deletion because the store-emit roundtrip is live acceptance —
+deleting the PTY before the framed shape provably carried it would turn the
+suite red and re-open the double-maintenance door the pass closes. That
+ordering is now satisfied; the retirement landed with it. One execution shape
+per language, ever: nu's shapes are `exec` (bare one-shot) and `bgi` (the two-
+fifo adapter) — the `nushell` language string and its PTY feature are gone from
+the carriers, the Cargo feature tree (probe-runtime, aura-realm, aura-engine)
+and the wire vocabulary.
 
 ### 7. Trust tiers unchanged: exec is the trusted posture, wasm keeps the untrusted one
 
@@ -216,13 +219,22 @@ wasm module has nothing until the host wires it).
   shared part is only spawn supervision, not the exchange.
 - **nushell reaches bgi through a channel adapter, not through stdin.**
   Probe-verified: nu cannot block-read a non-TTY stdin (`input line`
-  errors) and its `open` delivers at writer-EOF. The user's mkfifo +
-  `loop { open pipe | lines | each }` shape streams per-writer-session
-  batches correctly (the round trip incl. the inline ctx-reply read), so
-  the BGI wrapper for nu is a two-fifo adapter, not a rewrite of the
-  protocol; until that wrapper ships, nushell rides exec (SKILL
-  semantics fit it anyway) — the PTY retirement gate (§6) waits on the
-  adapter, not the other way around.
+  errors) and its `open` delivers at writer-EOF, so stdin-direct resident
+  bgi is impossible. The adapter is a TWO-fifo shape: requests ride `req`
+  (parent writes one frame and closes the writer — the batch EOF the
+  child's `open --raw $req | lines` wakes on), ctx replies ride a second
+  `rep` fifo, result frames ride stdout. The split is what makes reply
+  routing deterministic: on one fifo, the author's outer request reader
+  and its inline ctx-reply reader race for every written frame (a single-
+  fifo shape hung in the probe; wakeup order decides who gets the frame).
+  The author's script runs `def main [req rep]` as the loop — nu
+  auto-invokes `main` with the script arguments, and because `source`
+  rejects a dynamic path at parse and nu has no eval, the entry-side
+  dispatch is a hand-written `match` on event names (the single-entry
+  table every language without a runtime name lookup uses). The batch
+  loop is a `for`, not an `each`: `each`'s closure scope eats the `$env`
+  writes the residency rule relies on. The retirement gate (§6) cleared
+  on this shape.
 - **Capability gating is coarser than wasm's import list.** bwrap grants
   file/net scopes; it has no per-symbol notion. Recorded as tier design,
   not as a defect to fix later.
@@ -230,8 +242,9 @@ wasm module has nothing until the host wires it).
 ## Consequences
 
 - **probe:** exec carrier module (spawn, frame loop, shim registry);
-  bwrap policy reuse; retirement of the nushell PTY machinery once the
-  §6 gate passes.
+  bwrap policy reuse; the nushell PTY machinery retired with the §6 gate
+  (the `nushell` language string, the PTY module and its Cargo feature are
+  gone — nu's shapes are `exec` and `bgi`/two-fifo).
 - **aura:** the frame protocol reuses the existing op vocabulary
   (ToolCall/HostOp); `HostOp` gains the `store_emit` arm — the wire-parity
   gap between the in-process nushell bridge and the remote stdio bridge.

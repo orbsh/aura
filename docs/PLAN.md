@@ -223,7 +223,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     default + per-event override; and the multi-target failure semantics (partial
     delivery failure = per-target dead-ring entries, consistent with ADR-0012).
 
-- [~] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; modes A+B LANDED 2026-09-28, nu adapter + PTY retirement pending)**
+- [x] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; LANDED 2026-09-29 — modes A+B + nu fifo adapter + PTY retirement)**
   - **LANDED (probe 7476209, 504bfd1 + same-day rename):** two shapes —
     **bgi (framed resident)**: spawn per booth instance, newline-delimited
     JSON frames over stdin/stdout (the shipped shape; CBOR framing is the
@@ -278,14 +278,32 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     literal), plus the stale `state_*` rows corrected in probe USAGE en+zh
     (ADR-0026 retirement catch-up). The bgi fixture declares a `counters`
     storage collection for this.
-  - **Still pending (the phase's last items, never standalone):** the nu
-    BGI fifo adapter (the user's `loop { open pipe | lines | each }`
-    shape, round trip verified incl. the inline ctx-reply read — nu lands
-    on bare exec meanwhile) and PTY retirement (NushellResident, bridge.nu,
-    pump_quiet + regression locks) once the nu store-emit-roundtrip passes
-    on bgi — the roundtrip is live acceptance today, so deletion is gated
-    behind it or the suite turns red. One execution shape per language,
-    ever.
+  - **LANDED (gates 2+3, 2026-09-29): the nu bGI fifo adapter + PTY
+    retirement.** `BgiKind::{Pipes, Fifo}` — the spawn spec's head picks
+    the channel (`["nu", "<author.nu>"]` → two-fifo shape), the frame
+    protocol is ONE (requests on `req` with per-frame writer-close, ctx
+    replies on `rep`, results on stdout). The author script IS the loop:
+    `def main [req rep]` (nu auto-invokes `main` with the script args;
+    no generated shim — `source` rejects dynamic paths at parse and nu
+    has no eval, so the entry dispatch is a hand-written `match` on event
+    names: the single-entry dispatch table, user ruling 2026-09-29 —
+    python/steel/wasm keep registry-lookup dispatch, which honors the
+    same contract with each language's native table). Fixture
+    `bgi_nu.nu` documents the three measured pitfalls (single-fifo
+    two-reader race = deadlock; `else` must sit on its branch's `}`
+    line; `each` eats `$env` writes — the batch loop is `for`). Gates:
+    probe `nu_bgi_*` (round trip + residency + ctx seam over rep +
+    iterate envelope + eviction reaps/cleans), aura
+    `bgi_nu_booth_store_emit_roundtrip` (upload-introspection resolves
+    the plan through the fifo seam; two store instructions round-trip;
+    $env persists per instance). PTY retired in the same pass:
+    NushellResident / nushell_session / bridge.nu / the `nushell`
+    language arm + Cargo features (probe-runtime, aura-realm,
+    aura-engine), tests migrated (callslot slow handler → bgi `slow`;
+    echo's nu booth/idle-ttl → bgi_nu fixture; store-emit PTY lock →
+    exec_booth's nu roundtrip; the envelope-pull lock → steel — the
+    only embedded carrier riding `envelope_pull`). One execution shape
+    per language, ever — nushell's are `exec` and `bgi`.
   - Trust tiers unchanged (ADR-0035 §7): exec is the trusted posture
     (bwrap = deployment-level jail for host-trusted code, same posture as
     the embedded carriers); wasm keeps the untrusted tier (import-list
@@ -355,6 +373,13 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-29，闸门 2+3 落地：nu bgi 双 fifo + PTY 退役）
+
+- **分派表裁决（用户，2026-09-29）**：事件帧进单入口、入口内部按事件名派发——有运行时查表的语言用原生机制（python/steel 装饰器收集进 dict、host 按名 getattr——load 期收集即注册表，派发零额外开销、零字符串化；wasm 导出表寻址），没有的（nushell，bgi/exec 通用形态）作者手写 `main` + match 字面名（nu 无 eval、`source` 拒动态路径，实测 not_a_constant——手写不是妥协，是这类语言的契约形态）。`@on` 若走 bgi 需 py 实现的另一套收集逻辑（装饰器住脚本侧），未实施——嵌入式 python 已覆盖。bgi 保留显式循环、其它形态不带——循环的存在理由=免逐调用 spawn（跨请求状态是顺带，不靠它）。
+- **闸门 2（probe）**：`BgiKind::{Pipes, Fifo}`——spawn spec 头选通道（`["nu","<author.nu>"]` → 双 fifo），线协议一套不多造。请求 `req`（逐帧写后即关=批次 EOF 唤醒）、ctx 应答 `rep`、结果 stdout。父侧零生成（无 shim——main 即入口，nu 用脚本参数自动调用）。夹具 `bgi_nu.nu` 头注记三个实测坑：**单 fifo 双读者竞态=实测死锁**（外层循环与内联应答读抢帧，早期单 fifo 探针通过纯属唤醒顺序运气）、`else` 须与分支 `}` 同行、`each` 闭包吞 `$env` 写（批次循环必须 `for`）。nu 侧 `print` 逐条 flush 实测成立（500ms 间隔两行各到）。
+- **闸门 3（两仓）**：PTY 整删——probe NushellResident/nushell_session/bridge.nu/nu_session+nu_bridge 测试/`nushell` feature/语言臂；aura feature 链（realm、engine）与 wire 词汇。迁移路线（每把 PTY 锁移等价活锁，无裸删）：callslot slow handler→bgi 夹具新 `slow` 臂（500ms 真睡眠，feature-free）；echo nu booth/idle-ttl→bgi_nu 夹具（新 `sum` 臂 + `lifecycle idle_ttl`）；echo PTY store 锁→指向 exec_booth 的 nu 往返锁；envelope_pull 锁→steel（唯一 ride 该路的嵌入式载体——顺带补上它此前的零锁定）；python iterate 测试的 `all(python,nushell)` 门无历史依据→`python`。新锁：probe `nu_bgi_*` 四条 + aura `bgi_nu_booth_store_emit_roundtrip`（注册期 schema 帧过缝解析 plan、双 store 指令往返、$env 逐实例跨调用）。ADR-0035 双语 §6/诚实成本 nu 条/Consequences 就地改写为落地态。Phase 4.14 勾 [x]。
+- **教训入档**：steel 布尔字面量 `#f/#t`（写 `false` 是 FreeIdentifier 解析错，首跑抓到）；PTY 每轮"命令行文本"式 handler 寻址退役后，"inline 脚本文本"对 nu 不再存在——源=文件/argv，bash/Rust-bin 同构，一语言一形态兑现。
 
 ## 会话记录（2026-09-28c，闸门 1 落地 + ADR-0037 裁决）
 

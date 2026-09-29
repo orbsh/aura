@@ -145,19 +145,20 @@ async fn state_survives_scale_to_zero() {
 // Script booths execute through the probe carriers — the same carrier set
 // the remote actuator uses; language execution is not reimplemented here.
 // Script booths are pure functions in this phase (args in, value out).
-#[cfg(feature = "nushell")]
+// The nu booth rides the bgi carrier's two-fifo adapter (the retired PTY
+// path): the spawn spec is `nu <author.nu>`, pipelines run untouched.
 #[tokio::test]
-async fn nushell_script_booth() {
+async fn nu_bgi_script_booth_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+    );
     engine
         .register(aura_booth::BoothType::script(
             "nu-op",
-            "nushell",
-            r#"
-export def execute [args] {
-    { sum: ($args.items | math sum) }
-}
-"#,
+            "bgi",
+            format!("nu {fixture}"),
         ))
         .await
         .unwrap();
@@ -165,7 +166,7 @@ export def execute [args] {
     let out = engine
         .invoke(
             InstanceId { booth_type: "nu-op".into(), key: "n1".into() },
-                "execute",
+                "sum",
             serde_json::json!({"items": [1, 2, 3]}),
         )
         .await
@@ -200,7 +201,7 @@ async fn python_script_booth() {
 
 // A script booth naming a language this build does not carry is an error
 // value on the call path — the same validate-at-dispatch rule as probe.
-#[cfg(feature = "nushell")]
+// (Carrier-free assertion: the unknown language never resolves a session.)
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
@@ -545,28 +546,22 @@ async fn script_booth_definition_survives_restart() {
     assert_eq!(out, serde_json::json!({"ok": true}));
 }
 
-// Phase 4.5b (c): nushell introspection — interface_schema() declared in
-// the script is callable at registration through the same generated
-// wrapper (one spawn, call schema, done). Nu booths declare TTL in
-// script like python/steel; ctx host fns ride the PTY file bridge (see
-// nushell_store_emit_roundtrip below).
-#[cfg(feature = "nushell")]
+// Phase 4.5b (c) heritage, retargeted at retirement: interface_schema()
+// declared in the script is callable at registration through the carrier
+// (bgi shape: a schema frame to the child, the retired PTY's one-spawn
+// introspection). Nu booths declare TTL in script like python/steel.
 #[tokio::test]
-async fn nushell_interface_schema_declares_idle_ttl() {
+async fn bgi_nu_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+    );
     engine
         .register(aura_booth::BoothType::script(
             "nu-dweller",
-            "nushell",
-            r#"
-export def interface_schema [args] {
-    { lifecycle: { idle_ttl: "5m" } }
-}
-
-export def execute [args] {
-    { ok: true }
-}
-"#,
+            "bgi",
+            format!("nu {fixture}"),
         ))
         .await
         .unwrap();
@@ -761,58 +756,6 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
     // registering one and calling ctx_store_emit errors as a value.
 }
 
-// The nushell PTY ctx bridge end to end (PLAN 2.5/2.6 tail): a nu booth
-// with a hand-written storage literal writes and reads through
-// `ctx-store-emit` — the file-round-trip bridge (nu writes req-*.json,
-// the Rust call loop sweeps it against the real realm store, resp-*.json
-// returns the value). Locks the aura side: the realm's plan resolution +
-// store_exec behind the bridge, not just the carrier's file protocol
-// (probe's nu_bridge.rs locks that layer with a fixture HostBridge).
-#[cfg(feature = "nushell")]
-#[tokio::test]
-async fn nushell_store_emit_roundtrip() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine
-        .register(aura_booth::BoothType::script(
-            "nu-keeper",
-            "nushell",
-            r#"
-export def interface_schema [args] {
-    { storage: { collections: { notes: { schema: {
-        key_len: 8,
-        key_fields: [{ name: "id", ty: "U64", width: 8, offset: 0, tag: 0 }],
-        layout_version: 1,
-        hot_width: 8,
-        payload_header_len: 3,
-        hot_fields: [{ name: "count", ty: "U64", width: 8, offset: 0, tag: 0 }],
-        cold_fields: [],
-        slots: { primary: 0, dynamic: 1, dict_id: 2, dict_name: 3,
-                 declared_index_base: 4096, declared_reduce_base: 8192, junction_base: 12288 }
-    } } } } }
-}
-
-export def put-note [args] {
-    ctx-store-emit { collection: "notes", op: "put_document",
-                     key: { id: 7 }, doc: { count: 42 } }
-    { ok: true }
-}
-
-export def get-note [args] {
-    ctx-store-emit { collection: "notes", op: "get_document", key: { id: 7 } }
-}
-"#,
-        ))
-        .await
-        .expect("register nu-keeper");
-
-    let target = aura_booth::InstanceId { booth_type: "nu-keeper".into(), key: "k".into() };
-    engine
-        .invoke(target.clone(), "put-note", serde_json::json!({}))
-        .await
-        .expect("put through the nu ctx bridge");
-    let got = engine
-        .invoke(target.clone(), "get-note", serde_json::json!({}))
-        .await
-        .expect("get through the nu ctx bridge");
-    assert_eq!(got["count"], 42, "nu handler round-tripped the realm store: {got}");
-}
+// The PTY ctx file-bridge store test retired with the carrier: the same
+// aura-side lock (plan resolution + store_exec behind the ctx seam) now
+// lives on the bgi shape — exec_booth.rs::bgi_nu_booth_store_emit_roundtrip.

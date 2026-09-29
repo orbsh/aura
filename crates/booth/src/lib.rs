@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 /// Booth body: a Rust closure, or a script executed by a probe carrier.
 ///
 /// The script form imports the probe runtime instead of reimplementing
-/// language execution: one set of carriers (steel/python/wasmtime/nushell)
+/// language execution: one set of carriers (steel/python/wasmtime embedded,
+/// bgi/exec out-of-process)
 /// serves both the remote actuator and embedded booths. Script booths are
 /// pure functions in this phase (args in, value out); the ctx bridge
 /// (state/invoke from inside scripts via host functions) is the remaining

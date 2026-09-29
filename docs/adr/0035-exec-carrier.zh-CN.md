@@ -133,15 +133,18 @@ BGI 不是什么：不是第二套协议（它包装既有行帧），不是 aur
 （realm 永远看不见它），也不是 exec 的必需——裸形态根本没有循环可包装；
 它的适配器就是逐调用 spawn 本身。
 
-### 6. nushell PTY 退役，带闸门——不留双轨
+### 6. nushell PTY 退役——已落地，不留双轨
 
-PTY 载体（NushellResident、bridge.nu、pump_quiet 及其回归锁）在以下条件
-满足后删除：bgi 承载 `ctx_store_emit` 臂（`HostOp` 加 `store_emit`
-变体——与进程内桥已提供的能力做线路对齐），且 nushell 往返测试
-（echo.rs::nushell_store_emit_roundtrip 的形状）在其上通过。退役排在这个
-闸门之后，因为 store-emit 往返是【今天活着的验收】——先删 PTY 会把测试
-打红，并重开同一轮收尾本该关闭的双维护之门。每语言永远只有一种执行形态：
-双轨仅存在于"已落地"与"闸门通过"之间。
+PTY 载体（NushellResident、bridge.nu、pump_quiet 及其回归锁）已删除：
+bgi 承载 `ctx_store_emit` 臂（`HostOp` 的 `store_emit` 变体——与进程内桥
+已提供的能力做线路对齐），且 store-emit 往返在双 fifo 形态上通过
+（`exec_booth.rs::bgi_nu_booth_store_emit_roundtrip`）。退役排在闸门之后，
+因为 store-emit 往返是活着的验收——在带帧形态被证明承载它之前先删 PTY
+会把测试打红，并重开同一轮收尾本该关闭的双维护之门。该顺序现已满足，
+退役随之落地。每语言永远只有一种执行形态：nu 的形态是 `exec`（裸一次
+性）与 `bgi`（双 fifo 适配器）——`nushell` 语言字符串与其 PTY feature
+从载体、Cargo feature 树（probe-runtime、aura-realm、aura-engine）和线路
+词汇里一并移除。
 
 ### 7. 信任层级不变：exec 是受信姿态，wasm 保住不可信层级
 
@@ -167,18 +170,24 @@ exec 载体不削弱任何东西，因为它不替换任何沙箱：bwrap jail �
   共享的只有 spawn 监管，不是交换本身。
 - **nushell 到 bgi 要经一个通道适配器，不是走 stdin。** 探针实证：nu
   无法阻塞读非 TTY stdin（`input line` 报错），且它的 `open` 在写方 EOF
-  时交付。用户的 mkfifo + `loop { open pipe | lines | each }` 形态按写方
-  会话逐批流式派发正确（含内联 ctx 应答读的完整往返已验证），所以 nu 的
-  BGI 包装层是双 fifo 适配器，不是重写协议；在该包装层落地前，nushell
-  走 exec（SKILL 语义本来就合身）——PTY 退役闸门（§6）等的是包装层，
-  不是反过来。
+  时交付——stdin 直达的常驻 bgi 不可能。适配器是【双 fifo】形态：请求
+  走 `req`（父侧写一帧即关写方——子侧 `open --raw $req | lines` 醒来的
+  批次 EOF），ctx 应答走第二条 `rep` fifo，结果帧走 stdout。拆分是应答
+  路由确定性的来源：同一条 fifo 上两个读者（作者的外层请求循环与内联
+  ctx 应答读）对每一帧竞争——单 fifo 形态在探针里实测挂死，谁拿到帧全
+  凭唤醒顺序。作者脚本以 `def main [req rep]` 作循环——nu 用脚本参数
+  自动调用 `main`；`source` 在解析期拒绝动态路径且 nu 无 eval，入口侧
+  派发就是手写的按事件名 `match`（没有运行时按名查表的语言都用这张
+  单入口表）。批次循环是 `for` 不是 `each`：`each` 的闭包作用域会吞掉
+  常驻规则依赖的 `$env` 写入。退役闸门（§6）在该形态上通过。
 - **能力门控比 wasm 的 import 清单粗。** bwrap 授文件/网络范围，没有
   符号级概念。记为层级设计，不是待修的缺陷。
 
 ## 后果
 
 - **probe：** bgi + exec 载体模块（spawn、帧循环、垫片 registry）；bwrap
-  策略复用；§6 闸门通过后退役 nushell PTY 机件。
+  策略复用；nushell PTY 机件随 §6 闸门退役（`nushell` 语言字符串、PTY 模块
+  与其 Cargo feature 已移除——nu 的形态是 `exec` 与 `bgi`/双 fifo）。
 - **aura：** 帧协议复用既有操作词汇（ToolCall/HostOp）；`HostOp` 加
   `store_emit` 臂——进程内 nushell 桥与远程 stdio 桥之间的线路对齐缺口。
   注册里的语言字符串选择 spawn 声明。ADR-0011 的 ctx 边界不动——host fn

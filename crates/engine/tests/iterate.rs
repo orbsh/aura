@@ -257,7 +257,11 @@ async fn steel_envelope_producer() {
 // Rust closure bodies carry no resident stream state (ADR-0034: the
 // producer shape lives in the session — recorded residual). The
 // Start round trip succeeds but the job fails with an error value —
-// never a silent single-shot fallback.
+// never a silent single-shot fallback. Unified seam (ADR-0036): a
+// Start on a Rust body IS the invoke shape — the handler runs once,
+// the carrier wraps its return into `{done:true,value}`. The stream
+// verbs AFTER the start are the error value (the producer shape lives
+// in a session; a Rust closure parks nothing).
 #[tokio::test]
 async fn rust_body_iterate_is_error_value() {
     let engine = Engine::start(&Default::default())
@@ -289,6 +293,18 @@ async fn rust_body_iterate_is_error_value() {
     let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
         panic!("iterate is hot-only");
     };
-    let err = result.unwrap_err();
-    assert!(err.to_string().contains("ADR-0034"), "{err}");
+    // The invoke shape: a terminal envelope carrying the handler's
+    // return, and the stream registration unwound (no stream opened).
+    let env = aura_booth::Envelope::from_value(&result.unwrap()).unwrap();
+    assert!(env.done && env.item.is_none(), "a Rust Start is terminal: {env:?}");
+    assert_eq!(realm.lock().await.streams.len(), 0, "terminal start unwinds the registration");
+
+    // The follow-up pull is where the error value lives.
+    let err = aura_realm::Realm::iterate(
+        &realm,
+        aura_booth::IterateOp::Next { stream_id: "stream-ghost".into() },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("not live"), "{err}");
 }

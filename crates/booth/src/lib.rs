@@ -236,26 +236,29 @@ pub mod iterate_handle {
     >;
 }
 
-/// The per-pull wire envelope (ADR-0034 §1): a typed `done` field, never
-/// a sentinel value. `item` rides inside `ok` (failure is a value,
-/// ADR-0012 — mid-stream errors surface through the Result the cursor
-/// hands back, not a second channel in the envelope).
+/// The per-pull wire envelope (ADR-0034 §1, unified by ADR-0036 §1):
+/// a typed `done` field, always present, never a sentinel value; a
+/// terminal round may carry `value` (invoke is the stream whose first
+/// reply is terminal — `Realm::call` is Start+unwrap sugar), a
+/// non-terminal round carries `item`. `item` is legal only with
+/// `done: false`, `value` only with `done: true` — enforced, not
+/// convention. (failure is a value, ADR-0012 — mid-stream errors
+/// surface through the Result the cursor hands back, not a second
+/// channel in the envelope).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Envelope {
     pub done: bool,
     pub item: Option<Value>,
+    pub value: Option<Value>,
 }
 
 impl Envelope {
     /// Decode the JSON envelope a session returned. Structural errors
-    /// (non-object, missing `done`, `done` alongside `item`) are failure
+    /// (non-object, missing `done`, cross-field violations) are failure
     /// values — the pull itself failed, distinct from a mid-stream
-    /// producer error.
+    /// producer error. The generator-mode null reply is gone (ADR-0036
+    /// — the pull that starts a stream answers its first envelope).
     pub fn from_value(v: &Value) -> anyhow::Result<Self> {
-        if v.is_null() {
-            // generator-mode Start replies with null (no item yet).
-            return Ok(Envelope { done: false, item: None });
-        }
         let obj = v
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("iterate: envelope must be an object, got {v}"))?;
@@ -264,30 +267,71 @@ impl Envelope {
             .and_then(|d| d.as_bool())
             .ok_or_else(|| anyhow::anyhow!("iterate: envelope needs a boolean `done` field, got {v}"))?;
         let item = obj.get("item").cloned();
+        let value = obj.get("value").cloned();
         if done && item.is_some() {
-            anyhow::bail!("iterate: envelope with `done: true` must not carry an `item`");
+            anyhow::bail!("iterate: envelope with `done: true` must not carry an `item` (ADR-0036)");
         }
-        Ok(Envelope { done, item })
+        if !done {
+            if item.is_none() {
+                anyhow::bail!("iterate: envelope with `done: false` must carry an `item` (ADR-0036)");
+            }
+            if value.is_some() {
+                anyhow::bail!("iterate: `value` is legal only with `done: true` (ADR-0036)");
+            }
+        }
+        Ok(Envelope { done, item, value })
+    }
+
+    /// The terminal envelope an invoke fast path produces: the value
+    /// wrapped for a reply channel that carries envelopes end to end.
+    pub fn terminal(value: Option<Value>) -> Value {
+        match value {
+            Some(v) => serde_json::json!({ "done": true, "value": v }),
+            None => serde_json::json!({ "done": true }),
+        }
+    }
+
+    /// The consume-one-value unwrap (ADR-0036 §1/§3): a reply channel
+    /// carries envelopes end to end, a value consumer terminal-unwraps.
+    /// A non-terminal reply is the invoke misuse named as a protocol
+    /// error — a caller wanting items iterates, not unwraps.
+    pub fn unwrap_terminal(v: Value) -> anyhow::Result<Value> {
+        let env = Envelope::from_value(&v)?;
+        if !env.done {
+            anyhow::bail!("call: first reply is not terminal — a value consumer must iterate the stream (ADR-0036)");
+        }
+        Ok(env.value.unwrap_or(Value::Null))
     }
 }
 
-/// A live stream cursor (ADR-0034): the consumer's handle to a producer
-/// session's state. Lazily started — the first `next()` sends Start (the
-/// stream id is minted by the realm) and then pulls; every later `next()`
-/// pulls. Exhaustion is terminal: pulls after `done: true` are rejected.
-/// Abandoning mid-stream requires `dispose()` in carriers without a
-/// destructor hook; the python wrapper sends it automatically on
-/// GeneratorExit. A stream never disposed is released by residency
-/// eviction, not by magic.
+/// A live stream cursor (ADR-0034, unified envelope ADR-0036): the
+/// consumer's handle to a producer session's state. Lazily started — the
+/// first `next()` sends Start (the stream id is minted by the realm) and
+/// then pulls; every later `next()` pulls. Stream association derives
+/// from `done`, never from a positional field-presence heuristic (0036
+/// §4): a non-terminal first reply MUST carry the realm-minted
+/// `stream_id`; a terminal first reply carries none (the stream never
+/// opened — that reply IS an invoke). Exhaustion is terminal: pulls
+/// after `done: true` are rejected. Abandoning mid-stream requires
+/// `dispose()` in carriers without a destructor hook; the python
+/// wrapper sends it automatically on GeneratorExit. A stream never
+/// disposed is released by residency eviction, not by magic.
 pub struct StreamCursor {
     iterate: iterate_handle::IterateHandle,
     target: InstanceId,
     handler: String,
     args: Value,
-    /// Set after the lazy Start: the realm-minted stream id. The id
-    /// alone routes Next/Dispose (the realm's registry owns the binding).
+    /// Set after a NON-terminal Start reply: the realm-minted stream
+    /// id. The id alone routes Next/Dispose (the realm's registry owns
+    /// the binding). A terminal first reply leaves it None — there is
+    /// no stream to route to.
     stream_id: Option<String>,
     done: bool,
+    /// The terminal round's `value`, once seen (ADR-0036 §3: the
+    /// explicit-consumer accessor — the native sugars deliberately do
+    /// NOT consume it; iterate a stream for items, call (or pull
+    /// explicitly) for a value).
+    value: Option<Value>,
 }
 
 impl StreamCursor {
@@ -297,49 +341,71 @@ impl StreamCursor {
         handler: String,
         args: Value,
     ) -> Self {
-        Self { iterate, target, handler, args, stream_id: None, done: false }
+        Self { iterate, target, handler, args, stream_id: None, done: false, value: None }
     }
 
     /// Pull one envelope. First call starts the stream — the Start
     /// round trip IS the first pull (the realm delivers the first
-    /// envelope together with the minted stream id).
+    /// envelope together with the minted stream id when the stream
+    /// stays open).
     pub async fn next(&mut self) -> anyhow::Result<Envelope> {
         if self.done {
             anyhow::bail!("iterate: stream already exhausted");
         }
-        let v = match self.stream_id.clone() {
-            None => {
-                let reply = (self.iterate)(IterateOp::Start {
-                    target: self.target.clone(),
-                    handler: self.handler.clone(),
-                    args: self.args.clone(),
-                })
-                .await?;
-                let id = reply
-                    .get("stream_id")
-                    .and_then(|s| s.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("iterate: start reply missing stream_id"))?
-                    .to_string();
-                self.stream_id = Some(id);
-                reply
-            }
-            Some(id) => (self.iterate)(IterateOp::Next { stream_id: id }).await?,
+        let started = self.stream_id.is_some();
+        let v = if started {
+            let id = self.stream_id.clone().expect("checked above");
+            (self.iterate)(IterateOp::Next { stream_id: id }).await?
+        } else {
+            (self.iterate)(IterateOp::Start {
+                target: self.target.clone(),
+                handler: self.handler.clone(),
+                args: self.args.clone(),
+            })
+            .await?
         };
         let env = Envelope::from_value(&v)?;
         if env.done {
             self.done = true;
+            self.value = env.value.clone();
+        } else if !started {
+            // Association from `done` (ADR-0036 §4): a non-terminal
+            // first reply without the realm's stream id is a protocol
+            // error, never a guess.
+            let id = v
+                .get("stream_id")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "iterate: non-terminal first reply carries no `stream_id` (ADR-0036 §4)"
+                    )
+                })?
+                .to_string();
+            self.stream_id = Some(id);
         }
         Ok(env)
     }
 
     /// The realm-minted stream id, once the stream has started
-    /// (script-side wrappers need it to drive the host fns).
+    /// (script-side wrappers need it to drive the host fns). `None`
+    /// before start AND after a terminal first reply (invoke shape —
+    /// no stream ever opened).
     pub fn stream_id(&self) -> Option<&str> {
         self.stream_id.as_deref()
     }
 
-    /// Abandon the stream mid-flight (ADR-0034 §3). Idempotent; a stream
-    /// never started disposes nothing.
+    /// The terminal round's value, available after `next()` returns a
+    /// `done: true` envelope that carried one (ADR-0036 §1: invoke is
+    /// the stream whose first reply is terminal; a generator's
+    /// `return x` arrives here). `None` = no value was carried, or the
+    /// stream has not terminated. Deliberately NOT consumed by the
+    /// native iteration sugars — this is the explicit accessor.
+    pub fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
+    /// Abandon the stream mid-flight (ADR-0034 §3). Idempotent; a
+    /// stream never started (or already terminal) disposes nothing.
     pub async fn dispose(&mut self) -> anyhow::Result<()> {
         if let Some(id) = self.stream_id.take() {
             (self.iterate)(IterateOp::Dispose { stream_id: id }).await?;
@@ -469,17 +535,20 @@ pub struct Queue {
     pub rx: mpsc::Receiver<Job>,
 }
 
-/// A unit of work: the verb + handler name + args, and the reply channel
-/// (oneshot, `reply_to` semantics; the general call model lands at
-/// Phase 3.5). ADR-0034: the iterate verbs ride this same machinery —
-/// an `Invoke` job runs the handler once; an `Iterate*` job drives the
-/// session's stream state, correlated by `stream`.
+/// A unit of work: the stream verb + handler name + args, and the reply
+/// channel (oneshot, `reply_to` semantics; the general call model lands at
+/// Phase 3.5). ADR-0036 (unifies ADR-0034): every job is a stream op —
+/// `Start` runs the handler as a producer, and an invoke is exactly the
+/// stream whose first reply is terminal (the carrier wraps a plain
+/// return into `{done:true,value}`, ADR-0036 §2). The JobKind verb
+/// vocabulary retired with the protocol split.
 pub struct Job {
-    /// What to do with this job's handler (ADR-0034).
+    /// The stream verb this job carries (ADR-0036: every kind is a
+    /// stream op — the Invoke kind retired with the protocol split).
     pub kind: JobKind,
-    /// Stream identity for `Iterate*` kinds (realm-minted at start;
-    /// `None` for Invoke).
-    pub stream: Option<String>,
+    /// Stream identity: minted by the realm at Start (the same counter
+    /// shape pending_calls uses), echoed by Next/Dispose.
+    pub stream: String,
     /// Handler name the delivery addresses: the event name for event
     /// delivery, the caller-declared function for direct invocation.
     pub handler: String,
@@ -487,16 +556,15 @@ pub struct Job {
     pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>>,
 }
 
-/// The verb a Job carries (ADR-0034: three verbs, one mechanism — the
-/// iterate calls are frame-level calls riding the existing call
-/// machinery, never a second queue).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The verb a Job carries (ADR-0036: the call wire rides ONE envelope
+/// vocabulary — every dispatch job is a stream op riding the same
+/// machinery; `call` is Start+unwrap sugar at the Realm surface, not a
+/// frame kind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobKind {
-    #[default]
-    Invoke,
-    IterateStart,
-    IterateNext,
-    IterateDispose,
+    Start,
+    Next,
+    Dispose,
 }
 
 impl Queue {

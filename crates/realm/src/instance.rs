@@ -169,9 +169,18 @@ impl Realm {
 
     async fn run_job_queued(self_arc: SharedRealm, id: &InstanceId, job: aura_booth::QueuedJob) {
         let reply_tx = tokio::sync::oneshot::channel();
+        // Unified seam (ADR-0036): an event delivery is a Start whose
+        // reply nobody parks on — the envelope is produced and
+        // discarded by the drop (§4). The stream id still rides the job
+        // (one code path: registration + reply, never a special case).
+        let sid = {
+            let mut realm = self_arc.lock().await;
+            realm.call_seq += 1;
+            format!("stream-{}", realm.call_seq)
+        };
         let job = Job {
-            kind: aura_booth::JobKind::Invoke,
-            stream: None,
+            kind: aura_booth::JobKind::Start,
+            stream: sid,
             handler: job.handler,
             args: job.args,
             reply: reply_tx.0,
@@ -262,20 +271,18 @@ impl Realm {
                 // resident runtime, and every handler of one instance must.
                 // `entry` is the handler the call addresses in the delivered code.
                 let session = format!("{}/{}", id.booth_type, id.key);
-                // ADR-0034: the remote producer leg rides the same ToolCall
-                // machinery — the verb travels as `kind`, the stream id as
-                // `stream`. The probe drives its own session's iterate
-                // surface with them.
+                // ADR-0036: the frame kind vocabulary is the stream
+                // vocabulary — every dispatch job crosses the wire as a
+                // stream op (invoke is a Start whose reply is terminal).
                 let kind = match job.kind {
-                    aura_booth::JobKind::Invoke => probe_protocol::CallKind::Invoke,
-                    aura_booth::JobKind::IterateStart => probe_protocol::CallKind::IterateStart,
-                    aura_booth::JobKind::IterateNext => probe_protocol::CallKind::IterateNext,
-                    aura_booth::JobKind::IterateDispose => probe_protocol::CallKind::IterateDispose,
+                    aura_booth::JobKind::Start => probe_protocol::CallKind::IterateStart,
+                    aura_booth::JobKind::Next => probe_protocol::CallKind::IterateNext,
+                    aura_booth::JobKind::Dispose => probe_protocol::CallKind::IterateDispose,
                 };
                 let call = probe_protocol::ToolCall {
                     call_id: call_id.clone(),
                     kind,
-                    stream: job.stream.clone(),
+                    stream: Some(job.stream.clone()),
                     session,
                     entry: job.handler.clone(),
                     language,
@@ -295,15 +302,22 @@ impl Realm {
             aura_booth::Body::Rust(handler) => {
                 // A Rust closure body has no resident session to hold a
                 // stream (ADR-0034: the producer shape lives in the
-                // session — a recorded residual for Rust bodies). The
-                // iterate verbs on a Rust booth are an error value,
+                // session — a recorded residual for Rust bodies). A
+                // Start is legal (the handler runs once — the invoke
+                // shape, wrapped to a terminal envelope per ADR-0036
+                // §2); the stream verbs after it are an error value,
                 // never a silent single-shot fallback.
-                if job.kind != aura_booth::JobKind::Invoke {
-                    Err(anyhow::anyhow!(
-                        "iterate: Rust booth bodies carry no stream state (ADR-0034) — use a script booth"
-                    ))
-                } else {
-                    handler(ctx, job.args).await
+                match job.kind {
+                    aura_booth::JobKind::Start => {
+                        handler(ctx, job.args.clone()).await.map(|v| {
+                            aura_booth::Envelope::terminal(Some(v))
+                        })
+                    }
+                    aura_booth::JobKind::Next | aura_booth::JobKind::Dispose => {
+                        Err(anyhow::anyhow!(
+                            "iterate: Rust booth bodies carry no stream state (ADR-0034) — use a script booth"
+                        ))
+                    }
                 }
             }
             aura_booth::Body::Script { language, source } => {
@@ -325,18 +339,14 @@ impl Realm {
                     Some(probe_runtime::carrier::HostBridge { functions: fns })
                 };
                 let instance_key = format!("{}/{}", id.booth_type, id.key);
-                // ADR-0034: the job's verb selects the session surface.
-                // Invoke runs the handler once; the Iterate* kinds drive
-                // session.iterate (generator mode parks the native
-                // generator in the session; envelope mode re-invokes the
-                // handler with the injected `{stream_id, op}` — the
-                // handler never sees a second protocol).
-                let handler_for_call = job.handler.clone();
-                let args_for_call = job.args.clone();
-                let sjob = match job.kind {
-                    aura_booth::JobKind::Invoke => None,
-                    _ => Some(stream_op(&job)),
-                };
+                // Unified seam (ADR-0036): every job drives the
+                // session's iterate surface — the job's verb IS the
+                // stream op (generator mode parks the native generator
+                // in the session; envelope mode re-invokes the handler
+                // with the injected `{stream_id, op}`; a plain handler's
+                // bare Start reply wraps to `{done:true,value}` AT THE
+                // CARRIER — `s.call` is no longer a dispatch arm).
+                let sjob = stream_op(&job);
                 tokio::task::spawn_blocking(move || {
                     sessions.with_session(
                         &instance_key,
@@ -344,10 +354,7 @@ impl Realm {
                         &source,
                         host.as_ref(),
                         &probe_runtime::sandbox::SandboxPolicy::None,
-                        move |s| match sjob {
-                            Some(op) => s.iterate(op),
-                            None => s.call(&handler_for_call, &args_for_call),
-                        },
+                        move |s| s.iterate(sjob),
                     )
                 })
                 .await
@@ -356,34 +363,44 @@ impl Realm {
         };
         // Stream bookkeeping on the reply path — carrier-independent
         // (ADR-0034 §2: a frame identity, and the identity travels the
-        // same way for in-process and remote producers):
-        // - Start: merge the realm-minted stream id into the first
-        //   envelope (the consumer reads it back; no carrier — session
-        //   or remote probe — invents identities).
+        // same way for in-process and remote producers), association
+        // derived from `done` (ADR-0036 §4):
+        // - Start: a NON-terminal first reply gets the realm-minted
+        //   stream id merged in (the consumer reads it back; no carrier
+        //   — session or remote probe — invents identities). A terminal
+        //   first reply is the invoke shape: no id merged (no stream
+        //   opened), and the registration unwinds immediately — mint
+        //   and discard costs nothing measurable and keeps ONE code
+        //   path ("invoke jobs skip registration" is the special case
+        //   §4 removes).
         // - Next: exhaustion is terminal — the routing entry goes when
         //   the producer says done (the producer-side entry already
         //   dropped itself). A stream never disposed dies with
         //   eviction, per §3.
-        if job.kind == aura_booth::JobKind::IterateStart {
-            let started = match &mut result {
-                Ok(serde_json::Value::Object(map)) => {
-                    if let Some(sid) = &job.stream {
-                        map.insert("stream_id".into(), serde_json::Value::String(sid.clone()));
-                    }
-                    true
-                }
-                _ => false,
+        if job.kind == aura_booth::JobKind::Start {
+            let terminal_first = match &result {
+                Ok(v) => v.get("done").and_then(|d| d.as_bool()) == Some(true),
+                Err(_) => true,
             };
-            // A failed Start never became a stream — undo the
-            // registration (the same rollback discipline as a
-            // queue-full send: no orphaned routing entries).
-            if !started {
-                if let Some(sid) = &job.stream {
-                    self_arc.lock().await.streams.remove(sid);
+            if !terminal_first {
+                // The carrier guarantees an object reply here; merge the
+                // realm-minted id in (association rides `done`, §4 — a
+                // non-object first reply simply never opens a stream).
+                if let Ok(serde_json::Value::Object(map)) = &mut result {
+                    map.insert(
+                        "stream_id".into(),
+                        serde_json::Value::String(job.stream.clone()),
+                    );
                 }
             }
+            // Terminal first reply OR a failed Start: undo the
+            // registration (the same rollback discipline as a
+            // queue-full send: no orphaned routing entries).
+            if terminal_first {
+                self_arc.lock().await.streams.remove(&job.stream);
+            }
         }
-        if job.kind == aura_booth::JobKind::IterateNext {
+        if job.kind == aura_booth::JobKind::Next {
             let ended = match &result {
                 Ok(v) => v.get("done").and_then(|d| d.as_bool()) != Some(false),
                 // failed pull: the producer side is dead — drop the
@@ -391,9 +408,7 @@ impl Realm {
                 Err(_) => true,
             };
             if ended {
-                if let Some(sid) = &job.stream {
-                    self_arc.lock().await.streams.remove(sid);
-                }
+                self_arc.lock().await.streams.remove(&job.stream);
             }
         }
         // ADR-0016 revised §3: idle_ttl is measured from job COMPLETION.
@@ -450,6 +465,12 @@ impl Realm {
         Self::run_job_queued(realm, &target, job).await;
     }
 
+    /// The cold-tier submission arm (ADR-0036): like every dispatch job,
+    /// a Start with a realm-minted stream id — the caller is not parked
+    /// (the result resolves through `resolve_call`); a non-terminal
+    /// first reply registers the stream for whoever holds the id (a
+    /// cold-tier streaming producer has no known consumer — recorded
+    /// residual, same stance as ADR-0034 §5 for iterate).
     pub async fn submit(
         self_arc: &SharedRealm,
         target: InstanceId,
@@ -462,17 +483,28 @@ impl Realm {
             if !realm.types.contains_key(&target.booth_type) {
                 anyhow::bail!("unknown booth type: {}", target.booth_type);
             }
-            let inst = realm.instance(self_arc.clone(), &target).await?;
-            inst.queue
-                .tx
-                .try_send(Job {
-                    kind: aura_booth::JobKind::Invoke,
-                    stream: None,
+            realm.call_seq += 1;
+            let sid = format!("stream-{}", realm.call_seq);
+            realm.streams.insert(
+                sid.clone(),
+                crate::StreamEntry {
+                    target: target.clone(),
                     handler: handler.to_string(),
-                    args,
-                    reply: reply_tx,
-                })
-                .map_err(|_| anyhow::anyhow!("queue full: {}/{}", target.booth_type, target.key))?;
+                    args: args.clone(),
+                },
+            );
+            let inst = realm.instance(self_arc.clone(), &target).await?;
+            let send = inst.queue.tx.try_send(Job {
+                kind: aura_booth::JobKind::Start,
+                stream: sid.clone(),
+                handler: handler.to_string(),
+                args,
+                reply: reply_tx,
+            });
+            if send.is_err() {
+                realm.streams.remove(&sid);
+            }
+            send.map_err(|_| anyhow::anyhow!("queue full: {}/{}", target.booth_type, target.key))?;
         }
         // Runtime loop drains the queue; spawn a consumer for this job
         // (per-job spawn is Phase 1's simple shape; the persistent loop
@@ -582,25 +614,26 @@ impl Realm {
     }
 }
 
-/// Build the session-facing stream op from a job (ADR-0034). Every verb
+/// Build the session-facing stream op from a job (ADR-0034, unified
+/// seam ADR-0036 — every verb is a stream op now; a plain handler's bare
+/// Start reply wraps to `{done:true,value}` at the carrier). Every verb
 /// carries handler + args: envelope-mode sessions re-invoke the handler
 /// each turn (the guard state is theirs, the args are the stream's
 /// start args), generator-mode sessions use only the stream id.
 pub(crate) fn stream_op(job: &Job) -> probe_runtime::carrier::session::StreamOp {
     use probe_runtime::carrier::session::StreamOp;
-    let stream_id = job.stream.clone().unwrap_or_default();
+    let stream_id = job.stream.clone();
     match job.kind {
-        aura_booth::JobKind::IterateStart => StreamOp::Start {
+        aura_booth::JobKind::Start => StreamOp::Start {
             stream_id,
             handler: job.handler.clone(),
             args: job.args.clone(),
         },
-        aura_booth::JobKind::IterateNext => {
+        aura_booth::JobKind::Next => {
             StreamOp::Next { stream_id, handler: job.handler.clone(), args: job.args.clone() }
         }
-        aura_booth::JobKind::IterateDispose => {
+        aura_booth::JobKind::Dispose => {
             StreamOp::Dispose { stream_id, handler: job.handler.clone(), args: job.args.clone() }
         }
-        aura_booth::JobKind::Invoke => unreachable!("stream_op called for an Invoke job"),
     }
 }

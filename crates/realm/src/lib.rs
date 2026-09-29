@@ -98,6 +98,10 @@ pub(crate) async fn dispatch_call(
     handler: &str,
     args: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    // ADR-0036: a call IS a stream Start — `Realm::call`'s hot arm
+    // terminal-unwraps into the parked caller (Start+unwrap sugar at
+    // the realm; the reply channel carries envelopes, the surface does
+    // not). Cold targets answer Pending: no parked value exists.
     match Realm::call(&realm, None, target, handler, args).await?.wait().await? {
         Waited::Done(result) => result,
         Waited::Pending(id) => Err(anyhow::anyhow!(

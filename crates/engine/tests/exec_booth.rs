@@ -187,6 +187,11 @@ async fn exec_oneshot_booth_through_realm() {
     assert_eq!(out, serde_json::json!({ "echoed": { "now": 1 } }));
 
     let realm = engine.realm.clone();
+    // Unified seam (ADR-0036): a Start on a one-shot IS the invoke
+    // shape — it runs and the carrier wraps stdout terminal. The
+    // statelessness lives in the stream verb after it: the follow-up
+    // Next names the design as an error value (no residency holds a
+    // stream — the fix is bgi, not a retry).
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
@@ -200,14 +205,25 @@ async fn exec_oneshot_booth_through_realm() {
     let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
         panic!("hot only");
     };
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("stateless by definition") && err.contains("bgi"),
-        "one-shot iterate names the design: {err}"
+    let env = result.unwrap();
+    assert_eq!(
+        env.get("done").and_then(|d| d.as_bool()),
+        Some(true),
+        "a one-shot Start is terminal (invoke shape): {env}"
     );
-    // A failed Start must not leak a registry entry (the rollback
-    // discipline of every failed send).
-    assert_eq!(realm.lock().await.streams.len(), 0, "no orphaned stream entry");
+    // A terminal first reply unwinds its own registration — no stream
+    // opened, no entry left (the rollback discipline of every Start
+    // that never became a stream).
+    assert_eq!(realm.lock().await.streams.len(), 0, "terminal start unwinds the entry");
+
+    let err = aura_realm::Realm::iterate(
+        &realm,
+        aura_booth::IterateOp::Next { stream_id: "stream-ghost".into() },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not live"), "the id is dead by construction: {err}");
 }
 
 /// Phase 4.14 gate 1: `ctx_store_emit` over the bgi seam into the REALM

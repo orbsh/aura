@@ -42,7 +42,7 @@ impl Realm {
                             args: args.clone(),
                         },
                     );
-                    (JobKind::IterateStart, sid, handler, args, target)
+                    (JobKind::Start, sid, handler, args, target)
                 }
                 IterateOp::Next { stream_id } => {
                     // The registry is the routing authority: the id
@@ -54,7 +54,7 @@ impl Realm {
                         )
                     })?;
                     (
-                        JobKind::IterateNext,
+                        JobKind::Next,
                         stream_id,
                         entry.handler.clone(),
                         entry.args.clone(),
@@ -78,7 +78,7 @@ impl Realm {
                         });
                     }
                     Some(entry) => (
-                        JobKind::IterateDispose,
+                        JobKind::Dispose,
                         stream_id,
                         entry.handler.clone(),
                         entry.args.clone(),
@@ -101,12 +101,12 @@ impl Realm {
             let inst = realm.instance(self_arc.clone(), &target).await?;
             let send = inst.queue.tx.try_send(Job {
                 kind,
-                stream: Some(stream.clone()),
+                stream: stream.clone(),
                 handler,
                 args,
                 reply: reply_tx,
             });
-            if send.is_err() && kind == JobKind::IterateStart {
+            if send.is_err() && kind == JobKind::Start {
                 // Roll the registration back: a Start that never made it
                 // into the queue must not leave a live-but-dead stream.
                 realm.streams.remove(&stream);
@@ -134,6 +134,12 @@ impl Realm {
         })
     }
 
+    /// The unified call (ADR-0036): a call IS a stream Start (the realm
+    /// registers, the producer may answer terminal immediately — the
+    /// invoke fast path's registration unwinds in run_job). Value
+    /// consumers wait the slot through `CallSlot::unwrap` (the
+    /// Start+terminal-unwrap sugar); cold-tier callers get Pending and
+    /// the result arrives via resolve_call as before.
     pub async fn call(
         self_arc: &SharedRealm,
         caller: Option<&str>,
@@ -158,23 +164,37 @@ impl Realm {
                     let deadline = spec
                         .timeout
                         .map(|t| (tokio::time::Instant::now() + t, t));
-                    let inst = realm.instance(self_arc.clone(), &target).await?;
-                    inst.queue
-                        .tx
-                        .try_send(Job {
-                            kind: aura_booth::JobKind::Invoke,
-                            stream: None,
-                            handler: handler.to_string(),
+                    // One code path (§4): mint + register like every
+                    // Start. A terminal first reply (the invoke shape —
+                    // the common case here) unwinds the registration in
+                    // run_job's bookkeeping; mint-and-discard costs
+                    // nothing measurable.
+                    realm.call_seq += 1;
+                    let sid = format!("stream-{}", realm.call_seq);
+                    realm.streams.insert(
+                        sid.clone(),
+                        crate::StreamEntry {
+                            target: target.clone(),
+                            handler: handler.clone(),
                             args: args.clone(),
-                            reply: reply_tx,
-                        })
-                        .map_err(|_| {
-                            anyhow::anyhow!(
-                                "queue full: {}/{}",
-                                target.booth_type,
-                                target.key
-                            )
-                        })?;
+                        },
+                    );
+                    let inst = realm.instance(self_arc.clone(), &target).await?;
+                    let send = inst.queue.tx.try_send(Job {
+                        kind: aura_booth::JobKind::Start,
+                        stream: sid.clone(),
+                        handler: handler.to_string(),
+                        args: args.clone(),
+                        reply: reply_tx,
+                    });
+                    if send.is_err() {
+                        realm.streams.remove(&sid);
+                        return Err(anyhow::anyhow!(
+                            "queue full: {}/{}",
+                            target.booth_type,
+                            target.key
+                        ));
+                    }
                     drop(realm);
                     // Spawn the consumer that drains this job (submit's
                     // per-job consumer shape).
@@ -193,7 +213,26 @@ impl Realm {
                             Self::run_job(spawn_realm, &target, job).await;
                         }
                     });
-                    return Ok(CallSlot::Hot { rx: reply_rx, deadline });
+                    // The Start+unwrap sugar, right here (ADR-0036 §1:
+                    // "the realm unwraps `value` into the parked caller
+                    // as the single value"): the machinery replies with
+                    // the envelope; a parked VALUE consumer sees the
+                    // unwrapped terminal value. `Realm::iterate` — the
+                    // other entry to the same machinery — hands the
+                    // cursor the envelope unchanged.
+                    let (value_tx, value_rx) = tokio::sync::oneshot::channel();
+                    tokio::spawn(async move {
+                        let out = match reply_rx.await {
+                            Ok(Ok(v)) => aura_booth::Envelope::unwrap_terminal(v),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(anyhow::anyhow!("call reply dropped")),
+                        };
+                        let _ = value_tx.send(out);
+                    });
+                    return Ok(CallSlot::Hot {
+                        rx: value_rx,
+                        deadline,
+                    });
                 }
                 Tier::Cold => {
                     realm.call_seq += 1;
@@ -213,7 +252,11 @@ impl Realm {
         };
         // Cold path: the job still reaches the target's queue (the
         // target executes without a parked caller); the result is
-        // resolved back through resolve_call when it completes.
+        // resolved back through resolve_call when it completes. The
+        // ADR-0036 unwrap rides the same rule as the hot arm: a value
+        // consumer terminal-unwraps before the reply leaves the realm
+        // (re-entry answers the transcript with the value, not the
+        // envelope — surfaces stay value-shaped).
         let resolve_id = call_id.clone();
         {
             let realm = self_arc.clone();
@@ -221,6 +264,7 @@ impl Realm {
                 let rx = Self::submit(&realm, target, &handler, args).await;
                 if let Ok(rx) = rx {
                     if let Ok(result) = rx.await {
+                        let result = result.and_then(aura_booth::Envelope::unwrap_terminal);
                         Self::resolve_call(&realm, &resolve_id, result).await;
                     }
                 }

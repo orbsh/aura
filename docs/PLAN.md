@@ -311,7 +311,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     no currently-fast path faster — it buys the full-Rust booth path
     (gravity) and any-language entry, priced by the consumer.
 
-- [ ] **Phase 4.15 — Envelope unification: invoke is iterate's 1-stream (ADR-0036, docs/adr/0036-one-envelope.md en+zh; design accepted, implementation pending)**
+- [x] **Phase 4.15 — Envelope unification: invoke is iterate's 1-stream (ADR-0036, docs/adr/0036-one-envelope.md en+zh; landed 2026-09-29)**
   - One wire envelope replaces ADR-0034's invoke/iterate protocol split (the
     ctx surface keeps both verbs): `done` always present, always boolean;
     terminal round `{done:true, value?}`, non-terminal round `{done:false,
@@ -373,6 +373,44 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-29b，Phase 4.15 落地：统一信封）
+
+- **协议塌缩（两仓原子批）**：probe `CallKind::Invoke` 删除（IterateStart
+  成 default——wire 形状不变，帧词汇表瘦身）、aura `JobKind::Invoke` 删除
+  （`{Start,Next,Dispose}`，`Job.stream` 必填）；dispatch 全部走 stream
+  缝（aura run_job 的 script 臂 fold 进 `s.iterate`，remote.rs 同理）。
+  事件投递=Start、回复由 drop 丢弃（0036 §4 逐字），`Realm::call` 热臂=
+  mint+注册+回信封+**realm 侧 terminal-unwrap**（§1"realm unwraps `value`
+  into the parked caller"——surfaces 保持值形态：ctx.invoke/engine.invoke/
+  host_wire/dispatch_call 签名与语义零改动；冷臂 resolve_call 前同样解包，
+  parked-value 规则热冷一致）。
+- **载体包装点（§2 plain returns wrap AT THE CARRIER）**：python
+  StopIteration 投影 `.value`（非生成器返回→`{done:true,value}`）；
+  envelope_pull 统一校验（跨字段规则强制执行；Start 裸回复包 terminal、
+  Next 缺 done=错误不是静默终止；子侧 `{"error":…}` 约定透传外层错误值）；
+  bgi 过 validate_envelope（夹具 dispatch 按 `(kind,event)` 双 kind 骑
+  同臂——`call` 留作载体内部原语：内省+probe 直驱测试）；exec OneShot 的
+  Start=跑一次+包 stdout terminal（脚本协议零改），Next/Dispose 保持
+  具名错误——statelessness 锁移到尾随拉取（probe exec_carrier + aura
+  exec_booth 两测同形态 reshape）。
+- **关联从 done 导出（§4）**：`StreamCursor::next` 不再按 stream_id 字段
+  位置认 Start——非 terminal 首帧缺 id=协议错误；terminal 首帧不合并 id
+  且 run_job 立即撤销注册（mint-and-discard，单码路无"invoke 跳过注册"
+  特例）。`StreamCursor::value()` 落地为显式访问器（§3 文档化：原生
+  迭代糖不消费它）；python `ctx_iterate` 尾值落 `last_value` 属性。
+- **实测坑（勿重新发明）**：envelope-mode 的 `iterate` 注入 tag 是框架
+  词汇——bare handler 回显 args 会把注入键带进结果（echo 测试首跑抓到），
+  validate_envelope 的 Start 包装支剥 `iterate` 键（保留字规则入注）；
+  非对象 args 无法承载注入（steel `(ctx_store_emit … 7)` 这类数字参数
+  booth 的 Start 走 bare-call 形态——不注入不剥离，Next/Dispose 才要求
+  对象 args）。
+- **闸门**：iterate.rs 六测 reshape（rust_body 锁"Start=terminal invoke+
+  注册撤销、尾随 Next=not live"；steel_envelope 断言原样存活）；probe
+  workspace（steel,python,wasmtime）全绿；aura engine+realm
+  （steel,python,wasmtime,fjall）全绿；clippy 两仓零新增（aura 存量=
+  echo.rs 6 条，本批 instance.rs 曾引入 1 条 match-single-pattern 已改
+  if-let 消除；probe 零警告）。ADR-0034 erratum 双语已在位（上一批落）。
 
 ## 会话记录（2026-09-29，闸门 2+3 落地：nu bgi 双 fifo + PTY 退役）
 

@@ -114,6 +114,9 @@ pub struct BoothDefKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(BoothDefKey)]
 #[ok_ns(41)]
+// v2: `encoding` appended at the hot tail (append-only rule — old v1
+// rows decode it as its default 0 = json, the behavior they had).
+#[ok_layout(version = 2)]
 pub struct BoothDef {
     /// The raw type name (observability; the id is the addressing).
     pub name: String,
@@ -124,6 +127,10 @@ pub struct BoothDef {
     /// changed code is a new hash the new definition version points at.
     pub code_sha256: [u8; 32],
     pub idle_ttl_secs: u64,
+    /// Declared frame codec of the process carriers (ADR-0037 §2):
+    /// 0 = json, 1 = cbor. Hot-tail append: definitions persisted
+    /// before the field reload as json (their actual behavior).
+    pub encoding: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +204,11 @@ impl BoothDef {
                 language: def.language.clone(),
                 code_sha256: code_hash(&def.source),
                 idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
+                // The codec's u64 wire form (ADR-0037 §2): 0 = json, 1 = cbor.
+                encoding: match def.encoding {
+                    aura_booth::ChannelEncoding::Json => 0,
+                    aura_booth::ChannelEncoding::Cbor => 1,
+                },
             },
             def.schema.as_ref().map(crate::value::json_to_dyn),
         )
@@ -214,6 +226,11 @@ impl BoothDef {
                 name: self.name,
                 language: self.language,
                 source: String::new(), // filled by the blob hydrate below
+                encoding: match self.encoding {
+                    // 0 (and any legacy row's decode default) = json.
+                    1 => aura_booth::ChannelEncoding::Cbor,
+                    _ => aura_booth::ChannelEncoding::Json,
+                },
                 idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
                 schema: schema.map(|v| crate::value::dyn_to_json(&v)),
             },
@@ -331,6 +348,7 @@ mod ns_schema_tests {
             name: "sc".into(),
             language: "steel".into(),
             source: "x".into(),
+            encoding: Default::default(),
             idle_ttl_secs: None,
             schema: Some(serde_json::json!({"storage": {"collections": {"notes": {"schema": {"key_len": 8}}}}})),
         };
@@ -357,7 +375,7 @@ mod ns_schema_tests {
             serde_json::json!({"a": [1, 2, 3]}),
             serde_json::json!({"a": {"b": 0}}),
         ] {
-            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), idle_ttl_secs: None, schema: Some(probe.clone()) };
+            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), encoding: Default::default(), idle_ttl_secs: None, schema: Some(probe.clone()) };
             let m2 = MqStore::mem();
             persist(&m2, &def).unwrap();
             let all = load_all(&m2).unwrap();
@@ -379,6 +397,7 @@ mod ns_schema_tests {
             name: "big".into(),
             language: "steel".into(),
             source: "(define (execute a) a)".into(),
+            encoding: Default::default(),
             idle_ttl_secs: None,
             schema: Some(full),
         };
@@ -397,6 +416,7 @@ mod tests {
             name: name.into(),
             language: "steel".into(),
             source: "(define (execute args) args)".into(),
+            encoding: Default::default(),
             idle_ttl_secs: Some(300),
             schema: Some(serde_json::json!({"lifecycle": {"idle_ttl": "300s"}})),
         }

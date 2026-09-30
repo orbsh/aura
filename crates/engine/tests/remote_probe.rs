@@ -40,6 +40,7 @@ async fn remote_probe_roundtrip() {
     engine.register(BoothType {
         name: "remote-counter".into(),
         body: Body::RemoteProbe {
+            encoding: aura_booth::ChannelEncoding::Json,
             node_alias: "test-node".into(),
             language: "steel".into(),
             source: SRC.into(),
@@ -199,6 +200,7 @@ async fn remote_code_travels_as_reference() {
         .register(aura_booth::BoothType {
             name: "ref-counter".into(),
             body: Body::RemoteProbe {
+            encoding: aura_booth::ChannelEncoding::Json,
                 node_alias: "test-node".into(),
                 language: "steel".into(),
                 source: code_src.into(),
@@ -270,6 +272,7 @@ def tokens(args):
         .register(BoothType {
             name: "remote-prod".into(),
             body: Body::RemoteProbe {
+            encoding: aura_booth::ChannelEncoding::Json,
                 node_alias: "test-node".into(),
                 language: "python".into(),
                 source: SRC.into(),
@@ -369,6 +372,7 @@ def consume(args):
         .register(BoothType {
             name: "remote-cons".into(),
             body: Body::RemoteProbe {
+            encoding: aura_booth::ChannelEncoding::Json,
                 node_alias: "test-node".into(),
                 language: "python".into(),
                 source: CONS.into(),

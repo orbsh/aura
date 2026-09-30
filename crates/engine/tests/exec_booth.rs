@@ -327,3 +327,44 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
     assert_eq!((c1["count"].as_u64(), c2["count"].as_u64()), (Some(1), Some(2)),
         "one child per instance; $env state persists across calls");
 }
+
+/// ADR-0037 §2 (4.16c): a booth DECLARED with the CBOR codec runs the
+/// full realm path on it — upload introspection spawns the throwaway
+/// child in CBOR (the schema frame round trip rides the binary codec),
+/// and the store round trip crosses TYPED frames over CBOR (the
+/// declared codec drives both directions, no silent JSON fallback).
+#[tokio::test]
+async fn bgi_cbor_booth_store_emit_roundtrip() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(
+            BoothType::script("bin-store-cbor", "bgi", bin("bgi_loop"))
+                .encoded(aura_booth::ChannelEncoding::Cbor),
+        )
+        .await
+        .unwrap();
+
+    // Introspection resolved the plan over the CBOR throwaway channel.
+    assert!(
+        engine.realm.lock().await.plan_of("bin-store-cbor").is_some(),
+        "the CBOR-declared booth's schema frame round trip resolved a plan"
+    );
+
+    let out = engine
+        .invoke(
+            InstanceId { booth_type: "bin-store-cbor".into(), key: "s1".into() },
+            "store_round_trip",
+            serde_json::json!({
+                "put": { "collection": "counters", "op": "put_document",
+                         "key": { "id": 7 }, "doc": { "count": 99 } },
+                "get": { "collection": "counters", "op": "get_document",
+                         "key": { "id": 7 } },
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out["read_back"]["count"], 99,
+        "typed store frames over CBOR landed in the type's store and read back"
+    );
+}

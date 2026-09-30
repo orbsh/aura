@@ -230,7 +230,7 @@ impl Realm {
         let probes_base_url = realm.code_base_url.clone();
         drop(realm);
         let mut result = match body {
-            aura_booth::Body::RemoteProbe { node_alias, language, source } => {
+            aura_booth::Body::RemoteProbe { node_alias, language, source, encoding } => {
                 // Remote probe execution (Phase 3): find the probe's live
                 // outbound connection, send Frame::Call (inline payload),
                 // await the correlated reply. The probe's resident
@@ -286,6 +286,9 @@ impl Realm {
                     session,
                     entry: job.handler.clone(),
                     language,
+                    // ADR-0037 §2: the declared codec crosses with the
+                    // call — the node's process carriers speak it.
+                    encoding: map_encoding(encoding),
                     args: job.args.clone(),
                     code,
                 };
@@ -320,7 +323,7 @@ impl Realm {
                     }
                 }
             }
-            aura_booth::Body::Script { language, source } => {
+            aura_booth::Body::Script { language, source, encoding } => {
                 // Resident sessions (Phase 2.6): one VM/child per booth
                 // instance, loaded once, called per event. Cross-call
                 // state lives in the session (module globals / the child's
@@ -390,13 +393,18 @@ impl Realm {
                 // bare Start reply wraps to `{done:true,value}` AT THE
                 // CARRIER — `s.call` is no longer a dispatch arm).
                 let sjob = stream_op(&job);
+                let encoding = map_encoding(encoding);
                 tokio::task::spawn_blocking(move || {
-                    sessions.with_session(
+                    sessions.with_session_encoded(
                         &instance_key,
                         &language,
                         &source,
                         host.as_ref(),
                         &probe_runtime::sandbox::SandboxPolicy::None,
+                        // ADR-0037 §2: the declared codec drives the
+                        // process carriers' channel; embedded carriers
+                        // ignore it (no channel).
+                        encoding,
                         move |s| s.iterate(sjob),
                     )
                 })
@@ -654,6 +662,18 @@ impl Realm {
 
     pub fn is_resident(&self, id: &InstanceId) -> bool {
         self.instances.contains_key(&(id.booth_type.clone(), id.key.clone()))
+    }
+}
+
+/// Map the declared booth codec (aura-booth's probe-free enum) onto the
+/// runtime's form (ADR-0037 §2 — the two crates keep their own types,
+/// the values are the same wire pair "json"/"cbor").
+pub(crate) fn map_encoding(
+    e: aura_booth::ChannelEncoding,
+) -> probe_protocol::ChannelEncoding {
+    match e {
+        aura_booth::ChannelEncoding::Json => probe_protocol::ChannelEncoding::Json,
+        aura_booth::ChannelEncoding::Cbor => probe_protocol::ChannelEncoding::Cbor,
     }
 }
 

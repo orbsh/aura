@@ -128,18 +128,19 @@ impl Default for Realm {
 /// declaration = `None`, never a registration error — declaration is
 /// optional metadata.
 pub async fn introspect_schema(booth: &aura_booth::BoothType) -> Option<serde_json::Value> {
-    let aura_booth::Body::Script { language, source } = &booth.body else {
+    let aura_booth::Body::Script { language, source, encoding } = &booth.body else {
         return None; // Rust types declare TTL via the builder
     };
     let raw = tokio::task::spawn_blocking({
         let language = language.clone();
         let source = source.clone();
-        move || {
-            // Uniform contract: carrier::introspect dispatches per
-            // language; every carrier assembles/merges `interface_schema`
-            // behind this one call. No language branch in the host.
-            probe_runtime::carrier::introspect(&language, &source)
-        }
+        // Uniform contract: carrier::introspect dispatches per language;
+        // every carrier assembles/merges `interface_schema` behind this
+        // one call. No language branch in the host. ADR-0037 §2: the
+        // throwaway child spawns in the DECLARED codec (a CBOR-declared
+        // bgi booth's schema frame round trip rides CBOR).
+        let encoding = crate::instance::map_encoding(*encoding);
+        move || probe_runtime::carrier::introspect_encoded(&language, &source, encoding)
     })
     .await;
     raw.ok()?.ok()

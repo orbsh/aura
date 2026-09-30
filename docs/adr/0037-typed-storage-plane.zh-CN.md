@@ -2,9 +2,10 @@
 
 > **语言：** [English](0037-typed-storage-plane.md)（主文档） · [中文](0037-typed-storage-plane.zh-CN.md)
 
-**状态：** Accepted（2026-09-28）。§1 已落地（Phase 4.16a python 绑定面
-2026-09-30；Phase 4.16b steel Collection 面 2026-09-30）；typed 帧 host
-通道 + CBOR（4.16c，§2）未动，见后果。由用户的合同质疑引发：
+**状态：** Accepted（2026-09-28）；§2 于 2026-09-30 由用户的
+双协议裁决修订（见下）。全部已落地：§1（Phase 4.16a python 绑定面
+2026-09-30；Phase 4.16b steel Collection 面 2026-09-30）与 §2
+（Phase 4.16c typed 宿主帧 + 声明式双编码 2026-09-30）。由用户的合同质疑引发：
 python/steel 有直接绑定的 Collection 面（okm 的嵌入器用法，
 ADR-0022 已定），ADR-0026 §3 却把进程内桥也写成了翻译到指令文档——
 "bridging cost paid once in the adapter" 的正确终态是根本不翻译。
@@ -36,8 +37,9 @@ ADR-0026 §3 的合同："`ctx.store` 恰好暴露一个接口——
 
 ## 决策
 
-**裁决——进程内直绑；进程外走 typed host channel；CBOR 是整条 host
-通道的载荷编码（存储操作是其中一个类型），不是为存储新开一套。**
+**裁决——进程内直绑；进程外走 typed host channel；通道编码按摊位声明、
+双协议（json/cbor，用户裁决 2026-09-30 替换整通道 CBOR 计划，见 §2）
+——存储操作是通道帧里的一个类型，不是为存储新开一套编码。**
 
 ### 1. 进程内载体（python / steel）：绑定面，无翻译
 
@@ -55,7 +57,7 @@ ADR-0026 §3 的合同："`ctx.store` 恰好暴露一个接口——
   （ctx-stub 先例），而 shim 名是脚本内容、在临时引擎里无法打桩——会重开
   声明静默丢失的陷阱。
 
-### 2. 进程外通道 = 一条流，类型化帧；CBOR 是通道的编码（一个计划类型）
+### 2. 进程外通道 = 一条流，类型化帧；通道编码按声明（双编码）
 
 用户的模型：host 通道不是"每操作一条 JSON 文本缝"，是**一条类型化帧的
 消息流**，存储操作是其中一个类型。帧词汇保持 ADR-0035 §3 的形状，载荷
@@ -68,10 +70,21 @@ child → parent   {"host": {"type": "store",   "op": <typed okm 指令>}}
 parent → child   {"host_reply": {"ok": <typed>}}
 ```
 
-- **编码升级 = 整条通道的**：JSON-lines → 长度前缀 CBOR。这是 ADR-0035
-  §3 已记录的 CBOR 计划的落法（Windmill 判据：帧解析只在驱动一个只有
-  解析才能做对的动作时才建——CBOR 解析器在载荷成为字节流的那一刻才
-  值得建）。不借存储之名新造编码。
+- **编码按摊位声明，双协议（用户裁决 2026-09-30，替换整通道单编码
+  计划）**：通道带两种编码，由声明选择——`BoothType::encoded
+  (ChannelEncoding)`（aura-booth，serde 值 `json`/`cbor`，持久化为
+  `BoothDef` 热段尾部追加字段）与远程线上的 `ToolCall.encoding`
+  （进程内：realm 下传；远程：随调用到节点）。`Json` = 换行分隔行，
+  stdlib 可达的默认，所有旧摊位与旧持久化行都骑它；`Cbor` = 每帧一个
+  自定界文档（无行终止符——ciborium 恰好读声明的字节数，阻塞管道上
+  连续解码逐帧落位）。子进程经 spawn 注入的 `BGI_ENCODING` env 得知
+  编码——不追加 argv（fifo 形恰好传 `[req rep]`，生成的参数会破作者
+  `def main` 的 arity）。逼出双形的实测事实：nu 0.115 没有 CBOR 编解码
+  ——入口判据（ADR-0035 §3：任何语言用 stdlib 解析器就能到达）对整通道
+  CBOR 是硬墙。CBOR 声明撞上 nu fifo spec = 启动期错误，绝不静默降级。
+  下面的类型化在两种编码下同样成立——编码改编解码，类型化改词汇表；
+  正交两轴。第三种编码仍由 Windmill 判据把关：解析驱动不了只有解析
+  才能做对的动作，就不建。
 - **类型化消灭文档层错误**：`{"op":"put_docment"}` 的拼写错误静默
   通过 `from_value` 前的文本层、在 serde 才炸；类型化帧的 op 判别在
   帧结构层，CBOR tag/字段号拼错 = 解码失败 = 错误值，无静默路径。
@@ -84,11 +97,13 @@ parent → child   {"host_reply": {"ok": <typed>}}
 
 ### 3. `ctx_store_emit` JSON 的处置
 
-闸门 1 刚落地的 JSON 指令文档（`HostOp::StoreEmit`、
-`host_bridge_for("ctx_store_emit")`）是**过渡形态**：typed channel
-（§2）落地时随 JSON 载荷一并退役；在那之前它是 bgi/nu 摊位唯一的存储
-缝，**不再往它上面加新 op**（op set 冻结在 ADR-0026 落地的 Collection
-语义集）。python/steel 的 §1 落地后，JSON 缝只剩 bgi 消费者。
+闸门 1 落地的 JSON 指令文档（`HostOp::StoreEmit`、
+`host_bridge_for("ctx_store_emit")`）是声明过的过渡形态；§2 落地退役了
+它的**入口**——bgi 缝上 `op: "ctx_store_emit"` 自由字符串查表已消失，
+由类型化 `store` 帧取代（指令本身仍按**数据**搬运——probe 保持
+schema-blind；退役的是入口，不是文档）。远程 WS 的 `HostOp::StoreEmit`
+变体本就是类型化帧（serde 判别枚举），那里没有退役对象。§1 落地后
+python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧。
 
 ## 诚实语义代价
 
@@ -105,8 +120,12 @@ parent → child   {"host_reply": {"ok": <typed>}}
   per-VM 注册表 + 固定名按字符串寻址（见 §1）；点号 shim 方案被
   define-compile 陷阱否决，不是被口味否决。
 - **过渡期 = 两种正确形态并存**：§1 落地后 python/steel 用绑定、bgi/nu
-  仍用 JSON——缝不统一，直到 §2 落地。接受：绑定先行有独立价值（误
-  操作拦截 + 翻译次数归零），不必等 CBOR。
+  仍走 JSON 缝——§2 落地后**入口**形状统一（两种编码下的类型化帧）；
+  绑定与帧的分层正是 §2 的载体分层意图，不是残留。
+- **双编码是实测让路，不是对冲**：原整通道 CBOR 计划死于 nu 的 stdlib
+  （没有 CBOR 编解码，把编解码塞进一门语言的能力面正是入口判据禁止的
+  library tax）。声明带两种编码而非一次整体升级——每个摊位终身恰好
+  用一种、通道不按帧协商；第三种编码仍关在 Windmill 判据后面。
 
 ## 后果
 
@@ -129,21 +148,29 @@ parent → child   {"host_reply": {"ok": <typed>}}
   `ClosureEngine` 把四个字节闭包适配到 okm-steel 的 Engine trait，
   `SteelSession::new` 在会话启动建 per-VM 注册表，stub 臂只注册进
   introspect 的临时引擎（ctx-stub 的定域规则——同名 `register_fn` 叠加会
-  遮蔽常驻会话里的真函数）。未动：bgi 的 `exchange()` 按
-  §2 的 typed 帧形状实施（先 JSON、载荷即帧类型字段，后整通道 CBOR）；
-  wasm 不动。
+  遮蔽常驻会话里的真函数）。bgi 的 `exchange()` 按 §2 的 typed 帧形状
+  **已落地**（4.16c）：`{"host": {"type": …}}` 反序列化进类型化枚举再
+  映射回桥表（判别符错 = 解码失败 = 错误值，静默查表落空已消失）；会话
+  编码=声明（JSON 行 / 自定界 CBOR 文档），经 `BGI_ENCODING` spawn env
+  传给子进程；exec 一次性载体同字段；wasm 不动。
 - **aura**（4.16a/b）：`run_job` 的 script 臂从 `StorePlan.entries`
   填槽，引擎闭包捕获**裸 realm-mq 句柄**——注入的 `Collection` 自绑
   ns，绑定面与 `ctx_store_emit` 字节同一（`ns_raw` 形态只属于 wasm
   平面）。锁按载体：`py_injection.rs`（python，4.16a）、
   `steel_injection.rs`（steel，4.16b——同一互读形态：绑定写 ↔ emit 读、
   反向亦然，evict 后 per-VM 注册表在幸存行上重建）。
-  `host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役
-  （op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
-  全部幸存——变的只是载荷的到达形状。
+  `host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役（4.16c；
+  期间 op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
+  全部幸存——载荷的到达形状现在是类型化 `store` 帧。声明面（4.16c）：
+  aura-booth 带自有的 `ChannelEncoding`（crate 保持 probe-free）、
+  `BoothType::encoded` 选择编码、`PersistedBooth`/`BoothDef` 以热段尾部
+  追加字段持久化（旧行重读为 json——其实际行为），`introspect_schema`
+  按声明编码起抛却子进程。
 - **文档**：ADR-0026 §3 的 python 措辞按本 ADR 修订（绑定，无 adapter）；
   ADR-0035 §3 的 host 帧形状随 §2 更新；本文件取代两者的存储桥段落。
-- **排期**：不插队 4.14 剩余项与 4.15。建议顺序：4.14 闸门 2/3（nu
-  垫片 + PTY 退役，走过渡 JSON 缝——垫片与缝的形态解耦，§3.1 已记）→
-  4.15 信封合并（host 通道与 call 通道共用信封，typed 载荷顺势）→
-  本 ADR 实施（§1 先行，§2 随 CBOR）。
+- **排期**：按预定顺序落地——4.14 闸门 2/3 与 4.15 先行（nu 垫片 +
+  PTY 退役走过渡 JSON 缝；垫片与缝的形态解耦，§3.1 已记；信封合并给了
+  host 通道与 call 通道同一形状），随后本 ADR §1（绑定，4.16a/b）与
+  §2（类型化帧 + 声明式双编码，4.16c）。CBOR 一半到达的形态**不是**
+  本文最初勾勒的整通道升级，而是声明式双编码（用户裁决 2026-09-30）：
+  nu 的 stdlib 墙把单升级计划实测判死。

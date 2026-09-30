@@ -186,7 +186,7 @@ async fn python_script_booth() {
     return {"doubled": args["x"] * 2}
 "#,
         ))
-        .await;
+        .await.unwrap();
 
     let out = engine
         .invoke(
@@ -380,7 +380,7 @@ def execute(args):
     return {"stored": stored, "echo": echo["ok"]}
 "#,
         ))
-        .await;
+        .await.unwrap();
 
     let out = engine
         .invoke(
@@ -415,10 +415,10 @@ def bump(args):
     return {"memory": memory}
 "#,
         ))
-        .await;
+        .await.unwrap();
 
     let target = InstanceId { booth_type: "py-resident".into(), key: "r1".into() };
-    let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
+    engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
     let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
     assert_eq!(out, serde_json::json!({"memory": 2}), "same session accumulates");
 
@@ -454,7 +454,7 @@ def execute(args):
     return {"ok": True}
 "#,
         ))
-        .await;
+        .await.unwrap();
 
     // Register introspected the declaration: the type now carries a
     // per-type TTL even though the host never called with_idle_ttl.
@@ -477,7 +477,7 @@ def execute(args):
     return {"ok": True}
 "#,
         ))
-        .await;
+        .await.unwrap();
     {
         let realm = engine.realm.try_lock().unwrap();
         let booth = realm.booth_type("py-plain").unwrap();

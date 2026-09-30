@@ -25,6 +25,14 @@ pub enum Body {
     Script {
         language: String,
         source: String,
+        /// Frame codec for the PROCESS carriers (bgi/exec, ADR-0037 §2 —
+        /// dual-protocol by declaration). Json = newline-delimited JSON
+        /// lines (the stdlib-reachable default every older booth rides);
+        /// Cbor = one self-delimited CBOR document per frame. Embedded
+        /// carriers (steel/python/wasm) carry no channel — inert there.
+        /// The realm maps this onto probe_runtime's codec enum; this
+        /// crate stays probe-free (the same wire VALUES: "json"/"cbor").
+        encoding: ChannelEncoding,
     },
     /// Remote probe booth (Phase 3): the body lives on a probe node that
     /// dialed into THIS control plane. `node_alias` addresses the probe's
@@ -34,7 +42,24 @@ pub enum Body {
         node_alias: String,
         language: String,
         source: String,
+        /// The declared frame codec rides the ToolCall to the node's
+        /// process carriers (ADR-0037 §2); inert for embedded carriers.
+        encoding: ChannelEncoding,
     },
+}
+
+/// The declared frame codec of a process-carrier booth (ADR-0037 §2,
+/// dual-protocol). Serde values match the probe protocol's enum
+/// ("json"/"cbor"); the realm maps this type onto the runtime's form —
+/// aura-booth stays probe-free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelEncoding {
+    /// Newline-delimited JSON lines (the default, stdlib-reachable).
+    #[default]
+    Json,
+    /// CBOR documents, one self-delimited frame.
+    Cbor,
 }
 
 /// An Booth type definition. The handler is a Rust async function for now;
@@ -91,7 +116,8 @@ pub type SleepHook =
     dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
 
 impl BoothType {
-    /// Define a script type executed by a probe carrier.
+    /// Define a script type executed by a probe carrier (JSON-lines
+    /// codec — the default).
     pub fn script(
         name: impl Into<String>,
         language: impl Into<String>,
@@ -99,13 +125,31 @@ impl BoothType {
     ) -> Self {
         Self {
             name: name.into(),
-            body: Body::Script { language: language.into(), source: source.into() },
+            body: Body::Script {
+                language: language.into(),
+                source: source.into(),
+                encoding: ChannelEncoding::default(),
+            },
             idle_ttl: None,
             max_exec: None,
             on_sleep: None,
             on_wake: None,
             receives: Vec::new(),
         }
+    }
+
+    /// Declare the frame codec of a PROCESS-carrier booth (ADR-0037 §2 —
+    /// dual-protocol): `Cbor` switches the bgi/exec channel to
+    /// CBOR documents (self-delimited, no line terminator). A declaration
+    /// error, not a silent downgrade: the nushell fifo shape rejects a
+    /// Cbor spec at spawn (nu has no CBOR codec). Inert for embedded
+    /// carriers (they carry no channel).
+    pub fn encoded(mut self, encoding: ChannelEncoding) -> Self {
+        match &mut self.body {
+            Body::Script { encoding: e, .. } | Body::RemoteProbe { encoding: e, .. } => *e = encoding,
+            Body::Rust(_) => {}
+        }
+        self
     }
 
     /// Declare an event subscription on this type (exact event + instance

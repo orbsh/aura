@@ -23,6 +23,10 @@ pub struct PersistedBooth {
     pub name: String,
     pub language: String,
     pub source: String,
+    /// Declared frame codec of the process carriers (ADR-0037 §2);
+    /// absent = Json (the default every older persisted row rides).
+    #[serde(default)]
+    pub encoding: crate::ChannelEncoding,
     /// Per-type idle TTL, seconds; absent = realm default.
     pub idle_ttl_secs: Option<u64>,
     /// Metadata extracted from `interface_schema()` introspection at
@@ -33,13 +37,14 @@ pub struct PersistedBooth {
 
 impl PersistedBooth {
     pub fn from_type(booth: &BoothType) -> Option<Self> {
-        let crate::Body::Script { language, source } = &booth.body else {
+        let crate::Body::Script { language, source, encoding } = &booth.body else {
             return None; // Rust handlers are compile-time; nothing to persist
         };
         Some(Self {
             name: booth.name.clone(),
             language: language.clone(),
             source: source.clone(),
+            encoding: *encoding,
             idle_ttl_secs: booth.idle_ttl.map(|d| d.as_secs()),
             schema: None,
         })
@@ -51,7 +56,8 @@ impl PersistedBooth {
             self.name.clone(),
             self.language.clone(),
             self.source.clone(),
-        );
+        )
+        .encoded(self.encoding);
         t.idle_ttl = self.idle_ttl_secs.map(std::time::Duration::from_secs);
         t
     }

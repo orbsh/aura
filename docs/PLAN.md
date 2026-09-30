@@ -330,7 +330,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - ADR-0034 carries an erratum (decisions stand, forms superseded; body
     preserved as decided).
 
-- [~] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; design accepted, implementation pending)**
+- [x] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; CLOSED 2026-09-30 — 4.16a python binding face, 4.16b steel Collection face, 4.16c typed host frames + declared dual-encoding)**
   - **4.16a LANDED (python in-process binding face, 2026-09-30)**: okm's
     `Collection::with_store` (host-injected byte-face engine, okm
     bindings commit 58cf72b) → probe `HostBridge.storage` slot (byte-level
@@ -382,9 +382,48 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     sweep + count fold engine-side, void/delete/loud-error arms); aura
     `steel_injection.rs` (binding write ↔ ctx_store_emit read and the
     reverse; eviction rebuilds the per-VM registry over surviving rows).
-  - Remaining (4.16c): the out-of-process typed-frame channel (`exchange()`
-    frame typing), whole-channel CBOR (ADR-0035 §3, retires the JSON `StoreEmit`
-    seam); `ctx_store_emit` JSON entry retirement (op set frozen meanwhile).
+  - **4.16c LANDED (typed host frames + declared dual-encoding,
+    2026-09-30; user ruling replaced the whole-channel-CBOR plan with
+    dual-protocol by declaration)**: probe's `exchange()` decodes
+    `{"host": {"type": invoke|iterate|store|interface_schema}}` into a
+    typed enum (serde-tagged, `IterVerb` for the stream verb) mapped onto
+    the bridge table — a bad discriminator/verb fails at decode and
+    answers an error value; the free `op`-name table miss is gone, §3's
+    ENTRY retirement landed (the instruction itself still travels as
+    DATA — schema-blind rule). The codec is DECLARED per booth:
+    `BoothType::encoded(ChannelEncoding)` (aura-booth's own enum — the
+    crate stays probe-free; serde values `json`/`cbor` = probe-protocol's
+    `ChannelEncoding` pair, mapped realm-side), persisted through
+    `PersistedBooth.encoding` (`#[serde(default)]`) and `BoothDef` as a
+    hot-tail append (`#[ok_layout(version = 2)]`, u64 0=json/1=cbor —
+    old rows reload as their actual behavior); carried to remote nodes on
+    `ToolCall.encoding` (`#[serde(default)]`). CBOR = one self-delimited
+    document per frame (NO length prefix — ciborium reads exactly the
+    declared bytes, sequential decodes on the blocking pipe land
+    document-by-document; measured in `bgi_cbor_round_trip`). The child
+    learns the codec through the `BGI_ENCODING` spawn env (NOT an
+    appended argv — the fifo shape passes exactly [req rep]; a generated
+    argument would break `def main` arity). Measured wall that forced the
+    dual shape: **nu 0.115 has no CBOR codec** (`to/from cbor` absent —
+    only msgpack/msgpackz/toml/json/nuon/kdl); the entrance criterion
+    (stdlib-reachable) is a hard wall for a whole-channel upgrade. A CBOR
+    declaration against the `nu` fifo spec = spawn-time error, never a
+    silent downgrade. Introspection rides the declared codec too
+    (`carrier::introspect_encoded` — a CBOR booth's schema frame round
+    trip spawns the throwaway child in CBOR). exec one-shot rides the
+    same field (one document in/out, codec declared; request shape
+    unchanged). bgi_loop/one_shot fixtures branch on `BGI_ENCODING`
+    (ciborium already in actor-guest deps); bgi_nu.nu keeps JSON and
+    reads/writes typed host frames. Locks: probe `exec_carrier.rs`
+    (`bgi_cbor_round_trip` + residency, `bgi_cbor_host_call_crosses_the_seam`,
+    `bgi_untyped_host_frame_fails_at_decode` — the retired shape
+    answers an error value and the bridge fn NEVER runs, `exec_cbor_round_trip`,
+    `nu_cbor_declaration_is_an_error`); aura `exec_booth.rs`
+    (`bgi_cbor_booth_store_emit_roundtrip` — upload introspection + typed
+    store frames + realm plan over CBOR). Docs: ADR-0037 §2/§3/裁决/排期
+    bilingual landed-state + the dual-codec honest-cost entry; ADR-0035
+    §3 bilingual (frame vocabulary typed, codec declared). The remote WS
+    `HostOp` enum needed no change — already typed frames.
   - Amends ADR-0026 §3: python/steel booths BIND okm's `DynamicCollection`,
     zero translation; the out-of-process seam becomes typed frames on ONE
     host channel (invoke / iterate / store as frame types), with whole-
@@ -428,6 +467,50 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-30c，4.16c 落地：typed 宿主帧 + 声明式双编码）
+
+- **裁决落点（用户"采用双协议，bgi/exec 配置中添加编码字段"）**：原
+  §2"整通道 CBOR"计划被实测事实判死——nu 0.115 stdlib 没有 CBOR 编
+  解码（`to/from cbor` 不存在，只有 msgpack/msgpackz/toml/json/nuon/
+  kdl），入口判据（任何语言 stdlib 可达）是硬墙。改为每摊位声明一种
+  编码（json|cbor），终身一 codec、不按帧协商；第三种编码仍关在
+  Windmill 判据后。声明面：aura-booth 自有 `ChannelEncoding`（crate
+  保持 probe-free，serde 值与 probe-protocol 同名对，realm `map_encoding`
+  映射）+ `BoothType::encoded()`；`script()` 三参不变、默认 Json，
+  50+ 既有调用点零破坏。远程路径编码随 `ToolCall.encoding`
+  （`#[serde(default)]`）到节点；probe 下行 `with_session_encoded`。
+- **类型帧**：`exchange()` 把 `{"host":{"type":…}}` 反序列化进
+  serde 标签枚举（invoke / iterate+`IterVerb` / store / interface_schema）
+  再映射回桥表——判别符/动词错 = 解码失败 = 错误值回 child，自由
+  `op` 名查表落空的静默路径消失（§3 的"退役"兑现为**入口**退役：
+  store 指令本身仍按数据搬运，schema-blind 铁律不动；远程 WS `HostOp`
+  本就是类型帧，无退役对象）。
+- **两个实测形状**：CBOR 分帧用自定界文档而非计划里的长度前缀——
+  ciborium 恰好读声明的字节数，阻塞管道上连续 `from_reader` 逐帧落位
+  （`bgi_cbor_round_trip` 锁住多帧顺序 + 持驻）；编码经 `BGI_ENCODING`
+  spawn env 传子进程，不追加 argv——fifo 形恰好传 `[req rep]`，生成参
+  数会破作者 `def main` 的 arity。nu 头声明 Cbor = 启动期点名错误
+  （`nu_cbor_declaration_is_an_error`），绝不静默降级。
+- **持久化兼容（布局规则先行查证）**：`BoothDef` 的 `encoding: u64`
+  追加在热段尾 + `#[ok_layout(version = 2)]`——先读 okm-derive
+  `emit_payload_decode` 确认截断尾读声明默认（append-only 规则），旧
+  v1 行重读为 0=json（其实际行为），字段插中间会移动 `code_sha256`
+  偏移的路线否决。`introspect_schema` 按声明编码起抛却子进程
+  （`introspect_encoded`）——CBOR 摊位的 schema 帧往返也骑 CBOR。
+- **验收矩阵**：probe workspace 全绿（新锁 5 条：CBOR 往返+持驻、CBOR
+  ctx 缝、未类型帧=解码错误且桥 fn 不执行、exec CBOR、nu+Cbor=错误）；
+  aura workspace 全绿（新锁 `bgi_cbor_booth_store_emit_roundtrip`：上传
+  introspection + 类型 store 帧 + realm plan 全走 CBOR）；两仓 clippy
+  零警告——顺手清 echo.rs 存量 6 条（5×register 结果 `.unwrap()`、1×
+  被遮蔽绑定），`too_many_arguments` 以属性+why 抵制（参数组是
+  `with_session` 既有形态，结构化会翻全部调用点）。
+- **文档**：ADR-0037 双语（状态 ALL LANDED、§2 声明式双协议、裁决行、
+  §3 入口退役落地态、诚实代价加"双编码是实测让路非对冲"、排期落地
+  态）；ADR-0035 §3 双语（帧词汇类型化、编码声明化）；PLAN 4.16 标
+  CLOSED。夹具 bgi_loop/one_shot 按 env 分双编码、宿主帧类型化；
+  bgi_nu.nu 保持 JSON 读类型帧。
+- **提交**：待用户指令（probe / aura 两仓各自一批；okm 未动）。
 
 ## 会话记录（2026-09-30b，4.16b 落地：steel 绑定面注入 + slatedb 驱动线程）
 

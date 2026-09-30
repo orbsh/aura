@@ -76,18 +76,20 @@ residency to evict.
 SKILLs stay invoke-only (the established downgrade): generated scripts
 need no storage surface, no residency; their bodies are not booths.
 
-### 3. Wire: newline-delimited JSON frames, bgi only (CBOR is the planned optimization)
+### 3. Wire: frames in a DECLARED codec (json | cbor), bgi only — typed host frames (ADR-0037 §2)
 
-One frame codec for the bgi shape, one line per frame. JSON-lines is the
-shipped form: any language reaches it with its stdlib parser — no
-library tax for entry, which is the carrier's whole purpose. Length-
-prefixed CBOR is the planned payload optimization (the wasm carrier
-proved the marshal discipline; the line framing upgrades when a fast
-path needs it — the Windmill criterion, same rule as ADR-0034's pull
-batching). exec has no wire vocabulary — one JSON document in, one out
-(section 2).
+One frame codec per session, selected by the booth's declaration
+(ADR-0037 §2 — dual-protocol by declaration, user ruling 2026-09-30).
+JSON-lines is the default and the stdlib-reachable entry: any language
+reaches it with its parser — no library tax for entry, which is the
+carrier's whole purpose. CBOR (one self-delimited document per frame, no
+length prefix, no line terminator) is the declared upgrade for carriers
+that bring a codec; the earlier whole-channel plan died on the measured
+fact that nushell's stdlib has no CBOR codec. exec has no wire vocabulary
+— one document in (the declared codec), one out (section 2).
 
-Frame vocabulary (the bgi duplex):
+Frame vocabulary (the bgi duplex; the shapes below are logical — the
+declared codec carries them as JSON text lines or CBOR documents):
 
 ```
 { "id": N, "kind": "call", "event": "<handler>", "args": <value> }            → in
@@ -95,7 +97,7 @@ Frame vocabulary (the bgi duplex):
   "event": "<handler>", "op": "start|next|dispose",
   "args": <value>, "stream_id": "<sid>" }                                      → in
 { "result": <value> }                                                          ← out
-{ "host": {"op": "<ctx-fn-name>", "args": <value>} }                          ← out (bgi only: the booth calls the host)
+{ "host": {"type": "invoke|iterate|store|interface_schema", …} }               ← out (bgi only: the booth calls the host — TYPED, ADR-0037 §2; the retired free `op: "<ctx-fn-name>"` lookup is gone, a bad discriminator fails at decode)
 { "host_reply": {"ok": <value>} }                                              → in  (bgi only)
 ```
 
@@ -107,12 +109,14 @@ is a stream envelope: a plain one-shot script's bare stdout is wrapped to
 protocol-free (0036 §2), and the stream verbs after it are the named
 error value (the cgi shape holds no residency).
 
-Host calls in bgi ride the same `HostOp` vocabulary as the wire bridge
-(invoke, iterate). `ctx_store_emit` joined the arm set at Phase 4.14
-gate 1 (`HostOp::StoreEmit` — one okm instruction as DATA, schema-blind
-on the probe side); the JSON instruction document is ADR-0037's declared
-transitional shape, op set frozen, retiring with CBOR. stdio is a
-transport for the existing ops, not a new surface. The envelope
+Host calls in bgi ride the same typed frame vocabulary as the remote
+wire bridge (invoke, iterate, store — ADR-0037 §2, landed 4.16c): a bad
+discriminator or verb fails at decode and answers as an error value, the
+old free-function-name table miss is gone. `ctx_store_emit` joined the
+arm set at Phase 4.14 gate 1 (`HostOp::StoreEmit` — one okm instruction
+as DATA, schema-blind on the probe side); ADR-0037 §3 retired its ENTRY
+(the typed `store` frame carries the same DATA). stdio is a transport
+for the existing ops, not a new surface. The envelope
 (ADR-0034, unified by ADR-0036: one shape, `done` always a boolean,
 `value` on the terminal round) is CBOR-encodable schema: it crosses
 unchanged, and the frame protocol inherits its typing rules (`done` is a

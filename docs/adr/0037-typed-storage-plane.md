@@ -2,8 +2,8 @@
 
 > **Languages:** [English](0037-typed-storage-plane.md) (primary) · [中文](0037-typed-storage-plane.zh-CN.md)
 
-**Status:** Accepted (2026-09-28). §1's python binding face LANDED
-(Phase 4.16a, 2026-09-30); the steel Collection face (4.16b) and the
+**Status:** Accepted (2026-09-28). §1 LANDED (Phase 4.16a python binding
+face 2026-09-30; Phase 4.16b steel Collection face 2026-09-30); the
 typed-frame host channel + CBOR (4.16c, §2) remain — see Consequences.
 Raised by the user's contract challenge: python/steel
 have directly-bound Collection surfaces (okm's embedder usage, decided in
@@ -55,9 +55,18 @@ its frames), not a new encoding invented for storage.**
   session module (alongside the `ctx_store_emit` entry; `add_class::<Collection>()`
   exists today). Zero translations.
 - **steel**: `okm-steel` has schema/encode/decode registered; the Collection
-  method face (put/get/scan) is MISSING — an implementation item, not a
-  ruling problem. Fill it aligned with the python binding: two host faces of
-  the same `DynamicCollection`, one executor.
+  method face is filled (4.16b) aligned with the python binding: two host
+  faces of the same `DynamicCollection`, one executor. The handle shape the
+  `'static`/thread-local constraints decided: a PER-VM registry (not the
+  codec handles' thread_local — a session's VM moves across worker threads)
+  of integer-internal collections addressed by the script through six
+  fixed-name fns by NAME STRING (`(collection-put! "notes" pkey doc)`).
+  Fixed names, not a dotted per-collection shim (`Counters.put` — measured
+  to resolve on both define and call sides), because steel resolves free
+  identifiers at DEFINE-COMPILE time: the introspection throwaway engine
+  must carry the same names (the ctx-stub precedent), and shim names are
+  script content — unstubbable there, which would reopen the silent
+  schema-drop trap.
 
 ### 2. The out-of-process channel = one stream, typed frames; CBOR is the channel's encoding (a planned type)
 
@@ -114,10 +123,11 @@ only for bgi consumers.
   probe dependency — the registry + typed frame protocol + direct bindings
   are all pushing the probe from "protocol mover" toward "runtime"; watch
   that line continuously.
-- **The steel binding has a real gap**: `okm-steel` has no Collection method
-  face; filling it is work in the okm repo (a cross-repo cut), and steel's
-  `'static`/thread-local constraints (the RegisterFn precedent) will decide
-  how the bound handle travels.
+- **The steel binding's gap closed with a real decision inside it**:
+  filling `okm-steel`'s Collection face (4.16b, an okm-repo cut) forced
+  the shape ruling the quote had anticipated — per-VM registry + fixed
+  name-string fns (see §1), the dotted-shim alternative rejected by the
+  define-compile trap, not by taste.
 - **Transitional period = two correct shapes coexisting**: after §1,
   python/steel bind while bgi/nu still use JSON — the seam is not uniform
   until §2 lands. Accepted: binding-first has standalone value (mistake
@@ -127,22 +137,42 @@ only for bgi consumers.
 
 - **okm** (implementation): `okm-python` gained the host-injected face —
   `Collection::with_store` over a byte-level `Engine` trait (4.16a,
-  commit 58cf72b). Remaining: `okm-steel`'s Collection method face
-  (put/get/delete/scan, mirroring `okm-python`'s `#[pymethods]` shape).
+  commit 58cf72b). 4.16b landed the engine face + entry parsing as the
+  SHARED crate `okm-entry` (python rewired onto it — bindings must not
+  fork the entry semantics any more than the byte layout) and
+  `okm-steel`'s Collection method face over it (put/get/delete/scan +
+  reduce reads, per-VM registry, name-string fns). 4.16b also fixed
+  `okm-steel`'s standing breakage: `Value::Obj`/`Value::Array` (okm
+  0c2a354) never got arms in `value_to_steel` — the binding had not
+  compiled since. A latent defect surfaced while wiring the host:
+  slatedb's sync facade `block_on`s a held runtime, which PANICS on a
+  thread with a tokio context entered (spawn_blocking keeps it — the
+  realm drives injections exactly there); the facade now rides a
+  dedicated driver thread (okm 92b2551, locks in
+  `okm-core/tests/driver_thread_test.rs`).
 - **probe** (4.16a landed): `HostBridge` carries a `storage` slot — the
   host's engine behind four byte-closure fns (`StorageEngineFns`: no okm
   types on the seam, so probe and aura build against different okm revs
   freely) + the plan's raw collection entries; the python carrier's load
   step builds one `Collection` per entry over it and `module.add`s it
   under the collection name (the engine handle never crosses a seam
-  back — a pyclass carries `*mut PyObject`, not Send). Remaining: bgi's
-  `exchange()` implements §2's typed-frame shape (JSON first, payload IS
-  the frame-type field; whole-channel CBOR later); wasm untouched.
-- **aura** (4.16a partial): `run_job`'s script arm fills the slot from
+  back — a pyclass carries `*mut PyObject`, not Send); the steel carrier
+  consumes the same slot (4.16b): `ClosureEngine` adapts the four byte
+  closures to okm-steel's Engine trait, `SteelSession::new` builds the
+  per-VM registry at session start and registers the stub arms ONLY in
+  the introspection engine (the ctx-stub scoping rule — same-name
+  `register_fn` stacking would shadow the real fns in resident sessions).
+  Remaining: bgi's `exchange()` implements §2's typed-frame shape (JSON
+  first, payload IS the frame-type field; whole-channel CBOR later);
+  wasm untouched.
+- **aura** (4.16a/b): `run_job`'s script arm fills the slot from
   `StorePlan.entries`, engine closures capturing the BARE realm-mq
   handle — the injected `Collection` binds ns itself, so the binding face
   and `ctx_store_emit` land byte-identical (the `ns_raw` shape is the
-  wasm plane only). `host_bridge_for`'s `ctx_store_emit` JSON entry
+  wasm plane only). Locks per carrier: `py_injection.rs` (python, 4.16a),
+  `steel_injection.rs` (steel, 4.16b — the same cross-check shape:
+  binding write ↔ emit read and the reverse, eviction rebuilds the
+  per-VM registry over the surviving rows). `host_bridge_for`'s `ctx_store_emit` JSON entry
   retires with §2 (op set frozen, §3); the realm-side executor survives
   whole (`store_exec`, plan resolution) — only the payload's arrival
   shape changes.

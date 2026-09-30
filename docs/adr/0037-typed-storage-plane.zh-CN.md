@@ -2,9 +2,9 @@
 
 > **语言：** [English](0037-typed-storage-plane.md)（主文档） · [中文](0037-typed-storage-plane.zh-CN.md)
 
-**状态：** Accepted（2026-09-28）。§1 的 python 绑定面已落地（Phase
-4.16a，2026-09-30）；steel 的 Collection 方法面（4.16b）与 typed 帧
-host 通道 + CBOR（4.16c，§2）未动，见后果。由用户的合同质疑引发：
+**状态：** Accepted（2026-09-28）。§1 已落地（Phase 4.16a python 绑定面
+2026-09-30；Phase 4.16b steel Collection 面 2026-09-30）；typed 帧 host
+通道 + CBOR（4.16c，§2）未动，见后果。由用户的合同质疑引发：
 python/steel 有直接绑定的 Collection 面（okm 的嵌入器用法，
 ADR-0022 已定），ADR-0026 §3 却把进程内桥也写成了翻译到指令文档——
 "bridging cost paid once in the adapter" 的正确终态是根本不翻译。
@@ -44,9 +44,16 @@ ADR-0026 §3 的合同："`ctx.store` 恰好暴露一个接口——
 - **python**：`okm-python` 的 Collection 绑定直接注册进会话模块（与
   `ctx_store_emit` 并列的入口；`add_class::<Collection>()` 是现成的）。
   翻译次数 = 0。
-- **steel**：`okm-steel` 已有 schema/encode/decode 注册；缺 Collection
-  方法面（put/get/scan）——实施项，不是裁决问题。补法对齐 python 绑定：
-  同一 `DynamicCollection` 的两个 host 面，一份执行体。
+- **steel**：`okm-steel` 已有 schema/encode/decode 注册；Collection 方法面
+  已在 4.16b 补齐，对齐 python 绑定：同一 `DynamicCollection` 的两个 host
+  面，一份执行体。句柄形态由 `'static`/thread-local 约束裁决：PER-VM
+  注册表（非 codec 句柄那种 thread_local——会话 VM 会跨 worker 线程迁移）
+  + 六个固定名全局 fns，脚本按名字字符串寻址集合
+  (`(collection-put! "notes" pkey doc)`)。不用点号 per-collection shim
+  （`Counters.put`——实测 define 与调用两侧都能解析），因为 steel 在
+  DEFINE 编译期解析自由标识符：introspect 的临时引擎必须携带同名符号
+  （ctx-stub 先例），而 shim 名是脚本内容、在临时引擎里无法打桩——会重开
+  声明静默丢失的陷阱。
 
 ### 2. 进程外通道 = 一条流，类型化帧；CBOR 是通道的编码（一个计划类型）
 
@@ -93,9 +100,10 @@ parent → child   {"host_reply": {"ok": <typed>}}
   不违"probe 不依赖 aura crate"铁律（okm 独立于 aura），但 okm 成为
   probe 的传递依赖——注册表 + 类型化帧协议 + 直接绑定三者都在把 probe
   从"协议搬运工"推向"运行时"，这条线要一直盯着。
-- **steel 绑定扩面有真实缺口**：`okm-steel` 无 Collection 方法面，补它
-  是 okm 仓的活（跨仓两刀），且 steel 的 `'static`/thread-local 约束
-  （RegisterFn 先例）会决定绑定对象句柄的传递形态。
+- **steel 绑定的缺口已闭合，且闭合里含一个真实裁决**：补 `okm-steel` 的
+  Collection 方法面（4.16b，okm 仓的一刀）兑现了上面预告的形状裁决——
+  per-VM 注册表 + 固定名按字符串寻址（见 §1）；点号 shim 方案被
+  define-compile 陷阱否决，不是被口味否决。
 - **过渡期 = 两种正确形态并存**：§1 落地后 python/steel 用绑定、bgi/nu
   仍用 JSON——缝不统一，直到 §2 落地。接受：绑定先行有独立价值（误
   操作拦截 + 翻译次数归零），不必等 CBOR。
@@ -103,20 +111,34 @@ parent → child   {"host_reply": {"ok": <typed>}}
 ## 后果
 
 - **okm**（实施项）：`okm-python` 已加宿主注入面——`Collection::with_store`
-  骑字节级 `Engine` trait（4.16a，提交 58cf72b）。未动：`okm-steel` 补
-  Collection 方法面（put/get/delete/scan，对齐 `okm-python` 的
-  `#[pymethods]` 形态）。
+  骑字节级 `Engine` trait（4.16a，提交 58cf72b）。4.16b 把引擎面 + 条目
+  解析抽为共享 crate `okm-entry`（python 改骑它——绑定复刻条目语义，一如
+  复刻字节布局，都是被否决的那类债），`okm-steel` 的 Collection 方法面
+  （put/get/delete/scan + reduce 读，per-VM 注册表，按名字字符串寻址）建
+  其上。4.16b 同时修复 `okm-steel` 的编译欠账：`Value::Obj`/`Value::Array`
+  （okm 0c2a354）在 `value_to_steel` 里一直没有臂——该绑定自此编译不过。
+  接线宿主时又挖出一个潜在缺陷：slatedb 同步门面持有 runtime 并
+  `block_on`，在已进入 tokio context 的线程上必 panic（spawn_blocking
+  保留 context——realm 恰好在其中驱动注入）；门面改为专用驱动线程（okm
+  92b2551，锁：`okm-core/tests/driver_thread_test.rs`）。
 - **probe**（4.16a 已落地）：`HostBridge` 带 `storage` 槽——宿主引擎藏在
   四个字节闭包后面（`StorageEngineFns`：缝上无 okm 类型，probe 与 aura
   各用不同 okm rev 编译互不干扰）+ plan 的原始条目；python 载体 load 步
   逐条目建 `Collection` 并 `module.add` 到集合名下（引擎句柄不跨缝回传
-  ——pyclass 带 `*mut PyObject`，非 Send）。未动：bgi 的 `exchange()` 按
+  ——pyclass 带 `*mut PyObject`，非 Send）；steel 载体消费同一槽（4.16b）：
+  `ClosureEngine` 把四个字节闭包适配到 okm-steel 的 Engine trait，
+  `SteelSession::new` 在会话启动建 per-VM 注册表，stub 臂只注册进
+  introspect 的临时引擎（ctx-stub 的定域规则——同名 `register_fn` 叠加会
+  遮蔽常驻会话里的真函数）。未动：bgi 的 `exchange()` 按
   §2 的 typed 帧形状实施（先 JSON、载荷即帧类型字段，后整通道 CBOR）；
   wasm 不动。
-- **aura**（4.16a 部分落地）：`run_job` 的 script 臂从 `StorePlan.entries`
+- **aura**（4.16a/b）：`run_job` 的 script 臂从 `StorePlan.entries`
   填槽，引擎闭包捕获**裸 realm-mq 句柄**——注入的 `Collection` 自绑
   ns，绑定面与 `ctx_store_emit` 字节同一（`ns_raw` 形态只属于 wasm
-  平面）。`host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役
+  平面）。锁按载体：`py_injection.rs`（python，4.16a）、
+  `steel_injection.rs`（steel，4.16b——同一互读形态：绑定写 ↔ emit 读、
+  反向亦然，evict 后 per-VM 注册表在幸存行上重建）。
+  `host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役
   （op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
   全部幸存——变的只是载荷的到达形状。
 - **文档**：ADR-0026 §3 的 python 措辞按本 ADR 修订（绑定，无 adapter）；

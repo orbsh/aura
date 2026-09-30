@@ -351,9 +351,39 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     `interface_schema` is captured at LOAD time (before injection
     shadows the `@DocumentEncode` class names) — a late
     `assemble_module(globals())` would silently lose it.
-  - Remaining (4.16b/c): `okm-steel` Collection method face (an okm-repo
-    cut); the out-of-process typed-frame channel (`exchange()` frame
-    typing), whole-channel CBOR (ADR-0035 §3, retires the JSON `StoreEmit`
+  - **4.16b LANDED (steel in-process binding face, 2026-09-30)**: the
+    engine face + raw-entry parsing extracted to the SHARED crate
+    `okm-entry` (okm 36143da; python rewired onto it — bindings must not
+    fork the entry semantics any more than the byte layout) → `okm-steel`
+    Collection method face over it (okm 407cbe2): PER-VM registry (not
+    thread_local — a session's VM moves across worker threads, the
+    `unsafe impl Send` precedent) + six fixed-name script fns addressing
+    collections by NAME STRING (`(collection-put! "notes" pkey doc)`).
+    The dotted per-collection shim (`Counters.put`) was built, measured
+    to resolve on both define/call sides — and rejected: steel resolves
+    free identifiers at define-compile time, shim names are script
+    content, so the introspection throwaway engine cannot stub them
+    (the ctx-stub precedent — reopening the silent schema-drop trap).
+    Stub arms (collection fns + codec fns, exact arities) live ONLY in
+    the introspect engine — same-name `register_fn` stacking would
+    shadow the real fns in resident sessions. probe's steel carrier
+    consumes the same `HostBridge.storage` slot (probe 7ae9f5b):
+    `ClosureEngine` adapts the four byte closures, `SteelSession::new`
+    returns Result (a failed inject = a declaration error, the session
+    must not start). Also fixed okm-steel's standing breakage:
+    `Value::Obj`/`Value::Array` (okm 0c2a354) never got arms in
+    `value_to_steel` — the binding had not compiled since. A latent
+    defect surfaced wiring the host: slatedb's sync facade `block_on`s a
+    held runtime — PANIC on a thread with a tokio context entered
+    (spawn_blocking keeps it; the realm drives injections exactly there).
+    Facade now rides a dedicated driver thread
+    (okm 92b2551; locks `driver_thread_test.rs`). Locks: okm-steel
+    `injection.rs` (host-engine landing, cross-registry read-back, index
+    sweep + count fold engine-side, void/delete/loud-error arms); aura
+    `steel_injection.rs` (binding write ↔ ctx_store_emit read and the
+    reverse; eviction rebuilds the per-VM registry over surviving rows).
+  - Remaining (4.16c): the out-of-process typed-frame channel (`exchange()`
+    frame typing), whole-channel CBOR (ADR-0035 §3, retires the JSON `StoreEmit`
     seam); `ctx_store_emit` JSON entry retirement (op set frozen meanwhile).
   - Amends ADR-0026 §3: python/steel booths BIND okm's `DynamicCollection`,
     zero translation; the out-of-process seam becomes typed frames on ONE
@@ -364,11 +394,12 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     set FROZEN (no new ops ride it), retires with CBOR. The bgi shim (4.14
     gate 2) does NOT bind the storage face — the channel is typed frames,
     nu reads them.
-  - Touch points: probe (python carrier registers the Collection binding —
-    LANDED; `exchange()` frame typing — pending), okm (`okm-steel`
-    Collection face — pending), aura (`ctx_store_emit` JSON entry retires
-    with CBOR; `store_exec` survives whole — pending). wasm untouched (its
-    OpFrame byte seam already IS this stance).
+  - Touch points: probe (python + steel carriers register the Collection
+    bindings — LANDED; `exchange()` frame typing — pending), okm
+    (`okm-steel` Collection face — LANDED via `okm-entry`), aura
+    (`ctx_store_emit` JSON entry retires with CBOR; `store_exec` survives
+    whole — pending). wasm untouched (its OpFrame byte seam already IS
+    this stance).
   - **Sequenced AFTER Phase 4.15** — 4.14 gates 2/3 ride the transitional
     JSON seam meanwhile (shim and seam shape are decoupled, ADR-0037 §3.1);
     the 4.15 envelope merge gives the host channel its frame envelope, so
@@ -397,6 +428,52 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-30b，4.16b 落地：steel 绑定面注入 + slatedb 驱动线程）
+
+- **共享切口兑现（用户裁决"共享"）**：引擎面（`Engine` 四字节方法 +
+  `EngineBox` 单执行体分派）与条目解析（`collection_from_entry`/
+  `plain_access_method`/`preset_reduce`）从 okm-python 抽出为 standalone
+  crate `okm-entry`，python 改骑它（re-export + `with_store` 委托），
+  steel 的方法面建其上——绑定复刻条目语义，一如复刻字节布局，都是被否
+  决的那类债。python 的 3 条注入锁原样过共享路径，语义未变。
+- **句柄形态的实测裁决**：先建点号 shim（`(Counters.put ...)`）并实测
+  steel 的 define 与调用两侧确实把点号名解析为单一标识符——然后否决它
+  自己：steel 在 define 编译期解析自由标识符，shim 名是脚本内容，
+  introspect 的临时引擎里无法打桩，会重演 ctx stub 抓过的"声明静默丢
+  失"陷阱。定案：六个固定名全局 fns + 脚本按名字字符串寻址集合，stub
+  臂（集合 fns + codec fns，精确 arity）只进临时引擎（同名
+  `register_fn` 叠加会遮蔽常驻会话真函数——ctx stub 同规）。注册表为
+  PER-VM（非 codec 句柄那种 thread_local：会话 VM 经 `unsafe impl
+  Send` 跨 worker 线程迁移，thread_local 会丢绑定；per-VM 也贴合驱逐
+  生命周期——drop 会话即 drop 绑定）。
+- **slatedb 潜在缺陷（接线宿主时挖出，用户批准方向 1 根治）**：同步门面
+  持 runtime 逐调用 `block_on`——在已进入 tokio context 的线程上必 panic
+  （spawn_blocking 保留 context，realm 恰在其中构造并驱动注入；open 一
+  炸，修完 open 再炸 scan：全部同步方法都在雷区；4.16a 的锁当时没走到
+  这条路径，原因未深究，记录留白）。改为专用驱动线程持
+  runtime+Db，同步操作 = 通道命令（消费侧只阻塞 mpsc，永不 block_on）；
+  惰性扫描=逐项通道流（ADR-0027 惰性契约保形：驱动随消费产出、消费者
+  drop 即 send 失败停驱）；`next_back` 阻塞抽干到终结哨兵——第一版用
+  `try_iter` 被既有 `lazy_range_scan` 锁抓住（驱动滞后时静默截断）。中
+  途引入的手写 `Cmd::Stop` 优雅关闭自删：mpsc 在最后一个 sender drop
+  后 recv 自然 Err 退出，手写信号需要 racy 的 strong_count 判断才有意
+  义，是冗余。锁：`driver_thread_test.rs`（tokio context 内全操作 +
+  100 行反向抽干）。
+- **载体接线**：probe steel 载体消费同一 `HostBridge.storage` 槽——
+  `ClosureEngine` 适配四字节闭包到 okm-steel 的 Engine trait，
+  `SteelSession::new` 改返回 Result（注入失败=声明错误，会话不得启动，
+  对齐 python 载体的 load 签名）；okm 锁统一 bump 407cbe26（branch=main
+  与 plain-URL 两种 source 拼写解析到同一 rev，非分裂锁）。验收矩阵：
+  okm-core/dynamic 全绿（含新锁）、okm-steel 6 锁、okm-python 3 锁、
+  probe 13 运行、aura engine 全特性 17 binary（含 `steel_injection`：
+  绑定写↔emit 读双向互证 + evict 后注册表在幸存行上重建）全绿，clippy
+  零警告。
+- **提交**：okm 92b2551（驱动线程 fix + 锁）→ 36143da（okm-entry 共享
+  crate + python 改骑）→ 407cbe2（okm-steel 方法面 + Obj/Array 缺臂修
+  复 + 锁）；probe 7ae9f5b（steel 载体接线 + okm 依赖 bump）；aura
+  3f61522（`steel_injection.rs` e2e 锁）。ADR-0037 双语状态/§1/诚实成
+  本/后果改落地态（4.16c 留名），随本文档批提交。
 
 ## 会话记录（2026-09-30，4.16a 落地：python 绑定面注入）
 

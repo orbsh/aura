@@ -52,6 +52,12 @@ pub struct StorePlan {
     pub ns: u16,
     /// collection name → schema (serde form carried in interface_schema).
     pub collections: BTreeMap<String, okm_core::schema::CollectionSchema>,
+    /// collection name → the RAW interface_schema entry (parsed from
+    /// `storage.collections[name]`, kept verbatim). The python
+    /// injection face (ADR-0037 4.16a) consumes exactly this shape —
+    /// no re-serialization back from the parsed schema: the entry IS
+    /// the single source, `collections` is its parsed half.
+    pub entries: BTreeMap<String, serde_json::Value>,
     /// collection name → (index name → slot) — the spec data lives in
     /// the INDEX_SPECS registry.
     pub indexes: BTreeMap<String, BTreeMap<String, u16>>,
@@ -64,6 +70,7 @@ impl StorePlan {
     /// `{ "storage": { "collections": { "<name>": <CollectionSchema serde>, ... } } }`.
     pub fn from_schema(ns: u16, schema: &serde_json::Value) -> anyhow::Result<Self> {
         let mut collections = BTreeMap::new();
+        let mut entries: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         let mut indexes: BTreeMap<String, BTreeMap<String, u16>> = BTreeMap::new();
         let mut reduces: BTreeMap<String, BTreeMap<String, (u16, Vec<String>)>> = BTreeMap::new();
         if let Some(block) = schema.get("storage").and_then(|s| s.get("collections")) {
@@ -72,6 +79,10 @@ impl StorePlan {
                 let cs: okm_core::schema::CollectionSchema = serde_json::from_value(raw.get("schema").cloned().unwrap_or(raw.clone()))
                     .map_err(|e| anyhow::anyhow!("collection `{name}` schema parse: {e}"))?;
                 collections.insert(name.clone(), cs);
+                // Keep the RAW entry verbatim for the injection face
+                // (ADR-0037 4.16a): it is already the `{schema, indexes,
+                // reduces}` shape `Collection::with_store` reads.
+                entries.insert(name.clone(), raw.clone());
                 let mut idx = BTreeMap::new();
                 if let Some(list) = raw.get("indexes").and_then(|x| x.as_array()) {
                     let mut specs = INDEX_SPECS.lock().unwrap();
@@ -93,7 +104,7 @@ impl StorePlan {
                 reduces.insert(name.clone(), red);
             }
         }
-        Ok(Self { ns, collections, indexes, reduces })
+        Ok(Self { ns, collections, entries, indexes, reduces })
     }
 }
 

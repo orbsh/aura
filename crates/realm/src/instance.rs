@@ -336,7 +336,50 @@ impl Realm {
                         .as_ref()
                         .map(|p| (p.ns, realm_mq.clone()));
                     let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq);
-                    Some(probe_runtime::carrier::HostBridge { functions: fns })
+                    // Python injection slot (ADR-0037 4.16a): the byte
+                    // face rides the SAME realm-mq handle the ctx
+                    // executor uses — `ns_raw` is the wasm plane
+                    // (guest-side Collection binds no ns); here the
+                    // injected Collection binds ns itself, so a raw
+                    // handle keeps the two paths byte-identical
+                    // (realm-prefixed [realm][ns][slot]...).
+                    let storage = realm_plan.as_ref().map(|plan| {
+                        use okm_core::storage::VirtualStorage;
+                        use probe_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
+                        let store = realm_mq.clone();
+                        let engine = std::sync::Arc::new(StorageEngineFns {
+                            put: std::sync::Arc::new(move |k, v| store.put(k, v)),
+                            get: std::sync::Arc::new({
+                                let store = realm_mq.clone();
+                                move |k| store.get(k)
+                            }),
+                            del: std::sync::Arc::new({
+                                let store = realm_mq.clone();
+                                move |k| store.del(k)
+                            }),
+                            scan_range: std::sync::Arc::new({
+                                let store = realm_mq.clone();
+                                move |b, e| store.scan_range(b, e)
+                            }),
+                        });
+                        let collections = plan
+                            .entries
+                            .iter()
+                            .map(|(name, entry)| StorageCollection {
+                                name: name.clone(),
+                                entry: entry.clone(),
+                            })
+                            .collect();
+                        std::sync::Arc::new(StorageSlot {
+                            ns: plan.ns,
+                            collections,
+                            engine,
+                        })
+                    });
+                    Some(probe_runtime::carrier::HostBridge {
+                        functions: fns,
+                        storage,
+                    })
                 };
                 let instance_key = format!("{}/{}", id.booth_type, id.key);
                 // Unified seam (ADR-0036): every job drives the

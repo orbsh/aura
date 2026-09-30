@@ -2,8 +2,10 @@
 
 > **Languages:** [English](0037-typed-storage-plane.md) (primary) · [中文](0037-typed-storage-plane.zh-CN.md)
 
-**Status:** Accepted (2026-09-28). Design ruling; implementation pending,
-see Consequences. Raised by the user's contract challenge: python/steel
+**Status:** Accepted (2026-09-28). §1's python binding face LANDED
+(Phase 4.16a, 2026-09-30); the steel Collection face (4.16b) and the
+typed-frame host channel + CBOR (4.16c, §2) remain — see Consequences.
+Raised by the user's contract challenge: python/steel
 have directly-bound Collection surfaces (okm's embedder usage, decided in
 ADR-0022), yet ADR-0026 §3 wrote the in-process bridge as a translation to
 instruction documents — the correct end state of "the bridging cost is paid
@@ -123,15 +125,27 @@ only for bgi consumers.
 
 ## Consequences
 
-- **okm** (implementation): `okm-steel` gains the Collection method face
-  (put/get/delete/scan, mirroring `okm-python`'s `#[pymethods]` shape);
-  `okm-python` needs no change.
-- **probe**: the python carrier session registers `okm-python`'s Collection
-  object; bgi's `exchange()` implements §2's typed-frame shape (JSON first,
-  payload IS the frame-type field; whole-channel CBOR later); wasm untouched.
-- **aura**: `host_bridge_for`'s `ctx_store_emit` JSON entry retires with §2
-  (op set frozen, §3); the realm-side executor survives whole (`store_exec`,
-  plan resolution) — only the payload's arrival shape changes.
+- **okm** (implementation): `okm-python` gained the host-injected face —
+  `Collection::with_store` over a byte-level `Engine` trait (4.16a,
+  commit 58cf72b). Remaining: `okm-steel`'s Collection method face
+  (put/get/delete/scan, mirroring `okm-python`'s `#[pymethods]` shape).
+- **probe** (4.16a landed): `HostBridge` carries a `storage` slot — the
+  host's engine behind four byte-closure fns (`StorageEngineFns`: no okm
+  types on the seam, so probe and aura build against different okm revs
+  freely) + the plan's raw collection entries; the python carrier's load
+  step builds one `Collection` per entry over it and `module.add`s it
+  under the collection name (the engine handle never crosses a seam
+  back — a pyclass carries `*mut PyObject`, not Send). Remaining: bgi's
+  `exchange()` implements §2's typed-frame shape (JSON first, payload IS
+  the frame-type field; whole-channel CBOR later); wasm untouched.
+- **aura** (4.16a partial): `run_job`'s script arm fills the slot from
+  `StorePlan.entries`, engine closures capturing the BARE realm-mq
+  handle — the injected `Collection` binds ns itself, so the binding face
+  and `ctx_store_emit` land byte-identical (the `ns_raw` shape is the
+  wasm plane only). `host_bridge_for`'s `ctx_store_emit` JSON entry
+  retires with §2 (op set frozen, §3); the realm-side executor survives
+  whole (`store_exec`, plan resolution) — only the payload's arrival
+  shape changes.
 - **Docs**: ADR-0026 §3's python wording is amended per this ADR (bind, no
   adapter); ADR-0035 §3's host frame shape updates with §2; this file
   supersedes both storage-bridge passages.

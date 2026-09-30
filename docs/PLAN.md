@@ -330,21 +330,45 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - ADR-0034 carries an erratum (decisions stand, forms superseded; body
     preserved as decided).
 
-- [ ] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; design accepted, implementation pending)**
-  - Amends ADR-0026 §3: python/steel booths BIND okm's `DynamicCollection`
-    (`okm-python` registers it today; `okm-steel`'s Collection method face is
-    the gap — an okm-repo cut), zero translation; the out-of-process seam
-    becomes typed frames on ONE host channel (invoke / iterate / store as
-    frame types), with whole-channel CBOR as ADR-0035 §3's already-planned
-    encoding upgrade (Windmill criterion — not a storage-only encoding).
-    The gate-1 JSON instruction document (`HostOp::StoreEmit`) is the
-    declared transitional shape: op set FROZEN (no new ops ride it), retires
-    with CBOR. The bgi shim (4.14 gate 2) does NOT bind the storage face —
-    the channel is typed frames, nu reads them.
-  - Touch points: probe (python carrier registers the Collection binding;
-    `exchange()` frame typing), okm (`okm-steel` Collection face), aura
-    (`ctx_store_emit` JSON entry retires with CBOR; `store_exec` survives
-    whole). wasm untouched (its OpFrame byte seam already IS this stance).
+- [~] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; design accepted, implementation pending)**
+  - **4.16a LANDED (python in-process binding face, 2026-09-30)**: okm's
+    `Collection::with_store` (host-injected byte-face engine, okm
+    bindings commit 58cf72b) → probe `HostBridge.storage` slot (byte-level
+    `StorageEngineFns` four-closure face + the type's raw entries,
+    rev-independent so probe/aura hold DIFFERENT okm builds) → python
+    carrier `load()` builds one `Collection` per declared entry over the
+    host's realm engine and `module.add`s it under the collection name
+    (the script writes `Counters.put(...)` — zero translation). aura's
+    `run_job` script arm fills the slot from `StorePlan.entries` (raw
+    interface_schema entries kept verbatim — the single source, `collections`
+    is its parsed half); the engine closures capture the BARE realm-mq
+    handle (NOT `ns_raw`): the injected `Collection` binds `ns` itself,
+    so a raw handle keeps the binding face and `ctx_store_emit` byte-
+    identical (`[realm][ns][slot]...`). Lock: `py_injection.rs` (binding
+    write ↔ ctx_store_emit read cross-check; eviction rebuilds the bindings
+    over the surviving rows; `interface_schema` still assembles after
+    injection). Ordering trap fixed: the storage half of
+    `interface_schema` is captured at LOAD time (before injection
+    shadows the `@DocumentEncode` class names) — a late
+    `assemble_module(globals())` would silently lose it.
+  - Remaining (4.16b/c): `okm-steel` Collection method face (an okm-repo
+    cut); the out-of-process typed-frame channel (`exchange()` frame
+    typing), whole-channel CBOR (ADR-0035 §3, retires the JSON `StoreEmit`
+    seam); `ctx_store_emit` JSON entry retirement (op set frozen meanwhile).
+  - Amends ADR-0026 §3: python/steel booths BIND okm's `DynamicCollection`,
+    zero translation; the out-of-process seam becomes typed frames on ONE
+    host channel (invoke / iterate / store as frame types), with whole-
+    channel CBOR as ADR-0035 §3's already-planned encoding upgrade (Windmill
+    criterion — not a storage-only encoding). The gate-1 JSON instruction
+    document (`HostOp::StoreEmit`) is the declared transitional shape: op
+    set FROZEN (no new ops ride it), retires with CBOR. The bgi shim (4.14
+    gate 2) does NOT bind the storage face — the channel is typed frames,
+    nu reads them.
+  - Touch points: probe (python carrier registers the Collection binding —
+    LANDED; `exchange()` frame typing — pending), okm (`okm-steel`
+    Collection face — pending), aura (`ctx_store_emit` JSON entry retires
+    with CBOR; `store_exec` survives whole — pending). wasm untouched (its
+    OpFrame byte seam already IS this stance).
   - **Sequenced AFTER Phase 4.15** — 4.14 gates 2/3 ride the transitional
     JSON seam meanwhile (shim and seam shape are decoupled, ADR-0037 §3.1);
     the 4.15 envelope merge gives the host channel its frame envelope, so
@@ -373,6 +397,42 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-09-30，4.16a 落地：python 绑定面注入）
+
+- **接线形状（两仓原子批 + okm 前置批）**：Collection 方法面（python 对
+  作者零翻译）→ okm-dynamic plan 纯函数 → 字节 ops → 注入的字节面引擎。
+  跨仓 rev 问题（probe 与 aura 各指不同 okm rev）在字节面上自然消解——
+  缝上只走 `Vec<u8>`/`&[u8]`，无 okm 类型。布局事实源留 okm-dynamic，
+  binding 不复刻（B 方案兑现）。probe 的 `StorageSlot` 是纯数据（ns +
+  原始条目 JSON + 四闭包），python `load()` 内直接 `with_store` 结果
+  `module.add`——**没有中转层**：曾试 `Vec<(String, Collection)>` 经
+  `Box<dyn Any + Send>` 跨缝回传再 downcast，`*mut PyObject`（pyclass
+  注册数据）不满足 Send，正解是根本不过缝。
+- **ns_raw 纠偏（用户指令的修正，实测驱动）**：接线指示原写"捕获
+  `MqStore::ns_raw(plan.ns)`"，落地改捕**裸 realm-mq**——注入的
+  `Collection` 自绑 ns（DynamicCollection 的 key 自带 `[ns BE]` 段），
+  ns_raw 会叠出 `[ns][realm][ns]…` 双 ns，绑定面与 ctx_store_emit
+  互读必挂；`ns_raw` 是 wasm 平面专属形状（guest 内模块不绑 ns，宿主
+  补）。同字节验收（`py_injection.rs`：绑定写↔emit 读双向 + evict 重建
+  幸存）只有裸句柄成立。
+- **序坑（实测抓到，勿重新发明）**：python 载体的 interface_schema
+  storage 半原为 schema 调用时晚评估 `assemble_module(globals())`——
+  注入把 pyclass 实例注册进**同名**命名空间（作者绑定面就是它）后，晚
+  评估看不到 `@DocumentEncode` 类、静默装配空块、storage 半失踪。改
+  load 期（body 跑完、注入发生前）捕获为数据。同理 introspect 走同一
+  load_module，语义一致无需分支。
+- **字节平面（与 ns-layout 键空间图对账）**：绑定面与 emit 面同平面
+  `[realm 前缀][ns][slot]…`；wasm full-power 独立平面 `[ns][...]`
+  （无 realm 段，trusted-writer 语义）。"跨类型 ns 在绑定面不可表达"
+  是结构事实：槽只建 plan 声明的 collections，ns 构造期绑定，DSL 规则
+  （ns 不进条目）。
+- **闸门**：aura `--workspace --features python` 全绿（含新
+  `py_injection.rs` 两条：互读/重建 + schema 装配锁）；probe workspace
+  （steel,python,wasmtime）全绿；clippy 新代码零警告（`StorageEngineFns`
+  四闭包提为 PutFn/GetFn/DelFn/ScanRangeFn 别名消 type_complexity）；
+  两仓 Cargo.lock bump okm → ce08c24。ADR-0037 双语状态行 + 后果节改为
+  落地态（4.16b/4.16c 留名）。
 
 ## 会话记录（2026-09-29b，Phase 4.15 落地：统一信封）
 

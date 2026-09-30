@@ -2,8 +2,10 @@
 
 > **语言：** [English](0037-typed-storage-plane.md)（主文档） · [中文](0037-typed-storage-plane.zh-CN.md)
 
-**状态：** Accepted（2026-09-28）。设计裁决；实施未动，见后果。由用户的
-合同质疑引发：python/steel 有直接绑定的 Collection 面（okm 的嵌入器用法，
+**状态：** Accepted（2026-09-28）。§1 的 python 绑定面已落地（Phase
+4.16a，2026-09-30）；steel 的 Collection 方法面（4.16b）与 typed 帧
+host 通道 + CBOR（4.16c，§2）未动，见后果。由用户的合同质疑引发：
+python/steel 有直接绑定的 Collection 面（okm 的嵌入器用法，
 ADR-0022 已定），ADR-0026 §3 却把进程内桥也写成了翻译到指令文档——
 "bridging cost paid once in the adapter" 的正确终态是根本不翻译。
 
@@ -100,13 +102,21 @@ parent → child   {"host_reply": {"ok": <typed>}}
 
 ## 后果
 
-- **okm**（实施项）：`okm-steel` 补 Collection 方法面（put/get/delete/
-  scan，对齐 `okm-python` 的 `#[pymethods]` 形态）；`okm-python` 无需
-  改动。
-- **probe**：python 载体会话注册 `okm-python` 的 Collection 对象；
-  bgi 的 `exchange()` 按 §2 的 typed 帧形状实施（先 JSON、载荷即帧类型
-  字段，后整通道 CBOR）；wasm 不动。
-- **aura**：`host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役
+- **okm**（实施项）：`okm-python` 已加宿主注入面——`Collection::with_store`
+  骑字节级 `Engine` trait（4.16a，提交 58cf72b）。未动：`okm-steel` 补
+  Collection 方法面（put/get/delete/scan，对齐 `okm-python` 的
+  `#[pymethods]` 形态）。
+- **probe**（4.16a 已落地）：`HostBridge` 带 `storage` 槽——宿主引擎藏在
+  四个字节闭包后面（`StorageEngineFns`：缝上无 okm 类型，probe 与 aura
+  各用不同 okm rev 编译互不干扰）+ plan 的原始条目；python 载体 load 步
+  逐条目建 `Collection` 并 `module.add` 到集合名下（引擎句柄不跨缝回传
+  ——pyclass 带 `*mut PyObject`，非 Send）。未动：bgi 的 `exchange()` 按
+  §2 的 typed 帧形状实施（先 JSON、载荷即帧类型字段，后整通道 CBOR）；
+  wasm 不动。
+- **aura**（4.16a 部分落地）：`run_job` 的 script 臂从 `StorePlan.entries`
+  填槽，引擎闭包捕获**裸 realm-mq 句柄**——注入的 `Collection` 自绑
+  ns，绑定面与 `ctx_store_emit` 字节同一（`ns_raw` 形态只属于 wasm
+  平面）。`host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役
   （op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
   全部幸存——变的只是载荷的到达形状。
 - **文档**：ADR-0026 §3 的 python 措辞按本 ADR 修订（绑定，无 adapter）；

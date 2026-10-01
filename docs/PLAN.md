@@ -1,6 +1,6 @@
 # PLAN
 
-Design lives in the wiki (summaries) and ADRs; detailed design moved into this repo: `docs/design/storage.md` (storage architecture), `docs/design/realm.md` (field model), `docs/design/partitioning.md` (data partitioning), `docs/design/booth-api.md` (script booth reference), `docs/design/ns-layout.md` (okm keyspace: which ns the framework tables and booth types occupy — en+zh), cross-referenced with the wiki. This file only sequences phases.
+Design lives in the wiki (summaries) and ADRs; detailed design moved into this repo: `docs/design/storage.md` (storage architecture), `docs/design/realm.md` (field model), `docs/design/partitioning.md` (data partitioning), `docs/design/booth-api.md` (script booth reference), `docs/design/event-flow.md`/`event-flow-en.md` (the emit/on mechanics end to end — declaration, registration, matching, delivery, persistent queues, cursors, retention — with the okm keyspace layout §7 merged from the former ns-layout page, and the Phase 4.13 open-questions list §8; `ns-layout.md`/`ns-layout-en.md` are pointers), cross-referenced with the wiki. This file only sequences phases.
 
 ## Milestone A — Single binary engine
 

@@ -4,7 +4,7 @@
 //! storage representation).
 //!
 //! Identity model (option A, the registry pattern): the type name is
-//! open-ended runtime data, so it resolves through a `TypeName` registry
+//! open-ended runtime data, so it resolves through a `BoothName` registry
 //! INSIDE the meta instance (a separate okm engine with its own
 //! directory — ids are assigned from the instance's own watermark;
 //! cross-instance lookups do not exist). The definition's proxy key is
@@ -28,16 +28,16 @@ use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
 // ---------------------------------------------------------------------------
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct TypeIdKey {
+pub struct BoothNameKey {
     pub id: u32,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(TypeIdKey)]
+#[ok_ref(BoothNameKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_reduce(HighWater(id) { group(global) })]
 #[ok_ns(40)]
-pub struct TypeName {
+pub struct BoothName {
     pub name: String,
     /// Payload mirror of the proxy id — the MAX reduce folds over payload
     /// fields (okm ADR-0024 gives hooks the key, but the mirror keeps the
@@ -53,16 +53,16 @@ pub struct TypeName {
     pub global: u32,
 }
 
-use __OkmIndex_TypeName_by_name as TypeNameByName;
+use __OkmIndex_BoothName_by_name as BoothNameByName;
 
 /// The first ns a registered booth type receives (ADR-0026 §1): the low
 /// block is aura's own (mq 30–35, meta/state 40–41); booth types allocate
 /// from a fixed base above it, and ids are never reused within the node.
 pub const BOOTH_NS_BASE: u32 = 100;
 
-fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
-    for hit in t.scan::<TypeNameByName>(name.as_bytes()) {
+fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -73,17 +73,17 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     // reused — unfold is a no-op for this watermark). The type's storage
     // ns rides the same registration: base + id (one allocation per
     // type, monotonic with the id, never reclaimed).
-    let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_TypeName_0>(
+    let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_BoothName_0>(
         t.store(),
-        <TypeName as Document>::NS_PREFIX,
-        &TypeIdKey { id: 0 },
-        &TypeName { name: String::new(), id: 0, ns: 0, global: 0 },
+        <BoothName as Document>::NS_PREFIX,
+        &BoothNameKey { id: 0 },
+        &BoothName { name: String::new(), id: 0, ns: 0, global: 0 },
     )
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
     t.put(
-        &TypeIdKey { id },
-        &TypeName {
+        &BoothNameKey { id },
+        &BoothName {
             name: name.to_string(),
             id,
             ns: BOOTH_NS_BASE + id,
@@ -91,6 +91,14 @@ fn resolve_type_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
         },
     );
     Ok(id)
+}
+
+/// The registered name for a booth type id (None = never registered) —
+/// the unique dictionary's reverse direction (the retired mq ns 33
+/// `booth_name_of` service relocated here; one dictionary, both ways).
+pub fn booth_name_of(meta: &MqStore, id: u32) -> Option<String> {
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    t.get(&BoothNameKey { id }).map(|row| row.name)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +254,8 @@ impl BoothDef {
 /// The type's storage ns (ADR-0026): registry resolve (no allocation —
 /// unregistered types have no ns; the caller registers first).
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let t = Collection::<MqStore, TypeIdKey, TypeName>::new(meta.clone());
-    for hit in t.scan::<TypeNameByName>(name.as_bytes()) {
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(row.ns);
@@ -260,7 +268,7 @@ pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// Persist one definition (latest version wins per type name; the id is
 /// stable across versions — the registry resolve).
 pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
-    let type_id = resolve_type_id(meta, &booth.name)?;
+    let type_id = resolve_booth_id(meta, &booth.name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let (row, schema) = BoothDef::of(booth);
     // The bytes must exist before the pointer to them is published: a
@@ -287,7 +295,7 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
 /// `schema: None` = the type declared no storage (no ctx.store surface).
 pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
     let ns = ns_of(meta, name)?;
-    let type_id = resolve_type_id(meta, name)?;
+    let type_id = resolve_booth_id(meta, name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
         .get_fields(&BoothDefKey { type_id })

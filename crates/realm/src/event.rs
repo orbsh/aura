@@ -8,9 +8,10 @@
 //! - exact: event name → routes (booth_type + instance_key_field)
 //! - wildcard: prefix `foo.` → singleton instance routes
 //!
-//! `emits` is a whitelist: an booth may only emit names it declared.
-//! Undeclared emits are rejected at the Realm boundary (audit point).
-//! Unmatched events land in the dead-letter ring (observable, bounded).
+//! ADR-0012: there is NO emits whitelist — the receiver set is a runtime
+//! fact, so an emit is never rejected for being undeclared. An event with
+//! no matching route lands in the dead-letter ring (observable, bounded);
+//! so does a matched event whose append failed.
 
 use serde_json::Value;
 
@@ -105,8 +106,23 @@ impl EventRouter {
 
 /// Dead-letter ring: unmatched events, bounded, observable. Not a queue —
 /// dead events are diagnostic output, not retryable work.
+///
+/// ADR-0038 §4 (no silent drops): the ring collects THREE classes, and the
+/// reason is part of the record, because "nobody subscribed" and "the event
+/// was malformed" call for different reactions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeadReason {
+    /// No route matched the event at all.
+    NoRoute,
+    /// A route matched, but its declared key field was absent from the
+    /// payload (or was not a string) — a malformed event, not a delivery.
+    MissingKeyField,
+    /// A route matched but persisting the fact failed (a storage fault).
+    AppendFailed,
+}
+
 pub struct DeadEvents {
-    ring: std::collections::VecDeque<(String, Value, std::time::Instant)>,
+    ring: std::collections::VecDeque<(String, Value, DeadReason, std::time::Instant)>,
     capacity: usize,
     dropped: u64,
 }
@@ -116,20 +132,29 @@ impl DeadEvents {
         Self { ring: Default::default(), capacity, dropped: 0 }
     }
 
-    pub fn push(&mut self, event: &str, data: Value) {
+    pub fn push(&mut self, event: &str, data: Value, reason: DeadReason) {
         if self.ring.len() == self.capacity {
             self.ring.pop_front();
             self.dropped += 1;
         }
         self.ring
-            .push_back((event.into(), data, std::time::Instant::now()));
+            .push_back((event.into(), data, reason, std::time::Instant::now()));
     }
 
     /// Snapshot for observation (oldest first).
     pub fn snapshot(&self) -> Vec<(String, Value)> {
         self.ring
             .iter()
-            .map(|(e, d, _)| (e.clone(), d.clone()))
+            .map(|(e, d, _, _)| (e.clone(), d.clone()))
+            .collect()
+    }
+
+    /// Snapshot WITH the reason (ADR-0038 §4: the observation must say why
+    /// the fact reached nobody).
+    pub fn detailed(&self) -> Vec<(String, Value, DeadReason)> {
+        self.ring
+            .iter()
+            .map(|(e, d, r, _)| (e.clone(), d.clone(), *r))
             .collect()
     }
 

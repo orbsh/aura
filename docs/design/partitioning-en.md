@@ -110,7 +110,7 @@ segments (the okm key discipline — no textual separators):
 
 - **ns (2 bytes)**: the okm-level table/edge-table number, addressed
   uniformly within the single okm instance (post ADR-0025, booth
-  definitions share the data plane's instance: BoothDef ns 41 beside
+  definitions share the data plane's instance: BoothDef ns 31 beside
   mq/state)
 - **slot (1 byte)**: access-method discriminator within the table
   (0 = primary entry); all index entries of one table share its ns segment

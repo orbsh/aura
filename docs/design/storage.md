@@ -140,7 +140,7 @@ impl<T> AuraCollection<T> where T: Serialize + DeserializeOwned + EntityKeyGener
 
 **Lua 脚本的工程断层**：Redis 为挽救吞吐量引入的 Lua 脚本，除了单线程死锁风险外，还导致主技术栈（Rust/Go）与脚本层发生工程学与调试断层——失去强类型保护、单元测试和 IDE 感知提示。
 
-### 3.3 摊位读写 API：ctx.store.emit（单 API）摊位的持久化面只有一套 API——`ctx.store.emit(op)`，携带 okm Collection 指令作用于**本类型声明的 collections**（ADR-0026 §3）：存储隔离在类型层，每个摊位类型占一个真实 okm ns，类型声明的 collections 的 schema 随 interface_schema 上传持久化；实例是类型 ns 内的 document。旧的 `ctx.state` 每实例一份平铺字段文档（`ctx_state_get/set/delete` 点读写）已退役——点模型无法承载 scan/index/reduce，被 collection 接口面取代。独立 meta 实例与 `ctx.metadata` 已随 ADR-0025 撤销：摊位定义是数据面 okm 实例里的 `BoothDef` 表（ns 41），注册表/分片映射等是引擎内部结构，不对摊位暴露读写面。**登录状态不在别处**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
+### 3.3 摊位读写 API：ctx.store.emit（单 API）摊位的持久化面只有一套 API——`ctx.store.emit(op)`，携带 okm Collection 指令作用于**本类型声明的 collections**（ADR-0026 §3）：存储隔离在类型层，每个摊位类型占一个真实 okm ns，类型声明的 collections 的 schema 随 interface_schema 上传持久化；实例是类型 ns 内的 document。旧的 `ctx.state` 每实例一份平铺字段文档（`ctx_state_get/set/delete` 点读写）已退役——点模型无法承载 scan/index/reduce，被 collection 接口面取代。独立 meta 实例与 `ctx.metadata` 已随 ADR-0025 撤销：摊位定义是数据面 okm 实例里的 `BoothDef` 表（ns 31，ADR-0040 分段后），注册表/分片映射等是引擎内部结构，不对摊位暴露读写面。**登录状态不在别处**：用户数据（含登录态/历史）绑定所属节点，登录其它节点 = 该节点没有此用户的数据，不做全局同步——跨节点只按 well-known 协议认证身份。
 
 ```rust
 // Booth 状态（数据面 okm 实例：本地 Fjall 或 SlateDB+S3）

@@ -29,6 +29,9 @@ pub struct RealmSet {
     /// Code-reference prefix carried into every lazily created realm
     /// (ADR-0027; one EngineConfig value, no per-realm choice).
     code_base_url: Option<String>,
+    /// The cursor retention promise carried into every lazily created
+    /// realm (ADR-0039 §2; one EngineConfig value, no per-realm choice).
+    cursor_ttl: std::time::Duration,
 }
 
 impl RealmSet {
@@ -40,7 +43,19 @@ impl RealmSet {
     /// The shared handle carries the code-reference prefix (ADR-0027)
     /// into every realm lazily created from it.
     pub fn with_mq_and_code_base(mq: crate::mq::MqStore, code_base_url: Option<String>) -> Self {
-        Self { map: tokio::sync::Mutex::new(HashMap::new()), mq, code_base_url }
+        Self {
+            map: tokio::sync::Mutex::new(HashMap::new()),
+            mq,
+            code_base_url,
+            cursor_ttl: crate::DEFAULT_CURSOR_TTL,
+        }
+    }
+
+    /// Carry the engine-wide cursor retention promise (ADR-0039 §2) into
+    /// every realm created from this set.
+    pub fn with_cursor_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.cursor_ttl = ttl;
+        self
     }
 
     /// Get-or-create the named realm (lazy; cheap).
@@ -54,7 +69,9 @@ impl RealmSet {
                 // the isolation boundary; no JSON PrefixStore layer.
                 let mq = crate::mq::MqStore::for_realm(&self.mq, name);
                 Arc::new(tokio::sync::Mutex::new(
-                    crate::Realm::with_mq(mq).with_code_base_url(self.code_base_url.clone()),
+                    crate::Realm::with_mq(mq)
+                        .with_code_base_url(self.code_base_url.clone())
+                        .with_cursor_ttl(self.cursor_ttl),
                 ))
             });
         NamedRealm { name: name.to_string(), realm: realm.clone() }

@@ -8,4 +8,11 @@ impl Realm {
         self.code_base_url = url;
         self
     }
+
+    /// The cursor retention promise (ADR-0039 §2): one engine-wide value
+    /// (never per-type — the watermark denominator is a cross-type `min`).
+    pub fn with_cursor_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.cursor_ttl = ttl;
+        self
+    }
 }

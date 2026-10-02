@@ -1,10 +1,32 @@
 //! Event + MQ plane: emit, queue compaction. Split out of lib.rs per
 //! ADR-0029.
+//!
+//! Two rulings shape this file. A queue's consumer set must be CLOSED
+//! (ADR-0038 §1: a key-less subscription delivers to the singleton
+//! instance, so every partition has exactly one consumer) — the slice is a
+//! structural `mq::Partition`, never a magic string. And no emit may be
+//! dropped silently (ADR-0038 §4: a matched route producing no real target
+//! is as observable as an event with no route at all — the `__default__`
+//! fallback instance is retired).
+//!
+//! Retention (ADR-0039 §2) lives here too, because compaction runs on the
+//! write path: the watermark's denominator is the route registry filtered
+//! by the `cursor_ttl` predicate.
 
 use super::{Realm, SharedRealm};
-use crate::mq;
+use crate::event::DeadReason;
+use crate::mq::{self, Partition};
 use aura_booth::InstanceId;
-use crate::event;
+
+/// The instance a queue slice is delivered to: the slice's own value for a
+/// named partition (instance key = partition value), the type's singleton
+/// instance for a key-less one.
+fn instance_of(part: &Partition) -> String {
+    match part {
+        Partition::Singleton => mq::SINGLETON.to_string(),
+        Partition::Named(key) => key.clone(),
+    }
+}
 
 impl Realm {
     pub async fn emit(
@@ -20,41 +42,50 @@ impl Realm {
             // `emitter` stays in the signature for audit/recording.
             let matched = realm.router.matches(event);
             if matched.is_empty() {
-                realm.dead_events.push(event, data);
+                realm.dead_events.push(event, data, DeadReason::NoRoute);
                 return Ok(());
             }
             matched
         };
-        // Dedupe by queue id: several routes may bind the same queue
+        // Dedupe by queue identity: several routes may bind the same queue
         // (two subscriber types on one event) — the queue fans out to all
-        // of them; a second send would double-deliver. Activation of every
-        // matched route's target happens in the SAME pass, before any
-        // send, so every subscriber binds its Receiver before the message
-        // lands.
-        let mut queued: std::collections::HashSet<(String, String)> = Default::default();
-        let mut targets: Vec<(event::Route, String)> = Vec::new();
+        // of them, a second send would double-deliver. Activation of every
+        // matched route's target happens in the SAME pass, before any send,
+        // so every subscriber's cursor exists before the message lands.
+        let mut targets: Vec<Partition> = Vec::new();
         for route in routes {
-            // Queue identity: @on-declared key → per-(event, partition);
-            // no key → per-event singleton queue. The key comes from the
-            // event data (wiki §5.4), not the emitter.
-            let partition = if route.instance_key_field.is_empty() {
-                mq::SINGLETON.to_string()
+            // Queue identity: @on-declared key → per-(event, partition); no
+            // key → per-event singleton queue. The key comes from the event
+            // data (wiki §5.4), not the emitter, and the slice is a
+            // STRUCTURAL marker (ADR-0039 §1) — the singleton never enters
+            // the name dictionary, so no payload key can alias into it.
+            let part = if route.instance_key_field.is_empty() {
+                Partition::Singleton
             } else {
-                data.get(&route.instance_key_field)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("__default__")
-                    .to_string()
+                match data.get(&route.instance_key_field).and_then(|v| v.as_str()) {
+                    Some(key) => Partition::Named(key.to_string()),
+                    // ADR-0038 §4: a matched route whose declared key field
+                    // is absent (or is not a string) is a MALFORMED event —
+                    // not a delivery to some fallback instance. It reaches
+                    // nobody, so it is recorded: the same class as a
+                    // zero-target scan.
+                    None => {
+                        let mut realm = self_arc.lock().await;
+                        realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
+                        continue;
+                    }
+                }
             };
             // Virtual-booth activation: emitting to an instance that has
             // never run activates it first, so its @on subscriptions bind
             // before the event lands in the queue.
             let target = InstanceId {
                 booth_type: route.booth_type.clone(),
-                key: partition.clone(),
+                key: instance_of(&part),
             };
             {
                 let realm = self_arc.lock().await;
-                if !realm.instances.contains_key(&(route.booth_type.clone(), partition.clone())) {
+                if !realm.instances.contains_key(&(route.booth_type.clone(), target.key.clone())) {
                     drop(realm);
                     let mut r = self_arc.lock().await;
                     r.instance(self_arc.clone(), &target).await?;
@@ -63,83 +94,94 @@ impl Realm {
             // Queue identity is the CONCRETE event name — for a wildcard
             // route that is the emitted name (route.event is the pattern);
             // one row per concrete event per partition, N cursors fan out.
-            if queued.insert((event.to_string(), partition.clone())) {
-                targets.push((route, partition));
+            if !targets.contains(&part) {
+                targets.push(part);
             }
         }
-        for (_route, partition) in targets {
+        for part in targets {
             let mut realm = self_arc.lock().await;
-            // Persistent queues (step 2b): events are passively persisted
-            // on emit — an evicted/not-yet-active subscriber's backlog is
+            // Persistent queues (step 2b): events are passively persisted on
+            // emit — an evicted/not-yet-active subscriber's backlog is
             // delivered on re-activation. The dead ring only sees events
-            // with NO matching route (checked above): a matched route with
-            // no live instance is a backlog write, not a loss.
+            // with NO matching route or no real target (checked above): a
+            // matched route with no live instance is a backlog write, not a
+            // loss.
             let event_name = event.to_string();
             let store = realm.mq.clone();
-            if let Err(e) = mq::append(&store, &event_name, &partition, &data) {
-                eprintln!("mq append failed for {event_name}/{partition}: {e}");
-                realm.dead_events.push(event, data.clone());
+            if let Err(e) = mq::append(&store, &event_name, &part, &data) {
+                eprintln!("mq append failed for {event_name}/{part:?}: {e}");
+                realm.dead_events.push(event, data.clone(), DeadReason::AppendFailed);
                 continue;
             }
-            // Retention (step 2b follow-up): min-watermark over REGISTERED
-            // subscribers — the route registry is the denominator (evicted
-            // instances still count: their backlog replays; a type whose
-            // @on for this event is gone does not). Cursor rows whose booth
-            // name has no matching registered (type, key) instance fall
-            // out; compaction deletes mq-data below the watermark. Runs on
-            // the emit path (write-path compaction per the ruling); the
-            // scan cost is bounded by the subscriber count.
-            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &partition, &store).await {
-                eprintln!("mq compaction failed for {event_name}/{partition}: {e}");
+            // Retention (step 2b follow-up + ADR-0039 §2): min-watermark
+            // over REGISTERED subscribers — the route registry matching this
+            // concrete event is the denominator (evicted instances still
+            // count: their backlog replays; a type whose @on for this event
+            // is gone does not), and a cursor past `cursor_ttl` leaves the
+            // denominator (its backlog is forfeit). Compaction deletes
+            // mq-data below the watermark. Runs on the emit path (write-path
+            // compaction per the ruling); the scan cost is bounded by the
+            // subscriber count.
+            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &part, &store).await {
+                eprintln!("mq compaction failed for {event_name}/{part:?}: {e}");
             }
         }
         Ok(())
     }
 
     async fn compact_queue_locked(
-        _realm: &mut Realm,
+        realm: &mut Realm,
         event: &str,
-        partition: &str,
+        part: &Partition,
         store: &mq::MqStore,
     ) -> anyhow::Result<()> {
-        let event_id = match mq::event_id_of(store, event)? {
-            Some(id) => id,
-            None => return Ok(()),
+        let Some(event_id) = mq::event_id_of(store, event)? else {
+            return Ok(());
         };
-        let part_id = mq::part_hash_of(partition);
+        let part_id = mq::part_id(store, part)?;
         let rows = mq::cursor_rows(store, event_id, part_id)?;
         if rows.is_empty() {
             return Ok(());
         }
-        // Registered subscriber check: the cursor name ("type/key")
-        // must belong to a type whose PERSISTED routes include this
-        // event (the EventRoute registry — the watermark denominator
-        // is the durable subscription set, not the in-memory router
-        // and not the raw cursor keys).
+        // Registered subscriber check: the row's TYPE must currently
+        // register a route that MATCHES this concrete event (exact or
+        // wildcard). The EventRoute registry is the watermark's denominator
+        // — the durable subscription set, never the raw cursor keys.
+        // Eviction (instance scale-to-zero) does NOT deregister, so an
+        // evicted instance keeps pinning; a type hot swap drops the route
+        // and the stale cursor row falls out.
+        let ttl = realm.cursor_ttl;
+        let now = mq::now_ms();
         let mut min_seq: Option<u64> = None;
-        for (booth_id, cursor) in &rows {
-            let Some(name) = mq::booth_name_of(store, *booth_id)? else {
+        for (booth_id, cursor, last_active) in &rows {
+            if !mq::booth_subscribes(store, *booth_id, event)? {
                 continue;
-            };
-            let Some((type_name, _key)) = name.split_once('/') else {
-                continue;
-            };
-            let registered = match mq::booth_id_of(store, type_name) {
-                Ok(aid) => mq::routes_of_event(store, event)?
-                    .iter()
-                    .any(|(r_aid, _, _)| *r_aid == aid),
-                Err(_) => false,
-            };
-            if registered {
-                min_seq = Some(match min_seq {
-                    Some(m) => m.min(*cursor),
-                    None => *cursor,
-                });
             }
+            // ADR-0039 §2: a row that has not advanced within `cursor_ttl`
+            // LEAVES the denominator — its backlog is forfeit (compaction
+            // may pass it). The row itself stays: deleting it would read the
+            // cursor back as 0 and re-deliver whatever survives above the
+            // watermark. `last_active_ms == 0` = unmarked, never expires.
+            if mq::cursor_expired(*last_active, now, ttl) {
+                continue;
+            }
+            min_seq = Some(match min_seq {
+                Some(m) => m.min(*cursor),
+                None => *cursor,
+            });
         }
         if let Some(min_seq) = min_seq {
             if min_seq > 0 {
                 let _ = mq::delete_before(store, event_id, part_id, min_seq)?;
+            }
+            // Inert rows: a cursor at or below the watermark can never
+            // replay anything (the rows it would have read are gone), so the
+            // row itself is reclaimable. This is what keeps the cursor table
+            // from accumulating one row per partition ever seen.
+            for (booth_id, cursor, _) in &rows {
+                if *cursor < min_seq {
+                    mq::drop_cursor(store, event_id, part_id, *booth_id)?;
+                }
             }
         }
         Ok(())
@@ -148,10 +190,10 @@ impl Realm {
     pub async fn compact_queue_for_test(
         self_arc: &SharedRealm,
         event: &str,
-        partition: &str,
+        part: &Partition,
     ) -> anyhow::Result<()> {
         let mut realm = self_arc.lock().await;
         let store = realm.mq.clone();
-        Self::compact_queue_locked(&mut realm, event, partition, &store).await
+        Self::compact_queue_locked(&mut realm, event, part, &store).await
     }
 }

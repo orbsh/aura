@@ -1,14 +1,16 @@
 //! The meta plane as okm documents (ADR-0018 follow-through: NO
-//! exceptions — booth definitions are documents over a SEPARATE okm
-//! instance, exactly like the data plane; serialized JSON is never a
-//! storage representation).
+//! exceptions — booth definitions are documents, exactly like the data
+//! plane; serialized JSON is never a storage representation). The meta
+//! tables share the realm's ONE okm instance with the mq tables
+//! (ADR-0025: the meta plane merged into the data plane — every function
+//! here takes the realm's `MqStore`, and cross-ns lookups are ordinary
+//! row reads).
 //!
 //! Identity model (option A, the registry pattern): the type name is
 //! open-ended runtime data, so it resolves through a `BoothName` registry
-//! INSIDE the meta instance (a separate okm engine with its own
-//! directory — ids are assigned from the instance's own watermark;
-//! cross-instance lookups do not exist). The definition's proxy key is
-//! that id; the raw name rides a declared field for observability.
+//! (the unique type dictionary, ns 30; ids come from the table's own
+//! `HighWater` watermark). The definition's proxy key is that id; the raw
+//! name rides a declared field for observability.
 //!
 //! The introspected schema rides the DYNAMIC segment as structured nTLV
 //! (one `schema` entry, nested objects resolved through the field-name
@@ -36,7 +38,7 @@ pub struct BoothNameKey {
 #[ok_ref(BoothNameKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_reduce(HighWater(id) { group(global) })]
-#[ok_ns(40)]
+#[ok_ns(30)]
 pub struct BoothName {
     pub name: String,
     /// Payload mirror of the proxy id — the MAX reduce folds over payload
@@ -56,11 +58,15 @@ pub struct BoothName {
 use __OkmIndex_BoothName_by_name as BoothNameByName;
 
 /// The first ns a registered booth type receives (ADR-0026 §1): the low
-/// block is aura's own (mq 30–35, meta/state 40–41); booth types allocate
+/// block is aura's own (mq 30–35, meta/state 40–42); booth types allocate
 /// from a fixed base above it, and ids are never reused within the node.
 pub const BOOTH_NS_BASE: u32 = 100;
 
-fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
+/// The type id for a booth type name (assign on first sight: the registry
+/// pattern — the SAME dictionary the event plane's route/cursor rows key
+/// on, ADR-0038 §2) plus the type's storage ns (base + id; one allocation
+/// per type, monotonic with the id, never reclaimed).
+pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let mut t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
@@ -107,7 +113,7 @@ pub fn booth_name_of(meta: &MqStore, id: u32) -> Option<String> {
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct BoothDefKey {
-    pub type_id: u32,
+    pub booth_id: u32,
 }
 
 /// One document per booth type. `Option` maps to a sentinel encoding:
@@ -121,7 +127,7 @@ pub struct BoothDefKey {
 /// the storage shape stopped being an opaque text blob.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(BoothDefKey)]
-#[ok_ns(41)]
+#[ok_ns(31)]
 // v2: `encoding` appended at the hot tail (append-only rule — old v1
 // rows decode it as its default 0 = json, the behavior they had).
 #[ok_layout(version = 2)]
@@ -142,7 +148,7 @@ pub struct BoothDef {
 }
 
 // ---------------------------------------------------------------------------
-// CodeBlob (ADR-0027): content-addressed code bytes, meta plane ns 42.
+// CodeBlob (ADR-0027): content-addressed code bytes, meta plane ns 32.
 // Pure content rows: key = the sha256, value = the bytes. No name, no
 // version, no foreign key — every relational fact lives in BoothDef, the
 // single source of reference. Immutable by construction: a "different
@@ -156,7 +162,7 @@ pub struct CodeBlobKey {
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CodeBlobKey)]
-#[ok_ns(42)]
+#[ok_ns(32)]
 pub struct CodeBlob {
     /// Mirrors the key segment (index fields must be payload fields; and
     /// observability: a raw scan sees its own content address).
@@ -268,14 +274,14 @@ pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// Persist one definition (latest version wins per type name; the id is
 /// stable across versions — the registry resolve).
 pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
-    let type_id = resolve_booth_id(meta, &booth.name)?;
+    let booth_id = resolve_booth_id(meta, &booth.name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let (row, schema) = BoothDef::of(booth);
     // The bytes must exist before the pointer to them is published: a
     // definition whose blob is missing is an unloadable booth (boot
     // reload errors instead of resurrecting a hash with no content).
     put_blob(meta, row.code_sha256, booth.source.as_bytes())?;
-    t.put(&BoothDefKey { type_id }, &row);
+    t.put(&BoothDefKey { booth_id }, &row);
     // Schema rides the dynamic segment (structured nTLV, no JSON text);
     // absent schema = the field is absent (sentinel by absence).
     let dynamic = schema
@@ -285,7 +291,7 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
             m
         })
         .unwrap_or_default();
-    t.put_fields(&BoothDefKey { type_id }, &dynamic);
+    t.put_fields(&BoothDefKey { booth_id }, &dynamic);
     Ok(())
 }
 
@@ -295,10 +301,10 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
 /// `schema: None` = the type declared no storage (no ctx.store surface).
 pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
     let ns = ns_of(meta, name)?;
-    let type_id = resolve_booth_id(meta, name)?;
+    let booth_id = resolve_booth_id(meta, name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
-        .get_fields(&BoothDefKey { type_id })
+        .get_fields(&BoothDefKey { booth_id })
         .and_then(|f| f.get(SCHEMA_FIELD).cloned())
         .map(|v| crate::value::dyn_to_json(&v));
     Ok((ns, schema))
@@ -312,14 +318,14 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let mut out = Vec::new();
     for (suffix, payload) in t.scan_documents_raw() {
-        // suffix = [type_id 4B]: the primary key of the row (u32 BE).
+        // suffix = [booth_id 4B]: the primary key of the row (u32 BE).
         if suffix.len() < 4 {
             continue;
         }
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
-        let type_id = u32::from_be_bytes(b);
-        let key = BoothDefKey { type_id };
+        let booth_id = u32::from_be_bytes(b);
+        let key = BoothDefKey { booth_id };
         let schema = t
             .get_fields(&key)
             .and_then(|f| f.get(SCHEMA_FIELD).cloned());

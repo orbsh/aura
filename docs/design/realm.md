@@ -83,7 +83,7 @@ set(<lang>, <script/wasm>)
 
 `set()` 定义的是类型，不是实例。摊位实例由 Realm 根据 instance key 按需激活（详见 [§5.11](#511-摊位-实例化与分片)）。
 
-**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在数据面 okm 实例的 **BoothDef 表**（ns 41，与 mq/state 并列——ADR-0025 方案 A；实现为 `booth/src/persist.rs`），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
+**脚本持久化**：`set()` 提交的脚本内容（或 Wasm 字节码）存储在数据面 okm 实例的 **BoothDef 表**（ns 31，ADR-0040 分段后；与 mq/state 并列——ADR-0025 方案 A；实现为 `booth/src/persist.rs`），不从文件系统读取。脚本是静态资产，跨节点同步走文件系统（git/S3）。存储引擎天然支持版本化，每次 `set()` 保留新版本，旧版本可回滚。脚本条目附带元数据（提交时间、语言类型、版本号、提交者、内容哈希），存储结构：
 
 ```
 meta instance, partition: "booth_defs"
@@ -351,8 +351,8 @@ impl Realm {
 
         // 第二段：向每个队列持久化写入（4.5c step 2b）。队列身份 = 具体事件名
         // （通配路由匹配到的名字，模式串不落队列），经 EventName registry 换成
-        // event_id 后按 [event_id][part_id][time] 落 okm 分区——MqHead 保
-        // 逻辑时间单调，append O(1)。每个订阅者一条 cursor 指向同一分区。
+        // event_id 后按 [event_id][part_id][seq] 落 okm 分区——MqHead 发号
+        // （last+1，序列单调），append O(1)。每个订阅者一条 cursor 指向同一分区。
         for (route, partition) in targets {
             let event_name = event.to_string();
             let mut store = realm.mq.clone();

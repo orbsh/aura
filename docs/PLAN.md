@@ -19,6 +19,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - MqData sort key: [event_id][part_id][time] — LOGICAL time (ms) monotonic per partition via the MqHead row (max(now_ms, last+1)), append O(1) (the max-scan is gone), skip-to-now reads the head; wall truth rides the payload
     - part_id: FNV-1a hash retained (partition values are user-data scale — a registry would grow unbounded); 0 RESERVED for the singleton partition (part_id_of; hash collision maps to 1)
     - not landed (deferred until a real one-to-many consumer appears): index-scan-based fan-out where key VALUES enter index entries (PLAN:19's original sketch) — the current MqData primary key IS the access method for per-event/per-partition scans; cursor-per-subscriber already covers one-to-many delivery
+    - **[2026-10-02 update]** the two lines above describe the 2026-09-23 shape; both were superseded and LANDED in Phase 4.18: EventRoute is now ns 25 keyed `[event_id][booth_id]` with a `by_booth` index (ADR-0038 §2), and `part_id` is no longer an FNV-1a hash — the PartitionName dictionary (ns 21) issues it (ADR-0039 §1). Authoritative table: `docs/design/event-flow.md` §7.
 - [x] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)** (CLOSED 2026-09-25 — acceptance items all test-locked: shared in-VM globals + VM drop on evict = echo.rs::idle_eviction_drops_the_resident_session; state survives eviction = state_survives_scale_to_zero; probe disconnect flips presence + in-flight fails as error value = remote_probe.rs::remote_probe_roundtrip extended with the abort/unregister/not-connected assertion)
   - Problem: spawn-per-job — every message re-loads source, builds a fresh VM, runs the entry, drops it
     - script globals never survive between messages
@@ -136,7 +137,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [x] step 5 — docs: booth-api.md bilingual rewritten to multi-entry model (lifecycle + event-queue semantics + @on examples per language) — landed; realm.md session-queue section + wiki §6.2/§mailbox updated (wiki aura-architecture §5 bullet + §6.2 lifecycle, stateless-agent-architecture probe adapter wording); 2026-09-23 realm.md emit walkthrough rewritten to the persistent-queue shape (concrete-name queue identity, wildcard concrete-name expansion via events_matching, MqHead logical time, min-watermark compaction on the emit path; broadcast-era code sketch removed)
   - Close-out (2026-09-27, the two ruling items the code lacked):
     - [x] reduce-based backlog depth — `MqData` carries `#[ok_reduce(Count { group(event_id, part_id) })]` (okm ADR-0023 preset × ADR-0024 key-field group): append folds +1, watermark compaction's delete unfolds −1 on the write path; `mq::depth(event, part)` = one point read, never a scan (the zero-scan operational surface realm.md's retention paragraph promised).
-    - [x] skip-to-now wired to consumers — `advance` is monotonic by contract (a lower seq never rewinds: without it a skip re-surfaced the backlog on the next drain pass); `mq::rewind_cursor` is the test-only exception; the relief valve reaches scripts as host fns `ctx_queue_depth(event)` / `ctx_skip_to_now(event)` (ctx bridge, bound to the instance; the queue resolves through the PERSISTED route registry — `mq::bound_partition`, exact id or wildcard-prefix, same rule as the consumer loop; an unbound event is an error value, never a silent no-op; no bypass guard). e2e: `engine/tests/queue_relief.rs` (handler read == store read; skip moves the cursor; post-skip events still flow); unit: `realm/tests/mq_okm.rs` depth fold/unfold + skip durability.
+    - [x] skip-to-head wired to consumers — `advance` is monotonic by contract (a lower seq never rewinds: without it a skip re-surfaced the backlog on the next drain pass); `mq::rewind_cursor` is the test-only exception; the relief valve reaches scripts as host fns `ctx_queue_depth(event)` / `ctx_skip_to_head(event)` (renamed with the mq function; probe's steel carrier stub list updated in the same batch) (ctx bridge, bound to the instance; the queue resolves through the PERSISTED route registry — `mq::bound_partition`, exact id or wildcard-prefix, same rule as the consumer loop; an unbound event is an error value, never a silent no-op; no bypass guard). e2e: `engine/tests/queue_relief.rs` (handler read == store read; skip moves the cursor; post-skip events still flow); unit: `realm/tests/mq_okm.rs` depth fold/unfold + skip durability.
   - Docs status: realm.md §on-decorator matches the ruling; booth-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture probe-adapter wording updated to event-queue semantics (2026-09-15)
 
 - [~] Phase 4.8 — Timers (ADR-0016, docs/adr/0016-timers-timer-wheel-cron.md en+zh; ADR-0011 amended — blocking/self-scheduling stays rejected, delivery scheduling passes the criterion): timer wheel scanned by the evictor tick; due entries deliver as ordinary `__on_timer` queue jobs (同目标到期合并一次唤醒); delivery counts as activity, re-arm explicit (投递不隐式自我重排); memory tier (dies with eviction) + durable tier (StateStore reserved namespace, restored via on_wake); declarative `lifecycle.cron` in `interface_schema` (注册时内省翻译为持久定时器，运行时从不解释 cron 表达式，错过策略 = skip-and-jump-to-next) + imperative `ctx.timer.register/cancel`; ctx-bridge host fns move to dot-namespaced introspectable groups (`ctx.store.*`, `ctx.timer.*`); gravity 按 channel 一实例（ADR-0016 ruling）。
@@ -218,10 +219,13 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     EventRoute registry row shape (persist access-method references), consumer
     spawn (one instance per resolved id — the queue cursor model already per-(event,
     partition), instances subscribe as today).
-  - Open for the phase to decide: whether the access method is named per event in
-    the schema block (`receives` declares the resolve path) or the type declares a
-    default + per-event override; and the multi-target failure semantics (partial
-    delivery failure = per-target dead-ring entries, consistent with ADR-0012).
+  - RULED (ADR-0038 §3, 2026-10-02) — the two questions this phase left open are
+    closed: the resolve path is named PER EVENT in the schema block (`receives`
+    declares it, no type-wide default — a default is defined only when every
+    event of the type happens to be isomorphic, and "absence = inherit" would
+    give the empty case two readings against "absence = singleton"); and
+    multi-target failure = per-target dead-ring entries (ADR-0038 §4's
+    no-silent-drops rule; the `__default__` fallback retires with it).
 
 - [x] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; LANDED 2026-09-29 — modes A+B + nu fifo adapter + PTY retirement)**
   - **LANDED (probe 7476209, 504bfd1 + same-day rename):** two shapes —
@@ -444,6 +448,93 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     the 4.15 envelope merge gives the host channel its frame envelope, so
     typed payloads land on settled protocol.
 
+- [x] **Phase 4.17 — Event-plane identity and delivery end state (ADR-0038 §1–§4); LANDED 2026-10-02 (commit pending)**
+  - **Wildcard narrowing (§1)**: a key-less subscription delivers to the type's
+    singleton instance. The current broadcast makes the watermark denominator an
+    OPEN set — every emit for a new key activates a new instance whose cursor
+    reads 0, so it replays the queue's surviving history; the watermark is pinned
+    and "subscription" drifts into state synchronization. `partitioning.md` §1's
+    text is the ruling; the wildcard fan-out tests rewrite WITH the semantic.
+  - **One booth dictionary (§2)**: the event plane's own dictionary retires; the
+    event plane resolves through ns 30 (the meta plane's booth dictionary) and the
+    cursor key's third segment becomes `booth_id` (named `type_id` when this was
+    written — the field was renamed at landing); participant names are no longer
+    issued ids (`split_once('/')` disappears). Touch points: the
+    `bound_partition`/`routes_of_*`/compact resolver chain and the test call sites
+    that drive the mq surface with `"cart/alice"` strings
+    (`mq_okm.rs`/`events.rs`/`queue_relief.rs`); ns-layout + ADR-0026 §1 table
+    names (both languages); probe USAGE (both languages, the 4.16c leftover).
+  - **Declaration semantics (§3)**: per-event resolve, absence = singleton, the
+    three shapes (singleton / payload field / index scan) discriminated at the row
+    structure layer, references stored by NAME. The EventRoute row shape carries
+    it, and it is the row shape 4.13's scan face lands on.
+  - **Delivery completeness (§4)**: the `__default__` fallback retires — a payload
+    missing its declared key field is a malformed event → dead ring with a reason
+    tag, the same class as a zero-target scan.
+  - **Landing note (2026-10-02)**: §1 `instance.rs` binds a key-less route only on
+    the singleton instance (broadcast loops gone); §2 the event plane's dictionary
+    is deleted, `mq::booth_id_of` delegates to `meta::resolve_booth_id`, the cursor
+    key's third segment is `booth_id` (the `by_booth` index), `split_once('/')` gone; §4 `DeadReason` on
+    every dead-ring record (`NoRoute`/`MissingKeyField`/`AppendFailed`) and
+    `__default__` retired. §3's per-event declaration/reference-by-name is the ROW
+    shape that rides 4.13 (today's `key_field` is already per-event) — no interim
+    implementation was built. Residual recorded in ADR-0038: the INSTANCE key space
+    still uses the `"__singleton__"` sentinel string.
+
+- [x] **Phase 4.18 — Partition identity + the keyspace bands (ADR-0039 §1, ADR-0040); LANDED 2026-10-02 (commit pending)**
+  - **The partition becomes a proxy dictionary**: a `PartitionName` table (ns 21,
+    `by_name` + `HighWater`, reverse resolution) issues a fixed-width `u32` id;
+    `part_hash`/FNV-1a/`part_id_of` retire; `SINGLETON_PART = 0` stays as an id the
+    issuer cannot produce and the sentinel leaves the value space (the routing layer
+    marks key-less delivery structurally). The okm fact that forces it: `KeyEncode`
+    is fixed-width by construction (a `String` key field is a compile-time panic)
+    and variable-length exists only in index field segments, last and unprefixed —
+    an inline partition string in `[event][part][time]` is not expressible.
+  - One resolve per append and per cursor/backlog op, with an in-memory hot face
+    (the §4 pattern: persisted registry = truth, memory = hot cache).
+  - Key widths tighten: MqData 20→16 B, MqCursor 16→12 B, MqHead 12→8 B.
+  - **The keyspace bands (ADR-0040)**: `#[ok_ns]` renumbering — event plane 20–25
+    (20 EventName, 21 PartitionName, 22 MqData, 23 MqCursor, 24 MqHead, 25
+    EventRoute), meta plane 30–32 (30 BoothName, 31 BoothDef, 32 CodeBlob).
+  - **The whole low block is wiped in one operation** (the new meta band lands on
+    numbers the old event plane used; without the wipe a new BoothName reads old
+    EventName rows as type names). Cost: persisted definitions + code blobs are
+    lost, so a deployment re-registers its types — bigger than "mq bytes are
+    transient", recorded in ADR-0040.
+  - Both event-flow §7 copies update (the authoritative table); ADR-0026 §1 gets a
+    dated update note.
+  - **Landing note (2026-10-02)**: `PartitionName` (ns 21) with `by_name` +
+    `HighWater` + `partition_name_of`; `mq::Partition` (`Singleton | Named`) as the
+    structural marker; the hash family deleted; key widths tightened as specified;
+    all `#[ok_ns]` renumbered (mq 20–25, meta 30–32). Kept for later: the in-memory
+    hot face for the resolver (not built — the resolve is one dict read per append /
+    cursor op, measured fine); probe USAGE frame-shape sync (4.16c leftover, probe
+    repo, untouched this session). The low-block wipe is an OPERATIONAL act for an
+    existing deployment (this repo's tests build fresh stores).
+
+- [x] **Phase 4.19 — The cursor retention promise (ADR-0039 §2); LANDED 2026-10-02 (commit pending)**
+  - Global `cursor_ttl` (one `EngineConfig` value → the realm field beside
+    `idle_ttl`; KDL duration string; finite default, 30d; NO per-type override,
+    since the denominator is a cross-type `min` comparison), decoupled from
+    `idle_ttl` (seconds vs days).
+  - `MqCursor.last_active_ms` (v2 hot-tail append; the `0` sentinel never
+    participates in the predicate — old rows decode the missing field as 0).
+  - Watermark denominator: an expired row LEAVES the denominator (the row stays —
+    deleting it would read the cursor back as 0 and re-deliver); physical deletion
+    only for rows whose cursor is already below the watermark. The predicate is
+    evaluated at compaction time, never by a background watchdog.
+  - **Landing note (2026-10-02)**: KDL `mq { cursor_ttl "30d" }` →
+    `EngineConfig.cursor_ttl` → the realm field (s/m/h/d suffixes in
+    `config::kdl::parse_duration_secs`); `MqCursor.last_active_ms` v2 hot tail, `0`
+    sentinel excluded from the predicate, stamped by `advance`; denominator =
+    `mq::booth_subscribes` (MATCHING routes, exact or wildcard — see the correction
+    below) and inert rows (cursor ≤ watermark) reclaimed by `drop_cursor`.
+  - **Correction found while landing (recorded in ADR-0039 / event-flow §6.3)**: the
+    denominator's type test was an exact-event_id lookup, which silently dropped
+    WILDCARD subscribers (their registry row carries the pattern's event id) — so
+    compaction could eat their unconsumed backlog, violating "no silent drops".
+    It is now a matching test.
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.
@@ -467,6 +558,103 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-10-02b，4.17/4.18/4.19 落地：事件面身份 + 分区代理字典 + 游标保留）
+
+- **代码落地（ADR-0038/0039/0040，全部在一个 working tree 内，未提交）**：
+  `crates/realm/src/mq.rs` 重写为 ns 20–25（EventName 20 / PartitionName 21 / MqData 22 /
+  MqCursor 23 / MqHead 24 / EventRoute 25）+ `PartitionName` 表（`by_name` + `HighWater` +
+  `partition_name_of`）+ `mq::Partition`（`Singleton | Named`）——`part_hash`/FNV-1a/
+  `part_id_of`/`part_hash_of` 全删，键宽收紧（MqData 20→16 B、MqCursor 16→12 B、
+  MqHead 12→8 B）；`meta.rs` ns 30–32（BoothName 30 / BoothDef 31 / CodeBlob 32），
+  `resolve_booth_id` 公开，`mq::booth_id_of` 委托它（游标键第三段 = `booth_id`，
+  `split_once('/')` 消失）；`events.rs` 移除 `__default__` 兜底、新增 `instance_of()`，
+  压缩分母改用 `mq::booth_subscribes`；`event.rs` `DeadReason` 增 `MissingKeyField`；
+  `instance.rs` 只为单例实例绑定无 key 路由；`ctx.rs`/`lib.rs`/`remote.rs`/`realm_set.rs`
+  适配（`DEFAULT_CURSOR_TTL` = 30 天，realm 携 `cursor_ttl` 字段）；
+  `crates/config`（`Root.cursor_ttl_secs` + `kdl.rs` 的 `MqConfig`/`parse_duration_secs`，
+  支持 s/m/h/d）+ `crates/engine/src/lib.rs` 注入。
+- **测试适配**：`crates/realm/tests/mq_okm.rs` 重写（Partition API、单例/命名分区、
+  游标 TTL 过期，新增 `age_cursor` 测试支持——`rewind_cursor` 现在落 NOW 而不过期）；
+  `engine/tests/events.rs`（含新增通配收窄用例 `wildcard_delivers_to_the_singleton_instance_only`）、
+  `queue_relief.rs` 适配。
+- **一处超出裁决文本的修正（已写入 ADR-0039 与 event-flow §6.3）**：分母原先只按**精确
+  event_id** 查表，会把**通配**订阅者静默排除出分母（注册行带的是模式的事件 id），
+  于是压缩会吃掉通配消费者未消费的积压——违反 ADR-0038 §4「无静默丢弃」。现判据为
+  `mq::booth_subscribes`（匹配精确或通配）。
+- **第二批改名与语义收紧（同日，用户裁决后追加）**：`type_id` → `booth_id`（mq/meta 两面的
+  字段、参数、局部量全扫，含派生索引名 `by_type` → `by_booth`；`type_subscribes` →
+  `booth_subscribes`、`type_id_of` → `booth_id_of`、`type_name_of` → `booth_name_of`）。
+  MqData 的第三段从「逻辑时间」改为**纯序列**：字段 `time` → `seq`，`MqHead.last_time` →
+  `last_seq`，append 由 `max(now_ms, last+1)` 改为 `last + 1`（墙钟彻底离开写路径，
+  只留在 `last_active_ms` 这个 TTL 输入上），`mq::skip_to_now` → `mq::skip_to_head`。
+  理由：该值是排序键兼行身份，必须全序唯一——唯一性由「emit 路径持 realm 锁 = 单写者」
+  保证；把墙钟读数与 +1 混在一个数里（旧 `max`）只会冒充时间戳：同毫秒会算出相等主键
+  （覆盖 = 丢数据），回拨会落到已消费游标之下（静默丢弃）。脚本面 host fn 名
+  `ctx_skip_to_now` → `ctx_skip_to_head`（**两边一起改名**：aura ctx bridge 的 host fn 名与
+  probe `runtime/src/carrier/steel.rs` 的 introspection stub 列表；脚本面契约变更，已确认）。
+- **验证**：`cargo check`（realm/config/engine）通过；`cargo clippy` 三包新代码零警告
+  （修掉两条自引入：mq.rs 文档列表缩进、events.rs 冗余 `let _ =`）。测试：workspace 各
+  套件全绿，**唯一失败 `exec_booth::bgi_booth_ctx_invoke_to_sibling` 经取证为预先存在**
+  ——用 `git archive HEAD`（只读，未动工作树）导出 HEAD 内容到 scratch、软链 `probe`/`okm`
+  后在同一测试复现同样失败（左侧 `Null`），与本次改动无关。
+- **文档同步（双语）**：ADR-0038/0039/0040 状态行由「已裁未实施」改为「已落地
+  （2026-10-02，提交待指令）」并写入落地形态、连带与残余；`event-flow.md`/`-en.md`
+  的 §1/§2/§5/§6.1/§6.2/§6.3/§7/§8 全部翻为已落（§6.1 伪码块改为
+  `Partition::Singleton`/`Named` + `MissingKeyField`；§8 导语改为「8.3/8.4 已落、
+  8.1 待决（前置 = 动态 schema）、8.5 开放」）。
+- **残余（记录在 ADR-0038 与 event-flow §8.3）**：实例键空间仍用 `"__singleton__"`
+  哨兵字符串——payload 里字面等于它的 key 仍会别名到单例**实例**（与已修掉的分区别名
+  不是同一个 bug）；让实例身份结构化会牵动整个 call model 与 probe 缝上的 `InstanceId`，
+  留给独立裁决。4.18 的 in-memory resolve 热面**未建**（每次 append/游标一次字典读，
+  实测无需）；probe 仓 USAGE 帧形同步（4.16c 遗留）本次未动。
+- **提交**：待用户指令。
+
+## 会话记录（2026-10-02，事件面终态裁决 + event-flow 重写为推导式）
+
+- **文档重写（已落）**：`docs/design/event-flow.md`/`-en.md` 从流水账改为推导式组织
+  ——新增 §2「从约束推导持久面」（11 步，每步 = 约束 → 落点表 + ns；收束为「事件是
+  事实、订阅是关系、两者都不许在键里带名字、摊位自己的东西各有其表」）；§6 把投递/
+  消费/保留合成「一次 emit 的一生」（6.1/6.2/6.3）；§7 键空间表标注为推导落点；§8
+  从「待决问题」改为「终态裁决 + 实施清单」。§7/§8 编号与全部外部引用（ns-layout
+  指针、PLAN、partitioning、ADR-0026 §1）保持不变。
+- **审核发现（文档侧，已修）**：§8.3「已落地（未提交）」陈旧（dbc5d60 已提交）；
+  MqData 的 live `Count` reduce（`depth()` 点读来源、skip-to-now 的决策输入）全文
+  缺失；dead ring 漏记「`mq::append` 失败」这条入口；「backlog 批读」不实（实为分区
+  前缀全扫、无批上限）；漏记 `(event, partition)` 去重导致的多类型单次入队；未写明
+  meta 表与 mq 表同住一个 okm 实例。
+- **审核发现（代码注释陈旧，已修）**：`crates/realm/src/event.rs` 模块头仍写「`emits`
+  是白名单、未声明即被 Realm 拒绝」（与 ADR-0012 及实际代码冲突）；`meta.rs` 模块头写
+  booth 定义在「另一个 okm 实例（独立 engine/目录，跨实例查询不存在）」（ADR-0025 已
+  并入数据面，函数实际吃 realm 的 `MqStore`）；`meta.rs` 的低位块注释漏 42。
+  `cargo check -p aura-realm` 通过（确认重编译）。
+- **新 ADR（已落，双语）**：ADR-0038「事件面的消费者集合与身份」（通配收窄为单例
+  投递、单字典、声明逐事件且缺失=单例、无静默丢弃）；ADR-0039「分区身份与游标保留承诺」
+  （分区改为代理字典、哈希退役；`cursor_ttl` 全局配置、过期退出分母不删行）；ADR-0040
+  「框架键空间分段」（事件面 2x、meta 面 3x，段内概念序）。三条均初裁未实施——**本会话
+  稍后即落地，见下一条会话记录**。
+- **中途修正（重要）**：ADR-0039 §1 初稿裁定「分区段改自描述长度前缀」，随后核对 okm
+  发现**不可实现**——`KeyEncode` 主键在构造上定宽（`String` 字段编译期 panic），变长字段
+  只存在于索引 fields 段（至多一个、必须最后、且不带长度前缀），`Count` reduce 的 group
+  字段同样受定宽约束。改为：分区成为**代理词汇**（`PartitionName` 字典发 `u32` id），
+  也就是本文档 §7 早已写明的「开放词汇走代理 id」规则——哈希才是那个不合群的例外。
+  副产：碰撞即错误投递、保留值与值空间共用名字空间、哈希不可反查这三个缺陷全部变成
+  构造性不可能，键宽还缩了（MqData 20→16 B、MqCursor 16→12 B、MqHead 12→8 B）。
+- **分段与清除代价（用户裁决：不用 4x 段）**：ns 段改为事件面 20–29 / meta 面 30–39。
+  新 meta 段（30–32）正落在旧事件面的号上，所以重新编号**只在低位块被彻底清除的前提下
+  安全**（否则新 `BoothName` 会把旧 `EventName` 行读成类型名）；代价比「mq 字节转瞬即逝」
+  大一圈——已持久化的摊位定义与代码 blob 一并作废，部署方要重新注册类型（ADR-0040
+  记录在案）。
+- **推导所得的结构性发现**（写进 ADR）：① 广播使消费者集合成为开集——新实例游标从 0
+  起会重放该队列现存全部历史，水位被永久钉住、订阅漂移成状态同步；② 定宽哈希分区有
+  三个副作用：碰撞即错误投递（同类型两个 key 共享队列与游标行）、保留值 `0` 与值空间
+  共用名字空间（key 字面等于哨兵的有 key 实例别名进单例队列）、哈希不可反查（运维
+  列不出人类可读的队列）；③ 游标过期必须「退出分母」而非删行（删行 → 游标读回 0 →
+  `backlog(after=0)` 重放现存行 → 若游标原本领先水位就是重复投递）。
+- **PLAN**：4.13 遗留的两个问题由 ADR-0038 §3 关闭并就地标注（逐事件命名、逐目标
+  dead-ring）；新增 4.17（事件面身份与投递终态）、4.18（分区身份 + 键空间分段）、4.19
+  （游标保留承诺）。
+- **提交**：待用户指令。
 
 ## 会话记录（2026-09-30c，4.16c 落地：typed 宿主帧 + 声明式双编码）
 

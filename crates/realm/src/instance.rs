@@ -4,6 +4,8 @@
 
 use super::{next_seq, Realm, SharedRealm, RemotePending};
 use crate::{event, mq, timer};
+use crate::mq::Partition;
+use crate::DEFAULT_CURSOR_TTL;
 use aura_booth::{Instance, InstanceId, Job};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +27,7 @@ impl Realm {
             queue_capacity: 64,
             mq: mq_store.clone(),
             idle_ttl: Duration::from_secs(30),
+            cursor_ttl: DEFAULT_CURSOR_TTL,
             router: event::EventRouter::default(),
             sessions: probe_runtime::carrier::session::Sessions::new(),
             probes: HashMap::new(),
@@ -64,23 +67,30 @@ impl Realm {
             // Subscribe to the event queues this type's @on declarations
             // bind (Phase 4.5c step 2b): persistent partitions over the
             // store, one per (event, partition); the subscriber holds a
-            // named cursor. Key-less routes bind the singleton partition.
-            let mut subs: Vec<(String, String, bool)> = Vec::new();
+            // cursor. ADR-0038 §1: a KEY-LESS route delivers to the type's
+            // singleton instance, so only that instance binds the singleton
+            // queue — the old broadcast (every instance holding its own
+            // participant cursor on one shared queue behind one shared
+            // cursor row) made the retention denominator an open set.
+            let mut subs: Vec<(String, Partition, bool)> = Vec::new();
             if let Some(_booth) = self.types.get(&id.booth_type) {
                 for route in self.router.routes_of(&id.booth_type) {
                     let partition = if route.instance_key_field.is_empty() {
-                        mq::SINGLETON.to_string()
+                        if id.key != mq::SINGLETON {
+                            continue;
+                        }
+                        Partition::Singleton
                     } else {
-                        id.key.clone()
+                        // For keyed routes the partition value equals the
+                        // instance key only when the route derives the key
+                        // from the same field emit used — which it does by
+                        // construction (emit set key = data[field]).
+                        Partition::Named(id.key.clone())
                     };
-                    // NOTE: for keyed routes the partition value equals the
-                    // instance key only when the route derives the key from
-                    // the same field emit used — which it does by
-                    // construction (emit set key = data[field]). The third
-                    // element marks a wildcard subscription: route.event is
-                    // a PATTERN, expanded to concrete names at consume time
-                    // (queues are keyed by concrete names — emit writes
-                    // there).
+                    // The third element marks a wildcard subscription:
+                    // route.event is a PATTERN, expanded to concrete names
+                    // at consume time (queues are keyed by concrete names —
+                    // emit writes there).
                     subs.push((route.event.clone(), partition, route.event.ends_with('*')));
                 }
             }
@@ -92,20 +102,20 @@ impl Realm {
             // unconsumed backlog (scale-to-zero keeps triggers alive).
             let consumer_realm = self_arc.clone();
             let consumer_id = id.clone();
-            let booth_key = id.key.clone();
             tokio::spawn(async move {
                 // One pass over ALL bound queues per cycle. (The earlier
                 // shape — a `for` over subs wrapping an infinite `loop`
                 // per subscription — starved every queue but the first
                 // for a multi-@on type, and tripped clippy::never_loop.)
-                // Cursor name = the booth type + instance key: two types
-                // on one event hold independent cursors.
-                let booth = format!("{}/{}", consumer_id.booth_type, booth_key);
+                // The cursor's subject is the booth TYPE (ADR-0038 §2): two
+                // types on one event hold independent cursors, and one type
+                // no longer needs a per-participant id.
+                let booth_type = consumer_id.booth_type.clone();
                 // Concrete queue names per subscription: an exact
                 // subscription is one name; a wildcard expands to every
                 // registered event matching its prefix (re-expanded each
                 // pass — new concrete names join automatically).
-                let mut queues: Vec<(String, String, bool, Vec<String>)> = subs
+                let mut queues: Vec<(String, Partition, bool, Vec<String>)> = subs
                     .into_iter()
                     .map(|(event, part, is_wildcard)| {
                         (event, part, is_wildcard, Vec::new())
@@ -139,7 +149,7 @@ impl Realm {
                             let batch = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let after = mq::cursor(&vs, concrete, part, &booth)
+                                let after = mq::cursor(&vs, concrete, part, &booth_type)
                                     .unwrap_or(0);
                                 mq::backlog(&vs, concrete, part, after).unwrap_or_default()
                             };
@@ -151,7 +161,7 @@ impl Realm {
                                 Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let _ = mq::advance(&vs, concrete, part, &booth, seq);
+                                let _ = mq::advance(&vs, concrete, part, &booth_type, seq);
                                 progressed = true;
                             }
                         }

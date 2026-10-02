@@ -40,8 +40,9 @@ One option means no option to choose — the Inline form is retired, not depreca
 
 ### 2. The blob is content-addressed, immutable, and owned by the meta plane
 
-`CodeBlob` lives in `realm/src/meta.rs` beside the definition it serves (ns 42, after
-TypeName 40 / BoothDef 41). Key = 32-byte sha256; value = the bytes. No name, no version,
+`CodeBlob` lives in `realm/src/meta.rs` beside the definition it serves (ns 32 after the
+ADR-0040 bands renumbered the meta plane — BoothName 30 / BoothDef 31 / CodeBlob 32).
+Key = 32-byte sha256; value = the bytes. No name, no version,
 no foreign key — the row is pure content. `mq.rs` is the event-queue domain and has no
 claim on it; sharing the `MqStore` engine handle is a plumbing fact, not an ownership one.
 
@@ -107,7 +108,7 @@ node may pull), it does not mint a second authorization home.
 - **probe-protocol**: `CodePayload` deleted; `ToolCall.code: CodeRef { url, sha256 }`.
 - **probe**: `fetch_link` becomes the only path (cache keyed by sha256; verification
   unchanged); no other consumer changes.
-- **aura**: `meta.rs` gains `CodeBlob` (ns 42) and `BoothDef.code_sha256`;
+- **aura**: `meta.rs` gains `CodeBlob` (ns 32 after ADR-0040; 42 at the time) and `BoothDef.code_sha256`;
   `register_inner` writes hash + blob; the remote dispatch arm builds
   `CodeRef` from the stored hash; `EngineConfig`/KDL gains `code_base_url` (no default, error at delivery);
   `PersistedBooth.source` → `code_sha256` (the seam struct follows). Boot reload

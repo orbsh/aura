@@ -98,7 +98,7 @@ following — each takes one JSON argument and returns a JSON value:
   scan; the watermark compaction's unfold maintains it); the queue
   resolves through the persisted route registry (the consumer loop's own
   source) — an event this type has no route for is an error value
-- `ctx_skip_to_now(event)` → jumps this instance's cursor to the
+- `ctx_skip_to_head(event)` → jumps this instance's cursor to the
   partition head, discarding the stale backlog (the relief valve;
   cursors are monotonic — a skipped backlog never re-surfaces on the
   next drain; events after the skip flow normally)

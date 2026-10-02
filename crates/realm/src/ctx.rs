@@ -240,7 +240,7 @@ impl Realm {
         // Queue relief valve (Phase 4.5c, realm.md retention ruling):
         // `ctx_queue_depth(event)` reads the live backlog count (a point
         // read of the Count reduce — the zero-scan operational surface);
-        // `ctx_skip_to_now(event)` jumps THIS instance's cursor to the
+        // `ctx_skip_to_head(event)` jumps THIS instance's cursor to the
         // partition head, discarding the stale backlog. Both resolve the
         // instance's bound queue through the persisted route registry
         // (an unbound event = an error value, never a silent no-op).
@@ -248,23 +248,26 @@ impl Realm {
             let store = store.clone();
             let booth_type = ctx.self_id.booth_type.clone();
             let booth_key = ctx.self_id.key.clone();
-            let booth = format!("{booth_type}/{booth_key}");
-            for name in ["ctx_queue_depth", "ctx_skip_to_now"] {
+            for name in ["ctx_queue_depth", "ctx_skip_to_head"] {
                 let store = store.clone();
                 let booth_type = booth_type.clone();
                 let booth_key = booth_key.clone();
-                let booth = booth.clone();
-                let skip = name == "ctx_skip_to_now";
+                let skip = name == "ctx_skip_to_head";
                 fns.insert(
                     name.into(),
                     Arc::new(move |arg: serde_json::Value| {
                         let event = arg.as_str().ok_or_else(|| {
                             anyhow::anyhow!("{name}: expects the event name (a string)")
                         })?;
+                        // ADR-0038 §1: a key-less route binds the singleton
+                        // INSTANCE; any other instance of the type has no
+                        // queue for it, so its valve answers "no route of
+                        // '<type>' binds '<event>'" — the subscription truth,
+                        // not a silent no-op.
                         let part = crate::mq::bound_partition(&store, &booth_type, &booth_key, event)?
                             .ok_or_else(|| anyhow::anyhow!("{name}: no route of '{booth_type}' binds '{event}'"))?;
                         if skip {
-                            crate::mq::skip_to_now(&store, event, &part, &booth)?;
+                            crate::mq::skip_to_head(&store, event, &part, &booth_type)?;
                             Ok(serde_json::Value::Null)
                         } else {
                             Ok(serde_json::Value::from(crate::mq::depth(&store, event, &part)?))

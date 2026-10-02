@@ -26,6 +26,12 @@ use std::time::Duration;
 /// Shared realm handle: the dispatcher closes over this.
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 
+/// The default cursor retention promise (ADR-0039 §2): 30 days. Finite by
+/// design — "never" as a default would make unbounded queue growth the
+/// default, while the invariant "an instance may die" needs a bounded
+/// promise.
+pub const DEFAULT_CURSOR_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+
 pub struct Realm {
     /// Registered booth types by name.
     types: HashMap<String, BoothType>,
@@ -40,6 +46,13 @@ pub struct Realm {
     /// Idle TTL: an instance with no job for this long is evicted
     /// (scale-to-zero). State survives via the store; hooks run around it.
     pub idle_ttl: Duration,
+    /// The cursor retention promise (ADR-0039 §2): a cursor row that has
+    /// not advanced for this long leaves the watermark denominator — its
+    /// backlog is forfeit. Deliberately NOT bound to `idle_ttl`: that is a
+    /// seconds-scale eviction knob, this is a days-scale data promise. A
+    /// global value (one EngineConfig field), never per-type: the
+    /// denominator is a cross-type `min`.
+    pub cursor_ttl: Duration,
     /// Event routing: table + emit matching (Phase 3).
     pub router: event::EventRouter,
     /// Resident script sessions (Phase 2.6): per-instance VM/child, owned by

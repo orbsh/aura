@@ -30,6 +30,19 @@ pub struct RootConfig {
     /// ADR-0025 Plan A: no separate meta instance).
     #[knus(child)]
     pub data: StorageConfig,
+    /// `mq { ... }` — the event plane's operational knobs (ADR-0039 §2).
+    /// Absent = the defaults apply.
+    #[knus(child)]
+    pub mq: Option<MqConfig>,
+}
+
+/// Event-plane configuration. `cursor_ttl` is the retention promise: how
+/// long a cursor that has not advanced keeps its backlog (a duration
+/// string, e.g. "30d"; a global value, never per-type).
+#[derive(Decode, Debug, Clone)]
+pub struct MqConfig {
+    #[knus(child, unwrap(argument))]
+    pub cursor_ttl: Option<String>,
 }
 
 #[derive(Decode, Debug, Clone)]

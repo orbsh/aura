@@ -34,7 +34,8 @@
 
 ### 2. blob 是内容寻址、不可变的，归 meta 平面所有
 
-`CodeBlob` 住在 `realm/src/meta.rs`，紧挨它服务的定义（ns 42，TypeName 40 / BoothDef 41
+`CodeBlob` 住在 `realm/src/meta.rs`，紧挨它服务的定义（ns 32——ADR-0040 分段后：
+BoothName 30 / BoothDef 31 / CodeBlob 32
 之后）。键 = 32 字节 sha256；值 = 字节本身。无名字、无版本、无外键——这行就是纯粹内容。
 `mq.rs` 是事件队列域，对它没有所有权；共用 `MqStore` 引擎句柄是管路事实，不是归属理由。
 
@@ -86,7 +87,7 @@ URL 搭乘部署声明的前缀：`node {}` 配置块里的 `code_base_url`（KD
 
 - **probe-protocol**：`CodePayload` 删除；`ToolCall.code: CodeRef { url, sha256 }`。
 - **probe**：`fetch_link` 成为唯一路径（缓存按 sha256 键控；校验不变）；其余消费面无改动。
-- **aura**：`meta.rs` 增 `CodeBlob`（ns 42）与 `BoothDef.code_sha256`；`register_inner`
+- **aura**：`meta.rs` 增 `CodeBlob`（ns 32——ADR-0040 分段后；当时为 42）与 `BoothDef.code_sha256`；`register_inner`
   写哈希 + blob；远程 dispatch 臂按存储的哈希构造 `CodeRef`；`EngineConfig`/KDL 增
   `code_base_url`（无默认，投递处报错）；`PersistedBooth.source` → `code_sha256`（接缝
   结构体随之）。boot reload 按哈希从本地 blob 重新注水字节。

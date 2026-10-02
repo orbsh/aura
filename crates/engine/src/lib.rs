@@ -25,18 +25,23 @@ impl Engine {
     /// boot, never silently falls back).
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
         let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
+        let cursor_ttl = Duration::from_secs(config.cursor_ttl_secs);
         let realm: SharedRealm = Realm::with_mq(mq.clone())
             .with_code_base_url(config.code_base_url.clone())
+            .with_cursor_ttl(cursor_ttl)
             .shared_async()
             .await;
         Realm::spawn_evictor(&realm);
         // Realms share the SAME okm engine (one fjall keyspace); each
         // realm derives a prefix-bound handle at construction —
         // state documents AND mq tables ride it (ADR-0018 steps 1+2).
-        let realm_set = Arc::new(aura_realm::realm_set::RealmSet::with_mq_and_code_base(
-            mq.clone(),
-            config.code_base_url.clone(),
-        ));
+        let realm_set = Arc::new(
+            aura_realm::realm_set::RealmSet::with_mq_and_code_base(
+                mq.clone(),
+                config.code_base_url.clone(),
+            )
+            .with_cursor_ttl(cursor_ttl),
+        );
         // Boot reload (Phase 4.5b): persisted script booths re-register from
         // the meta store — definitions outlive the process.
         let engine = Self { realm, realm_set };

@@ -23,7 +23,7 @@ The corrected division of labor: **the instance key answers exactly one question
 Booth types are a DECLARED, deployment-scale vocabulary — the application author writes every type by hand, so the count is bounded by design (tens per deployment, not per user). This satisfies the ruling that closed, bounded vocabularies may take real ns allocations while open, unbounded ones may not (events/partitions stay on registry + hash shapes, ADR-0014's mq block).
 
 - The low ns block is reserved for aura itself: mq tables (30–35), meta/state (40–41), future framework planes. Booth types allocate from a fixed base above the reserved block.
-- Allocation happens at `register_type` as a side effect of the type registry (the same registry that assigns `type_id` today — the dynamic booth→ns registry this design requires already exists in embryo); ns ids are never reused within a node's lifetime.
+- Allocation happens at `register_type` as a side effect of the booth registry (the same registry that assigns `booth_id` today — the dynamic booth→ns registry this design requires already exists in embryo); ns ids are never reused within a node's lifetime.
 - Namespace isolation (the Phase 3.6 mechanism, today the prefix-bound `MqStore::namespaced` handle) keeps its MECHANISM as orthogonal — it prefixes the whole engine, beneath which booth-type nss live. Its binding dimension is an APPLICATION DECISION (demoted, PLAN Phase 4.10 LANDED): gravity may bind user, a no-user application binds nothing; "probe registration credential = user credential → namespace derived" is superseded.
 
 ### 2. Instances are documents inside the type's ns
@@ -86,3 +86,14 @@ landing-time wording (§1's "Namespace isolation … `MqStore::namespaced`", Con
 current surfaces read `MqStore::for_realm`, `RealmSet`, `NamedRealm`. The ruling is unchanged:
 realm isolation is an orthogonal outer prefix, the binding dimension is the application's
 choice, the framework's isolation units remain exactly two (type ns, instance serialization).
+
+## Update — framework ns bands (2026-10-02, ADR-0040)
+
+ADR-0040 supersedes this ADR's §1 numbering: the low block's bands are `20–29` (the event
+plane) and `30–39` (the meta plane), with table order inside a band conceptual rather than
+historical — so "mq tables (30–35), meta/state (40–41)" above reads as landing-time wording.
+Booth types still allocate from the fixed base (100), and the ruling this ADR recorded is
+unchanged: the block is reserved for aura's own tables and booth types never fall into it.
+The renumbering lands with Phase 4.18/4.19 and presumes a complete wipe of the low block —
+ADR-0040 records why (the new meta band lands on numbers the old event plane used, so
+without the wipe a new `BoothName` would read old `EventName` rows as type names).

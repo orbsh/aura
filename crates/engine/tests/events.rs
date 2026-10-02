@@ -1,10 +1,17 @@
 //! Phase 3 acceptance, as executable documentation: emit routing (the
 //! event name IS the reference), instance key from event data, wildcard
-//! singleton routing, emits whitelist as the Realm boundary, dead events.
+//! delivery to the singleton instance (ADR-0038 §1), the dead ring as the
+//! Realm boundary (ADR-0012 + ADR-0038 §4).
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
+use aura_realm::mq::Partition;
 use aura_realm::Realm;
+
+/// A keyed slice (what a route with a key field resolves to).
+fn named(key: &str) -> Partition {
+    Partition::Named(key.to_string())
+}
 
 // Steel counter (ADR-0026): per-user count into the type's declared
 // collection. The handler fn is named after the EVENT it serves (multi-entry
@@ -327,40 +334,41 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         realm.mq.clone()
     };
     let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
-    let part = mq::part_hash_of("u1");
+    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
     let rows = mq::cursor_rows(&vs, eid, part).unwrap();
     assert_eq!(rows.len(), 2, "two registered subscribers: {rows:?}");
-    // Caught up = both cursors equal the partition head (logical time,
-    // monotonic — not a compact 1..3 sequence). The last emit's append
-    // assigned the head; both subscribers drained it.
-    let head = rows.iter().map(|(_, c)| *c).max().unwrap();
+    // Caught up = both cursors equal the partition head (the sequence
+    // counter MqHead issues; it is a per-partition 1..N counter, not a
+    // clock). The last emit's append advanced the head; both subscribers
+    // drained it.
+    let head = rows.iter().map(|(_, c, _)| *c).max().unwrap();
     assert!(head > 0, "head advanced past zero");
-    assert!(rows.iter().all(|(_, c)| *c == head), "both caught up: {rows:?}");
+    assert!(rows.iter().all(|(_, c, _)| *c == head), "both caught up: {rows:?}");
 
     // Consumers caught up to the head. Write-path compaction ran on each emit
     // with whatever the watermark was AT THAT TIME (cursors lag during the
     // drain), so older rows may already be gone — the invariant is that
     // nothing at or above the final min cursor was deleted.
-    let min = rows.iter().map(|(_, c)| *c).min().unwrap();
-    // The first event's logical time: the oldest row the drain saw. With
+    let min = rows.iter().map(|(_, c, _)| *c).min().unwrap();
+    // The first event's seq: the oldest row the drain saw. With
     // write-path compaction it may already be deleted, so reconstruct the
-    // rewind point as the smallest still-known time below the head; if
+    // rewind point as the smallest still-known seq below the head; if
     // compaction removed everything below, fall back to min-1 (a rewind
     // just below the watermark suffices — the invariant tested is
-    // relative, not tied to a literal 1..3 numbering).
-    let known: Vec<u64> = mq::backlog(&vs, "order.created", "u1", 0)
+    // relative, not tied to a literal starting value).
+    let known: Vec<u64> = mq::backlog(&vs, "order.created", &named("u1"), 0)
         .unwrap()
         .into_iter()
         .map(|(s, _)| s)
         .collect();
-    let first_time = known.first().copied().unwrap_or(min.saturating_sub(1));
+    let first_seq = known.first().copied().unwrap_or(min.saturating_sub(1));
     let remaining: Vec<u64> = {
         let after = min.saturating_sub(1);
         // Backlog after (min-1) = every row still at or above the
         // watermark; its length tells us whether below-watermark rows
         // were removed by comparing against the pre-compaction count via
         // delete_before's return on a rewind-free call.
-        mq::backlog(&vs, "order.created", "u1", after)
+        mq::backlog(&vs, "order.created", &named("u1"), after)
             .unwrap()
             .into_iter()
             .map(|(s, _)| s)
@@ -369,11 +377,11 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     assert!(remaining.iter().all(|s| *s >= min), "nothing below the watermark survives: {remaining:?}");
 
     // A lagging subscriber pins the watermark: rewind one cursor to the
-    // first event's logical time (advance is monotonic — a test-only
+    // first event's seq (advance is monotonic — a test-only
     // rewind pins the old cursor), re-emit (compaction runs on the emit
     // path), then verify rows below the pinned watermark are gone while
     // later rows survive.
-    mq::rewind_cursor(&vs, "order.created", "u1", "cart/u1", first_time).unwrap();
+    mq::rewind_cursor(&vs, "order.created", &named("u1"), "cart", first_seq).unwrap();
     Realm::emit(
         &engine.realm,
         None,
@@ -385,9 +393,154 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     // Trigger compaction explicitly at the true min watermark (2): rows
     // below it are removed; rows at/above survive.
-    aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", "u1").await.unwrap();
-    let surviving = mq::backlog(&vs, "order.created", "u1", 0).unwrap();
-    assert!(surviving.iter().all(|(s, _)| *s > first_time),
+    aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", &named("u1")).await.unwrap();
+    let surviving = mq::backlog(&vs, "order.created", &named("u1"), 0).unwrap();
+    assert!(surviving.iter().all(|(s, _)| *s > first_seq),
         "rows at/below the pinned watermark are gone: {surviving:?}");
     assert!(!surviving.is_empty(), "at/above-watermark rows survive");
+}
+
+// --------------------------------- ADR-0038 §1 (the consumer set is closed) --
+
+/// The narrowing lock: a key-less (wildcard) subscription delivers to the
+/// type's SINGLETON instance only. Other instances of the type exist in
+/// this test, and none of them holds a cursor on the singleton queue — the
+/// retired broadcast gave every instance its own participant cursor there,
+/// which made the retention denominator an open set (a new key's emit
+/// activated a new instance whose cursor read 0 and replayed the queue).
+#[tokio::test]
+async fn wildcard_delivers_to_the_singleton_instance_only() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(counter_of("audit", &["order.created", "order.ping"]))
+        .await
+        .unwrap();
+    {
+        let mut r = engine.realm.try_lock().unwrap();
+        r.router.on_wildcard("order.*", "audit");
+        r.router.on("order.ping", "audit", "user_id");
+    }
+    // Two NON-singleton instances of the same type: each binds only its own
+    // keyed queue (order.ping), never the singleton one.
+    for key in ["alice", "bob"] {
+        engine
+            .invoke(
+                InstanceId { booth_type: "audit".into(), key: key.into() },
+                "count",
+                serde_json::json!({ "user_id": key }),
+            )
+            .await
+            .unwrap();
+    }
+    Realm::emit(&engine.realm, None, "order.created", serde_json::json!({
+        "event": "order.created", "user_id": "u1"
+    })).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // The singleton consumed it.
+    assert_eq!(
+        engine
+            .invoke(
+                InstanceId { booth_type: "audit".into(), key: "__singleton__".into() },
+                "count",
+                serde_json::json!({ "user_id": "u1" }),
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "count": 1 })
+    );
+
+    // Exactly ONE cursor on the singleton queue (the singleton's own). Under
+    // the broadcast there would be three: alice's, bob's and the singleton's.
+    use aura_realm::mq;
+    let vs = engine.realm.try_lock().unwrap().mq.clone();
+    let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
+    let rows = mq::cursor_rows(&vs, eid, mq::SINGLETON_PART).unwrap();
+    assert_eq!(rows.len(), 1, "one consumer per queue (ADR-0038 §1): {rows:?}");
+}
+
+// ---------------------------------- ADR-0038 §4 (no silent drops: malformed) --
+
+/// A matched route whose declared key field is missing records a MALFORMED
+/// event — the `__default__` fallback instance is retired, so neither a
+/// queue row nor a partition name appears. The reason rides the record,
+/// because "nobody subscribed" and "the event was malformed" call for
+/// different reactions.
+#[tokio::test]
+async fn missing_key_field_is_recorded_not_fallen_back() {
+    use aura_realm::event::DeadReason;
+    use aura_realm::mq;
+
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine.register(counter_of("cart", &["cart_updated"])).await.unwrap();
+    {
+        let mut r = engine.realm.try_lock().unwrap();
+        r.router.on("cart_updated", "cart", "user_id");
+    }
+    Realm::emit(&engine.realm, None, "cart_updated", serde_json::json!({
+        "event": "cart_updated" // user_id missing
+    })).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let realm = engine.realm.try_lock().unwrap();
+    let dead = realm.dead_events.detailed();
+    assert_eq!(dead.len(), 1, "the malformed event is recorded: {dead:?}");
+    assert_eq!(dead[0].0, "cart_updated");
+    assert_eq!(dead[0].2, DeadReason::MissingKeyField, "the reason rides the record");
+    // Nothing reached the queue plane: no fallback partition, no event id.
+    let vs = realm.mq.clone();
+    assert!(
+        mq::partition_id_of(&vs, "__default__").unwrap().is_none(),
+        "no fallback partition was ever created"
+    );
+    assert!(
+        mq::event_id_of(&vs, "cart_updated").unwrap().is_none(),
+        "the event was never queued"
+    );
+}
+
+// ------------------------------------- ADR-0039 §2 (the retention promise) --
+
+/// The retention lock: a live-but-lagging consumer pins its backlog; once
+/// its cursor is past `cursor_ttl` it LEAVES the denominator and the backlog
+/// is forfeit. Driven without consumer tasks, so the observation is exact.
+#[tokio::test]
+async fn expired_cursor_forfeits_its_backlog() {
+    use aura_realm::mq;
+    use std::time::Duration;
+
+    let realm = std::sync::Arc::new(tokio::sync::Mutex::new(Realm::default()));
+    let vs = realm.lock().await.mq.clone();
+    // Two registered types on one event: the denominator's members.
+    mq::route_put(&vs, "e", "cart", "user_id", false).unwrap();
+    mq::route_put(&vs, "e", "stats", "user_id", false).unwrap();
+    let s1 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
+    let s2 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
+    mq::advance(&vs, "e", &named("u1"), "stats", s2).unwrap();
+    mq::advance(&vs, "e", &named("u1"), "cart", s1).unwrap();
+
+    // Fresh rows, default promise (30d): the lagging cart pins the backlog.
+    Realm::compact_queue_for_test(&realm, "e", &named("u1")).await.unwrap();
+    assert_eq!(
+        mq::backlog(&vs, "e", &named("u1"), 0).unwrap().len(),
+        2,
+        "a live lagging consumer pins its backlog"
+    );
+
+    // The promise shrinks to one second and cart's stamp is two seconds
+    // stale: cart leaves the denominator, so the watermark becomes stats'
+    // cursor and everything below it — cart's unconsumed row — is forfeit.
+    realm.lock().await.cursor_ttl = Duration::from_secs(1);
+    mq::age_cursor(&vs, "e", &named("u1"), "cart", 1).unwrap();
+    Realm::compact_queue_for_test(&realm, "e", &named("u1")).await.unwrap();
+    let surviving = mq::backlog(&vs, "e", &named("u1"), 0).unwrap();
+    assert_eq!(surviving.len(), 1, "the forfeited backlog is compacted away: {surviving:?}");
+    assert!(surviving.iter().all(|(s, _)| *s > s1), "only rows at/above the new watermark survive");
+
+    // The expired row itself is reclaimed once it sits below the watermark
+    // (nothing can replay through a position whose rows are gone).
+    let eid = mq::event_id_of(&vs, "e").unwrap().unwrap();
+    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
+    let rows = mq::cursor_rows(&vs, eid, part).unwrap();
+    assert_eq!(rows.len(), 1, "only stats' cursor remains: {rows:?}");
 }

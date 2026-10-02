@@ -1,4 +1,9 @@
-use aura_realm::mq;
+use aura_realm::mq::{self, Partition};
+
+/// A named slice (the shape a keyed route produces).
+fn named(name: &str) -> Partition {
+    Partition::Named(name.to_string())
+}
 
 #[test]
 fn mq_roundtrip() {
@@ -6,17 +11,19 @@ fn mq_roundtrip() {
     // bytes out) — no JSON state store, no base64 bridge. The in-memory
     // byte stand-in keeps the test honest without an engine feature.
     let vs = mq::MqStore::mem();
-    let seq1 = mq::append(&vs, "add_to_cart", "alice", &serde_json::json!({"item": "book"})).unwrap();
-    let seq2 = mq::append(&vs, "add_to_cart", "alice", &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}})).unwrap();
-    // The sort key is LOGICAL time (ms via MqHead): monotonic, never
-    // reset — not a compact 1,2,... sequence.
-    assert!(seq1 > 0 && seq2 > seq1, "logical time monotonic: {seq1} -> {seq2}");
-    let cur = mq::cursor(&vs, "add_to_cart", "alice", "cart/alice").unwrap();
+    let seq1 = mq::append(&vs, "add_to_cart", &named("alice"), &serde_json::json!({"item": "book"})).unwrap();
+    let seq2 = mq::append(&vs, "add_to_cart", &named("alice"), &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}})).unwrap();
+    // The sort key is the per-partition SEQUENCE (MqHead issues it): a
+    // counter, monotonic, never reset — deliberately not a clock.
+    assert!(seq1 > 0 && seq2 > seq1, "the sequence counter is monotonic: {seq1} -> {seq2}");
+    // The cursor's subject is the BOOTH (ADR-0038 §2): no participant
+    // name, no dictionary row for `"type/key"`.
+    let cur = mq::cursor(&vs, "add_to_cart", &named("alice"), "cart").unwrap();
     assert_eq!(cur, 0);
-    let bl = mq::backlog(&vs, "add_to_cart", "alice", 0).unwrap();
+    let bl = mq::backlog(&vs, "add_to_cart", &named("alice"), 0).unwrap();
     assert_eq!(bl.len(), 2);
-    mq::advance(&vs, "add_to_cart", "alice", "cart/alice", seq1).unwrap();
-    let bl = mq::backlog(&vs, "add_to_cart", "alice", seq1).unwrap();
+    mq::advance(&vs, "add_to_cart", &named("alice"), "cart", seq1).unwrap();
+    let bl = mq::backlog(&vs, "add_to_cart", &named("alice"), seq1).unwrap();
     assert_eq!(bl.len(), 1);
     // Nested object + array survive the dynamic segment losslessly.
     let (_, v2) = &bl[0];
@@ -25,10 +32,58 @@ fn mq_roundtrip() {
     // A non-object payload (unreachable via the emit chain) maps to an
     // empty object — no synthetic "_root" wrapping (okm set_object
     // contract: the input IS a map, callers own the shape).
-    let seq3 = mq::append(&vs, "add_to_cart", "alice", &serde_json::json!([7, 8])).unwrap();
-    let bl = mq::backlog(&vs, "add_to_cart", "alice", seq2).unwrap();
+    let seq3 = mq::append(&vs, "add_to_cart", &named("alice"), &serde_json::json!([7, 8])).unwrap();
+    let bl = mq::backlog(&vs, "add_to_cart", &named("alice"), seq2).unwrap();
     assert_eq!(bl[0].1, serde_json::json!({}));
     let _ = seq3;
+}
+
+#[test]
+fn partition_dictionary_is_a_proxied_vocabulary() {
+    // ADR-0039 §1: the partition is a dictionary-issued id, not a hash and
+    // not an inline string (an okm primary key is fixed-width by
+    // construction). The singleton is a STRUCTURAL marker, so 0 is an id
+    // the issuer cannot produce and the mapping reads back (which the hash
+    // could not).
+    let vs = mq::MqStore::mem();
+    assert_eq!(mq::SINGLETON_PART, 0);
+    assert_eq!(mq::part_id(&vs, &Partition::Singleton).unwrap(), mq::SINGLETON_PART);
+
+    let a = mq::part_id(&vs, &named("alice")).unwrap();
+    assert_eq!(a, 1, "the first issued id is 1 — 0 is reserved for the singleton");
+    assert_eq!(mq::part_id(&vs, &named("alice")).unwrap(), a, "idempotent: the id is issued, not computed");
+    let b = mq::part_id(&vs, &named("bob")).unwrap();
+    assert_ne!(a, b, "distinct names get distinct ids");
+
+    // Reverse direction (the ops surface the hash could not offer).
+    assert_eq!(mq::partition_name_of(&vs, a).unwrap().as_deref(), Some("alice"));
+    assert_eq!(mq::partition_name_of(&vs, mq::SINGLETON_PART).unwrap(), None, "the singleton is no dictionary row");
+
+    // Peek never allocates.
+    assert_eq!(mq::partition_id_of(&vs, "carol").unwrap(), None);
+    assert_eq!(mq::partition_id_of(&vs, "alice").unwrap(), Some(a));
+
+    // A key whose literal text equals the singleton INSTANCE's name is just
+    // another partition — no aliasing into the singleton queue (the retired
+    // hash mapped that string to the reserved value, which let a keyed
+    // instance share the singleton's queue).
+    let odd = mq::part_id(&vs, &named(mq::SINGLETON)).unwrap();
+    assert_ne!(odd, mq::SINGLETON_PART);
+    assert_eq!(mq::partition_name_of(&vs, odd).unwrap().as_deref(), Some(mq::SINGLETON));
+}
+
+#[test]
+fn cursor_ttl_predicate_spares_unmarked_rows() {
+    // ADR-0039 §2: a cursor row leaves the retention denominator once it
+    // has not advanced for `cursor_ttl`. `last_active_ms == 0` is the
+    // UNMARKED sentinel (a row written before the field existed) — it never
+    // expires; without that rule the first run of the new code would void
+    // every existing backlog.
+    use std::time::Duration;
+    let ttl = Duration::from_secs(3600);
+    assert!(mq::cursor_expired(1, 1 + 3_600_000, ttl), "an hour of silence expires");
+    assert!(!mq::cursor_expired(1, 1 + 3_599_999, ttl), "just under the horizon does not");
+    assert!(!mq::cursor_expired(0, u64::MAX, ttl), "0 = unmarked: never expires");
 }
 
 #[test]
@@ -36,14 +91,14 @@ fn event_route_registry_persists_and_scans_by_booth() {
     let vs = mq::MqStore::mem();
 
     // Register two subscribers on one event, one on another; one wildcard.
-    mq::route_put(&vs, "order_created", "cart", "user_id", false).unwrap();
-    mq::route_put(&vs, "order_created", "stats", "user_id", false).unwrap();
+    mq::route_put(&vs, "order.created", "cart", "user_id", false).unwrap();
+    mq::route_put(&vs, "order.created", "stats", "user_id", false).unwrap();
     mq::route_put(&vs, "order.*", "audit", "", true).unwrap();
     // Idempotent re-register (hot-swap re-declaration) overwrites, not duplicates.
-    mq::route_put(&vs, "order_created", "cart", "user_id", false).unwrap();
+    mq::route_put(&vs, "order.created", "cart", "user_id", false).unwrap();
 
     // Forward lookup: every subscriber of one event.
-    let subs = mq::routes_of_event(&vs, "order_created").unwrap();
+    let subs = mq::routes_of_event(&vs, "order.created").unwrap();
     assert_eq!(subs.len(), 2, "two subscribers on the exact event: {subs:?}");
     assert!(subs.iter().all(|(_, k, w)| k == "user_id" && !*w));
 
@@ -52,9 +107,25 @@ fn event_route_registry_persists_and_scans_by_booth() {
     assert_eq!(audit.len(), 1, "audit's wildcard route: {audit:?}");
     assert!(audit[0].2, "wildcard flag survives the round trip");
 
+    // The retention denominator's test: a wildcard subscriber's cursor must
+    // COUNT for the concrete event its pattern matches (the registry stores
+    // the pattern, so an exact-id lookup alone would drop it out). The
+    // pattern is `order.*`, whose prefix is `order.` — so the concrete names
+    // it matches live in that namespace; `order.created` does, and a name in
+    // another namespace does not. A concrete name enters the event dictionary
+    // by being emitted or subscribed to (here: the exact route below), which
+    // is what `booth_subscribes` resolves; an unknown name has no queue and no
+    // cursor, so it answers false before any wildcard is consulted.
+    mq::route_put(&vs, "order.cancelled", "cart", "user_id", false).unwrap();
+    let audit_id = mq::booth_id_of(&vs, "audit").unwrap();
+    assert!(mq::booth_subscribes(&vs, audit_id, "order.created").unwrap());
+    assert!(mq::booth_subscribes(&vs, audit_id, "order.cancelled").unwrap());
+    assert!(!mq::booth_subscribes(&vs, audit_id, "user.created").unwrap());
+    assert!(!mq::booth_subscribes(&vs, audit_id, "never.registered").unwrap());
+
     // Deregistration drops the booth's rows; the other subscriber stays.
     mq::routes_drop_booth(&vs, "cart").unwrap();
-    let subs = mq::routes_of_event(&vs, "order_created").unwrap();
+    let subs = mq::routes_of_event(&vs, "order.created").unwrap();
     assert_eq!(subs.len(), 1, "cart deregistered: {subs:?}");
 }
 
@@ -68,12 +139,12 @@ fn routes_drop_booth_targets_only_its_own_rows() {
     // booth's id collides with a DIFFERENT event's id in another row.
     let vs = mq::MqStore::mem();
     // event ids allocate in first-seen order: e1=1, e2=2, e3=3.
-    // booth ids: a=1, b=2, c=3.
-    mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, booth 1)
-    mq::route_put(&vs, "e2", "a", "k", false).unwrap(); // (event 2, booth 1)
-    mq::route_put(&vs, "e3", "a", "k", false).unwrap(); // (event 3, booth 1)
-    mq::route_put(&vs, "e1", "b", "k", false).unwrap(); // (event 1, booth 2)
-    mq::route_put(&vs, "e2", "c", "k", false).unwrap(); // (event 2, booth 3)
+    // type ids: a=1, b=2, c=3.
+    mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, type 1)
+    mq::route_put(&vs, "e2", "a", "k", false).unwrap(); // (event 2, type 1)
+    mq::route_put(&vs, "e3", "a", "k", false).unwrap(); // (event 3, type 1)
+    mq::route_put(&vs, "e1", "b", "k", false).unwrap(); // (event 1, type 2)
+    mq::route_put(&vs, "e2", "c", "k", false).unwrap(); // (event 2, type 3)
 
     // Drop booth "a" (id 1). The old scan would also hit rows whose
     // EVENT id == 1 (the (e1,b) row), wrongly deleting booth b's route.
@@ -94,34 +165,34 @@ fn routes_drop_booth_targets_only_its_own_rows() {
 }
 
 #[test]
-fn depth_counts_live_and_skip_to_now_skips_the_backlog() {
+fn depth_counts_live_and_skip_to_head_skips_the_backlog() {
     // The zero-scan operational surface (realm.md retention ruling):
     // append folds +1, watermark compaction's delete unfolds -1, depth()
     // is one point read — never a prefix scan.
     let vs = mq::MqStore::mem();
-    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 0, "unseen event: depth 0");
+    assert_eq!(mq::depth(&vs, "tick", &named("u1")).unwrap(), 0, "unseen event: depth 0");
 
-    let s1 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 1})).unwrap();
-    let s2 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 2})).unwrap();
-    let s3 = mq::append(&vs, "tick", "u1", &serde_json::json!({"n": 3})).unwrap();
-    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 3, "three appends fold +1 each");
+    let s1 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
+    let s2 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
+    let s3 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 3})).unwrap();
+    assert_eq!(mq::depth(&vs, "tick", &named("u1")).unwrap(), 3, "three appends fold +1 each");
     // Depth is per (event, partition): another partition keeps its own count.
-    mq::append(&vs, "tick", "u2", &serde_json::json!({"n": 9})).unwrap();
-    assert_eq!(mq::depth(&vs, "tick", "u2").unwrap(), 1, "partition-scoped count");
+    mq::append(&vs, "tick", &named("u2"), &serde_json::json!({"n": 9})).unwrap();
+    assert_eq!(mq::depth(&vs, "tick", &named("u2")).unwrap(), 1, "partition-scoped count");
 
     // Watermark compaction unfolds: delete below s2 removes {s1}, count drops.
     let eid = mq::event_id_of(&vs, "tick").unwrap().unwrap();
-    let part = mq::part_hash_of("u1");
+    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
     let removed = mq::delete_before(&vs, eid, part, s2).unwrap();
     assert_eq!(removed, 1, "the pre-watermark row is gone");
-    assert_eq!(mq::depth(&vs, "tick", "u1").unwrap(), 2, "unfold -1 on compaction delete");
+    assert_eq!(mq::depth(&vs, "tick", &named("u1")).unwrap(), 2, "unfold -1 on compaction delete");
 
-    // skip-to-now: the cursor jumps to the head; the stale backlog never
+    // skip-to-head: the cursor jumps to the head; the stale backlog never
     // re-surfaces (advance is monotonic — a later lower seq is a no-op).
-    mq::skip_to_now(&vs, "tick", "u1", "cart/u1").unwrap();
-    let bl = mq::backlog(&vs, "tick", "u1", mq::cursor(&vs, "tick", "u1", "cart/u1").unwrap()).unwrap();
+    mq::skip_to_head(&vs, "tick", &named("u1"), "cart").unwrap();
+    let bl = mq::backlog(&vs, "tick", &named("u1"), mq::cursor(&vs, "tick", &named("u1"), "cart").unwrap()).unwrap();
     assert!(bl.is_empty(), "skipped: nothing ahead of the cursor");
-    mq::advance(&vs, "tick", "u1", "cart/u1", s1).unwrap();
-    assert_eq!(mq::cursor(&vs, "tick", "u1", "cart/u1").unwrap(), s3,
+    mq::advance(&vs, "tick", &named("u1"), "cart", s1).unwrap();
+    assert_eq!(mq::cursor(&vs, "tick", &named("u1"), "cart").unwrap(), s3,
         "advance never rewinds — the skip survives a stale lower seq");
 }

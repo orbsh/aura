@@ -57,7 +57,7 @@ BoothType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 [ns 2B BE][slot 1B][字段编码…][pkey]
 ```
 
-- **ns（2 字节）**：okm 层的表/边表编号，单一 okm 实例内统一编址（ADR-0025 后 booth 定义与数据同实例：BoothDef ns 41 与 mq/state 并列）
+- **ns（2 字节）**：okm 层的表/边表编号，单一 okm 实例内统一编址（ADR-0025 后 booth 定义与数据同实例：BoothDef ns 31 与 mq/state 并列）
 - **slot（1 字节）**：实例内访问方法判别（0 = 主条目），同一张表的全部索引条目共享 ns 段
 - **Booth 状态**：实例状态不是每实例一份平铺 document——类型在自己的 ns 内声明 collections（schema 随 interface_schema 上传持久化），handler 经 `ctx.store.emit(op)` 以 okm Collection 指令读写（put/get_document、fields、scan、reduce）；同类型跨实例聚合 = 类型 ns 内的普通 scan/reduce。
 

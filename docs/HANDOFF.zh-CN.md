@@ -1,10 +1,10 @@
 # HANDOFF —— 事件面落地之后（aura + prism）
 
-> **语言：** [English](HANDOFF.md)（主文档） · [中文](HANDOFF.zh-CN.md)
+> **语言：** 中文（自 2026-10-08 起本文为唯一版本；英文孪生 `HANDOFF.md` 已退役删除）
 
-写于 2026-10-02；2026-10-08 随事件面内部布局落地（ADR-0041）更新。本文是 `HANDOFF.md`
-的中文对应版（两者内容一致，改动需同步）。范围：**aura** 与 **prism** 各自还剩什么。
-其余可能受影响的兄弟项目在文末点名。
+写于 2026-10-02；2026-10-08 随事件面内部布局落地（ADR-0041）更新、同日随 ADR-0042
+裁决再次更新。范围：**aura** 与 **prism** 各自还剩什么。其余可能受影响的兄弟项目在
+文末点名。
 
 **已落地并已提交（工作树干净）：**
 
@@ -14,12 +14,16 @@
 | probe | `b56faa3` | `refactor(runtime): rename the ctx_skip_to_now steel stub to ctx_skip_to_head` —— 1 个文件 |
 | aura | `74221de` | `feat(realm,docs): event-plane internal layout — instance-key vocabulary, issuer on MqData, one physical partition (ADR-0041)` |
 | aura | `e3e28b7` | `docs(design): event-flow clarity pass — dedupe §7, repair §1/§6.1, PLAN session record` |
+| aura | `b892792` / `0c11a8e` | `docs(adr,plan): cite the landing commits (A6)` + `docs(handoff): A6/A7 resolved`（`~/world/aura-base` 陈旧克隆删除，A7） |
+| aura | `2b7ba4c` / `80bd272` | `docs(adr/0042): structural instance identity`（实例身份结构化裁决）+ PLAN 配对记录 |
 
 裁决文本：`aura/docs/adr/0038-event-plane-identity.md`、
 `0039-partition-encoding-and-retention.md`、`0040-keyspace-bands.md`、
-`0041-event-plane-internal-layout.md`（各带 `.zh-CN.md` 孪生）。键空间权威：
+`0041-event-plane-internal-layout.md`、`0042-structural-instance-identity.md`
+（各带 `.zh-CN.md` 孪生）。键空间权威：
 `aura/docs/design/event-flow.md` §7（键与值的完整布局见 §2 各步的落点行）。
-会话记录：`aura/docs/PLAN.md` →「会话记录（2026-10-02b）」与「会话记录（2026-10-08）」。
+会话记录：`aura/docs/PLAN.md` →「会话记录（2026-10-02b）」「会话记录（2026-10-08）」
+与「会话记录（2026-10-08b）」。
 
 **2026-10-02 之后落地（ADR-0041）——下文列表里早于它的名字以新词汇为准**：切片段就是
 instance key（`part_id` → `instance_key_id`、`PartitionName` → `InstanceKeyRegistry`、
@@ -28,7 +32,13 @@ instance key（`part_id` → `instance_key_id`、`PartitionName` → `InstanceKe
 的 `HighWater(seq)` reduce 承载，ns 24 腾出（事件面在用表：20、21、22、23、25）；
 `#[ok_partition(2)]` 从 MqCursor 删除（MqData 的 partition 1 是唯一物理分区）；事件面
 文档分「契约 / 内部布局」两层。同一窗口 okm `MODELING` 新增两节（开放词汇代理 id 注册表；
-读一个 reduce；commit `559d031`），trigger 加入事件消费者拆分（commit `d3f4fde`）。
+读一个 reduce；commit `559d031`）、trigger 加入事件消费者拆分（`d3f4fde`）、trigger 降格为
+「归属」而非第三种机制（`52cdcbe`）、两类消费者补工作示例（`69041f2`）。
+
+**2026-10-08 晚些（ADR-0042）——A2 已裁决**：`InstanceId.key` 将随 Phase 4.13 变为枚举
+`aura_booth::InstanceKey { Singleton, Named(String) }`，哨兵 `__singleton__` 从框架退役
+（字面别名构造性不可达；状态面核实不受影响，无存储迁移；probe 唯一可观察缝 = 会话键格式）。
+A1 与 A2 现在是**同一次落地**——都改 EventRoute 行的解析契约。
 
 ## 已落地的内容（免得下一个人重新推导）
 
@@ -54,18 +64,20 @@ instance key（`part_id` → `instance_key_id`、`PartitionName` → `InstanceKe
 
 ## AURA —— 待办
 
-**A1. Phase 4.13 —— 路由终态（事件面最后一项）。** PRIORITY；**前置 = 动态 schema**。这是
-ADR-0038 §3 的另一半，4.17 特意没有一起落地的那部分：今天 EventRoute 行带的是 `key_field`
-（逐事件的 payload 字段名）与 `wildcard` 标志；终态是逐事件给出的 `resolve`——(type, event) →
-**三种形状之一**：单例 / payload 字段 / **索引扫描**——判别落在行结构层，引用**存名字**（绝不
-存 slot/ns 号，因为位置不是身份）。验收见 PLAN 条目（`docs/PLAN.md` 约第 200 行）：声明是逐
-事件的、缺失 = 单例、三种形状是三种机制而不是哨兵混用。**没有为它建任何过渡形状**——不要自己
-发明一个；它随扫描面一起落地。
+**A1. Phase 4.13 —— 路由终态（事件面最后一项）。** PRIORITY；**前置 = 动态 schema（已具备
+——4.16 落的 DynamicCollection 解析面，store_exec 即其消费者）**。这是 ADR-0038 §3 的另一半，
+4.17 特意没有一起落地的那部分：今天 EventRoute 行带的是 `key_field`（逐事件的 payload 字段名）
+与 `wildcard` 标志；终态是逐事件给出的 `resolve`——(type, event) → **三种形状之一**：单例 /
+payload 字段 / **索引扫描**——判别落在行结构层，引用**存名字**（绝不存 slot/ns 号，因为位置
+不是身份）。验收见 PLAN 条目：声明是逐事件的、缺失 = 单例、三种形状是三种机制而不是哨兵混用。
+**没有为它建任何过渡形状**——不要自己发明一个；它随扫描面一起落地。
+**同批落地（ADR-0042）**：`InstanceId.key` → `aura_booth::InstanceKey { Singleton, Named }`
+枚举改造随本 Phase 一起——`router.on` 签名、emit 投递路径、EventRoute 行、消费循环绑定、
+probe 会话键格式、`InstanceId` 全部测试字面量一次改完。
 
-**A2. 实例身份结构化（已记录的残余，需独立裁决）。** 实例键空间仍用哨兵字符串
-`"__singleton__"`（`InstanceId { key: ... }`），所以 payload 里字面等于该串的 key 仍会别名到
-单例**实例**（与 4.18 修掉的分区别名不是同一个 bug）。让它结构化会牵动整个 call model 与 probe
-缝上的 `InstanceId`——记在 ADR-0038 的「Residual」段里。尚无 ADR。
+**A2. 已裁决（2026-10-08，ADR-0042）；实现随 A1 落地。** `InstanceId.key` 变为
+`InstanceKey { Singleton, Named(String) }` 枚举；哨兵退役、无存储迁移（状态面核实不受影响）。
+实现清单见 ADR-0042 的「落地连带」——与 4.13 同批，不要单独实施。
 
 **A3. 既有部署的运维动作（ADR-0040，ADR-0041 扩充）。** 既有库存必须**清除低位块**：新
 meta 段（30–32）正落在旧事件面用过的号上，不清就会让新的 `BoothName` 把旧的 `EventName`
@@ -124,13 +136,14 @@ PTY/nushell 已在 Phase 4.15 退役（ADR-0035 §6）——nu 现在骑 bgi 载
 **P4. 对着新 aura 测试前先处理 dev store。** 如果 prism 有既有的 aura 存储目录，先清低位块
 （见 A3），或者把测试指到一个全新的目录——否则第一次运行就会把旧行读成新表。
 
-**P5. 2026-10-02 核实的非问题（对照 ADR-0041 需复核）。** prism 只碰
+**P5. 2026-10-02 核实的非问题（对照 ADR-0041/0042 需复核）。** prism 只碰
 `aura_realm::meta::{code_hash, code_hex, get_blob}`、`aura_realm::mq::MqStore`、
 `aura_booth::{BoothType, InstanceId, call::Waited}` 与 `aura_engine::Engine`。ADR-0041 改了
-MqStore 相关的**类型名**（`mq::InstanceKey`、`instance_key_id`），若 prism 直接具名这些类型，
-P1 之后对着当前 aura 构建时可能要顺手改——第一次 `cargo check` 会给出答案。prism 里也没有
-任何脚本调用 `ctx_queue_depth`/`ctx_skip_to_*`（对 `~/world` 的全仓 grep 显示 aura/probe
-之外没有调用点），且 ADR-0041 未动 host-fn 集合。
+MqStore 相关的**类型名**（`mq::InstanceKey`、`instance_key_id`）；ADR-0042 将在 4.13 落地时改
+`InstanceId.key` 的类型（→ `aura_booth::InstanceKey` 枚举）——若 prism 直接构造/解构这些类型，
+随 4.13 升级时要顺手改。第一次 `cargo check` 会给出答案。prism 里也没有任何脚本调用
+`ctx_queue_depth`/`ctx_skip_to_*`（对 `~/world` 的全仓 grep 显示 aura/probe 之外没有调用点），
+host-fn 集合未动。
 
 ## 会反复咬人的跨仓规则
 

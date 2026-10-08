@@ -13,7 +13,8 @@ ADR-0026 (type-level storage plane), ADR-0002 (events never occupy a real ns),
 ADR-0038 (the consumer set and identity: wildcard narrowing, one dictionary,
 declaration semantics, no silent drops), ADR-0039 (partition encoding and the
 cursor retention promise), `docs/design/partitioning.md` §1 (the routing end
-state).
+state), and the wiki's [Distributed Collaboration Topology](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md)
+§2 (the ceiling on order: why cross-partition events are never globally ordered).
 
 ## 1. Vocabulary and invariants
 

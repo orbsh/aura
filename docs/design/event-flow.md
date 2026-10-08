@@ -8,7 +8,7 @@
 `ns-layout.md`/`ns-layout-en.md` 退为指针。裁决依据：ADR-0007/0012（接收者集合是运行时
 事实）、ADR-0026（类型级存储面）、ADR-0002（事件不占真实 ns）、ADR-0038（消费者集合与
 身份：通配收窄、单字典、声明语义、无静默丢弃）、ADR-0039（分区编码与游标保留承诺）、
-`docs/design/partitioning.md` §1（路由终态目标）。
+`docs/design/partitioning.md` §1（路由终态目标）、[分布式协作拓扑](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md) §2（顺序层的上限：为何跨分区不做全局排序）。
 
 ## 1 词汇与不变式
 

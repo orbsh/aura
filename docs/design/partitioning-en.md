@@ -170,6 +170,9 @@ lifecycle of partition state is decoupled from instance residency**:
   (wiki ruling: no self-built strong-consistency replication) — the
   partitioning scheme and the replication scheme are decoupled; the
   default path carries no replication
+- **Physical basis** (why no global ordering across partitions, why a partition
+  freeze is an acceptable cost): the wiki's [Distributed Collaboration Topology](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md)
+  §2 — the latency floor, the ceiling on order, the reachability axis
 - Booth-definition hot reload rides the node's own storage: write the new
   definition → nodes re-read on activation
 

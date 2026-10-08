@@ -21,12 +21,12 @@ ADR-0038 and Phase 4.13 land TOGETHER (today's `key_field` is already the
 per-event shape; the resolve reference replaces its payload when the scan face
 arrives) — nothing interim was built.
 
-**Residual (recorded, not covered by this ADR):** the INSTANCE key space still
-uses a sentinel string (`InstanceId { key: "__singleton__" }`), so a payload key
-with that literal text still aliases the singleton INSTANCE (a different bug from
-the partition aliasing §1/ADR-0039 §1 fixed). Making instance identity structural
-touches `InstanceId` across the call model and the probe seam — its own decision,
-not this one.
+**Residual (recorded 2026-10-02; CLOSED by ADR-0042, 2026-10-08):** the INSTANCE
+key space used a sentinel string (`InstanceId { key: "__singleton__" }`), so a
+payload key with that literal text aliased the singleton INSTANCE (a different bug
+from the partition aliasing §1/ADR-0039 §1 fixed). ADR-0042 makes instance identity
+structural (`InstanceId.key` becomes an enum; the sentinel retires) and lands with
+Phase 4.13.
 
 ## Context
 

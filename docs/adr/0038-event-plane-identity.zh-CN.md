@@ -14,10 +14,10 @@ meta 面的类型 id 上（`mq::booth_id_of` → `meta::resolve_booth_id`），�
 声明与按名引用仍是**行形状**，由 ADR-0038 与 Phase 4.13 一起落地（今天的 `key_field`
 本来就是逐事件形态；扫描面到来时其载荷换成 resolve 引用）——没有建任何过渡实现。
 
-**残留（记录在案，本条未覆盖）：** 实例键空间仍用哨兵字符串
-（`InstanceId { key: "__singleton__" }`），所以 payload 里字面等于该串的 key 仍会别名到
-单例**实例**（与 §1/ADR-0039 §1 修掉的分区别名不是同一个 bug）。让实例身份结构化会牵动
-整个 call model 与 probe 缝上的 `InstanceId`——那是它自己的裁决，不是本条。
+**残留（2026-10-02 记录在案；已由 ADR-0042 于 2026-10-08 关闭）：** 实例键空间曾用
+哨兵字符串（`InstanceId { key: "__singleton__" }`），payload 里字面等于该串的 key 会
+别名到单例**实例**（与 §1/ADR-0039 §1 修掉的分区别名不是同一个 bug）。ADR-0042 把实例
+身份结构化（`InstanceId.key` 变为枚举；哨兵退役），随 Phase 4.13 落地。
 
 ## 背景
 

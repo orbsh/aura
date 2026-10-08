@@ -2,7 +2,7 @@
 
 > **语言：** [English](0041-event-plane-internal-layout.md)（主文档） · [中文](0041-event-plane-internal-layout.zh-CN.md)
 
-**状态：** Accepted（2026-10-08）——实现待落（文档随本 ADR 落地；代码改名/撤表批次随后）。
+**状态：** Accepted（2026-10-08）——已落地（commit `74221de`，2026-10-08：代码改名/撤表批次与文档同笔提交）。
 用户裁决（2026-10-08）：切片段按它的值命名（instance key），不承载信息的名字（`part`）出局，
 发号器不需要自己一张表，布局叙述不再夹带引擎注解。
 

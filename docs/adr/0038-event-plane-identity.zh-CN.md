@@ -2,7 +2,7 @@
 
 > **语言：** [English](0038-event-plane-identity.md)（主文档） · [中文](0038-event-plane-identity.zh-CN.md)
 
-**状态：** Accepted（2026-10-02）——已落地（Phase 4.17，2026-10-02；提交待指令）。
+**状态：** Accepted（2026-10-02）——已落地（Phase 4.17，2026-10-02，commit `2d1fafb`）。
 本条由用户要求的第一性推导得出（针对 `docs/design/event-flow.md` §8，把此前勾画的 A/B
 选项全部搁置）；某处结论与旧勾画落点相同，是因为推导逼出了它，不是因为旧勾画如此。
 

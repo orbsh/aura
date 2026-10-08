@@ -3,7 +3,7 @@
 > **语言：** [English](0040-keyspace-bands.md)（主文档） · [中文](0040-keyspace-bands.zh-CN.md)
 
 **状态：** Accepted（2026-10-02）——已落地（`#[ok_ns]` 改号随 Phase 4.18/4.19，
-2026-10-02；提交待指令）。用户裁决：分段为 `2x` 与 `3x`，不用 `4x` 段（2026-10-02）。
+2026-10-02，commit `2d1fafb`）。用户裁决：分段为 `2x` 与 `3x`，不用 `4x` 段（2026-10-02）。
 
 **落地形态（2026-10-02）：** `crates/realm/src/mq.rs` 声明 ns 20–25（EventName 20、
 PartitionName 21、MqData 22、MqCursor 23、MqHead 24、EventRoute 25），

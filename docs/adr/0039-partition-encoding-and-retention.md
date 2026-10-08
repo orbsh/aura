@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0039-partition-encoding-and-retention.md) (primary) · [中文](0039-partition-encoding-and-retention.zh-CN.md)
 
-**Status:** Accepted (2026-10-02) — LANDED (Phases 4.18/4.19, 2026-10-02; commit
+**Status:** Accepted (2026-10-02) — LANDED (Phases 4.18/4.19, 2026-10-02, commit `2d1fafb`;
 pending). Derived at the user's request by a first-principles pass; the
 cursor-expiry shape is the user's ruling (2026-10-02: keep the two lifetimes
 decoupled, add a global configuration).

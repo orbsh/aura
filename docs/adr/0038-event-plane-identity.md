@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0038-event-plane-identity.md) (primary) · [中文](0038-event-plane-identity.zh-CN.md)
 
-**Status:** Accepted (2026-10-02) — LANDED (Phase 4.17, 2026-10-02; commit
+**Status:** Accepted (2026-10-02) — LANDED (Phase 4.17, 2026-10-02, commit `2d1fafb`;
 pending). Rulings derived at the user's request by a first-principles pass over
 `docs/design/event-flow.md` §8 with the previously sketched options (the A/B
 forks) set aside; where a ruling lands on the same place as an earlier sketch, it

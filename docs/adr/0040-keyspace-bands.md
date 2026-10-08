@@ -3,7 +3,7 @@
 > **Languages:** [English](0040-keyspace-bands.md) (primary) · [中文](0040-keyspace-bands.zh-CN.md)
 
 **Status:** Accepted (2026-10-02) — LANDED (the `#[ok_ns]` renumbering rode
-Phases 4.18/4.19, 2026-10-02; commit pending). User ruling: the bands are `2x`
+Phases 4.18/4.19, 2026-10-02, commit `2d1fafb`). User ruling: the bands are `2x`
 and `3x`; the `4x` band is not used (2026-10-02).
 
 **Landed shape (2026-10-02):** `crates/realm/src/mq.rs` declares ns 20–25

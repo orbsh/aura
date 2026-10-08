@@ -2,7 +2,7 @@
 
 > **语言：** [English](0039-partition-encoding-and-retention.md)（主文档） · [中文](0039-partition-encoding-and-retention.zh-CN.md)
 
-**状态：** Accepted（2026-10-02）——已落地（Phase 4.18/4.19，2026-10-02；提交待指令）。
+**状态：** Accepted（2026-10-02）——已落地（Phase 4.18/4.19，2026-10-02，commit `2d1fafb`）。
 本条由用户要求的第一性推导得出；游标过期的形态是用户的裁决（2026-10-02：两个生命周期
 不绑定，另加一个全局配置）。
 

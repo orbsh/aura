@@ -448,7 +448,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     the 4.15 envelope merge gives the host channel its frame envelope, so
     typed payloads land on settled protocol.
 
-- [x] **Phase 4.17 — Event-plane identity and delivery end state (ADR-0038 §1–§4); LANDED 2026-10-02 (commit pending)**
+- [x] **Phase 4.17 — Event-plane identity and delivery end state (ADR-0038 §1–§4); LANDED 2026-10-02 (commit `2d1fafb`)**
   - **Wildcard narrowing (§1)**: a key-less subscription delivers to the type's
     singleton instance. The current broadcast makes the watermark denominator an
     OPEN set — every emit for a new key activates a new instance whose cursor
@@ -481,7 +481,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     implementation was built. Residual recorded in ADR-0038: the INSTANCE key space
     still uses the `"__singleton__"` sentinel string.
 
-- [x] **Phase 4.18 — Partition identity + the keyspace bands (ADR-0039 §1, ADR-0040); LANDED 2026-10-02 (commit pending)**
+- [x] **Phase 4.18 — Partition identity + the keyspace bands (ADR-0039 §1, ADR-0040); LANDED 2026-10-02 (commit `2d1fafb`)**
   - **The partition becomes a proxy dictionary**: a `PartitionName` table (ns 21,
     `by_name` + `HighWater`, reverse resolution) issues a fixed-width `u32` id;
     `part_hash`/FNV-1a/`part_id_of` retire; `SINGLETON_PART = 0` stays as an id the
@@ -512,7 +512,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     repo, untouched this session). The low-block wipe is an OPERATIONAL act for an
     existing deployment (this repo's tests build fresh stores).
 
-- [x] **Phase 4.19 — The cursor retention promise (ADR-0039 §2); LANDED 2026-10-02 (commit pending)**
+- [x] **Phase 4.19 — The cursor retention promise (ADR-0039 §2); LANDED 2026-10-02 (commit `2d1fafb`)**
   - Global `cursor_ttl` (one `EngineConfig` value → the realm field beside
     `idle_ttl`; KDL duration string; finite default, 30d; NO per-type override,
     since the denominator is a cross-type `min` comparison), decoupled from
@@ -650,7 +650,7 @@ Deferred gates:
   不是同一个 bug）；让实例身份结构化会牵动整个 call model 与 probe 缝上的 `InstanceId`，
   留给独立裁决。4.18 的 in-memory resolve 热面**未建**（每次 append/游标一次字典读，
   实测无需）；probe 仓 USAGE 帧形同步（4.16c 遗留）本次未动。
-- **提交**：待用户指令。
+- **提交**：`2d1fafb`（2026-10-02b 批次）；后续 ADR-0041 批次见 2026-10-08 会话记录。
 
 ## 会话记录（2026-10-02，事件面终态裁决 + event-flow 重写为推导式）
 
@@ -696,7 +696,7 @@ Deferred gates:
 - **PLAN**：4.13 遗留的两个问题由 ADR-0038 §3 关闭并就地标注（逐事件命名、逐目标
   dead-ring）；新增 4.17（事件面身份与投递终态）、4.18（分区身份 + 键空间分段）、4.19
   （游标保留承诺）。
-- **提交**：待用户指令。
+- **提交**：`b523a5f`（2026-10-02 批次）。
 
 ## 会话记录（2026-09-30c，4.16c 落地：typed 宿主帧 + 声明式双编码）
 
@@ -740,7 +740,7 @@ Deferred gates:
   态）；ADR-0035 §3 双语（帧词汇类型化、编码声明化）；PLAN 4.16 标
   CLOSED。夹具 bgi_loop/one_shot 按 env 分双编码、宿主帧类型化；
   bgi_nu.nu 保持 JSON 读类型帧。
-- **提交**：待用户指令（probe / aura 两仓各自一批；okm 未动）。
+- **提交**：aura `d87bd18`（4.16c typed 帧缝 e2e）；probe 侧同批提交号见 probe 仓。
 
 ## 会话记录（2026-09-30b，4.16b 落地：steel 绑定面注入 + slatedb 驱动线程）
 

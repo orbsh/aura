@@ -2,8 +2,8 @@
 
 > **Languages:** [English](0041-event-plane-internal-layout.md) (primary) · [中文](0041-event-plane-internal-layout.zh-CN.md)
 
-**Status:** Accepted (2026-10-08) — implementation pending (docs land with the
-ADR; the code rename/retirement batch follows). User ruling (2026-10-08): the
+**Status:** Accepted (2026-10-08) — LANDED (commit `74221de`, 2026-10-08: the
+rename/retirement batch rode the same commit as the docs). User ruling (2026-10-08): the
 slice segment is named after what its value is (the instance key), names that
 carry no information (`part`) are out, the issuer does not need a table of its
 own, and the layout prose stops narrating engine annotations.

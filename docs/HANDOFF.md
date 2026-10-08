@@ -107,16 +107,14 @@ python binding face was NOT re-verified after this session's changes, and any ga
 that says `--workspace --features python` (PLAN 4.16/4.15 gates, prism's default
 features) needs a machine with Python ≤ 3.13.
 
-**A6. Bookkeeping (tiny docs commit).** The status lines of ADR-0038/0039/0040 and
-the PLAN entries for 4.17/4.18/4.19 plus the 2026-10-02b session record still say
-"提交待指令 / commit pending". They should cite §`2d1fafb`.
+**A6. RESOLVED (2026-10-08, commit `b892792`).** The ADR-0038/0039/0040 status
+lines and the PLAN entries now cite their landing commits (`2d1fafb`; ADR-0041
+cites `74221de`).
 
-**A7. `~/world/aura-base` is a stale duplicate** of this repo (HEAD `3b30466`,
-clean tree, no references found anywhere). If it participates in any build (image
-base?), it is a second, older code line — decide keep or delete. (Note: a
-TRANSIENT worktree at `~/world/aura-baseline` was used for this session's
-pre-existing-failure baseline and already removed; `aura-base` is a different,
-older thing.)
+**A7. RESOLVED (2026-10-08): `~/world/aura-base` deleted.** It was a full clone
+(own `.git`, origin = orbsh/aura) at `3b30466` — an ancestor of current HEAD, so
+nothing unique was lost. The transient `aura-baseline` worktree used for this
+session's failure baseline was already removed.
 
 ## PRISM — remaining work
 

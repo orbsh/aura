@@ -82,14 +82,12 @@ host fn，所以「USAGE 同步」的范围需要先定下来（它可能是 4.1
 之后 **python 绑定面没有被复验**，且任何写着 `--workspace --features python` 的门（PLAN 的
 4.16/4.15 闸门、prism 的 default features）都需要一台 Python ≤ 3.13 的机器。
 
-**A6. 记账（一个很小的 docs commit）。** ADR-0038/0039/0040 的状态行、PLAN 里 4.17/4.18/4.19
-的条目、以及 2026-10-02b 会话记录，至今还写着「提交待指令 / commit pending」——应指向
-`2d1fafb`。
+**A6. 已解决（2026-10-08，commit `b892792`）。** ADR-0038/0039/0040 的状态行与 PLAN
+条目已改为引用落地提交（`2d1fafb`；ADR-0041 引用 `74221de`）。
 
-**A7. `~/world/aura-base` 是本仓的陈旧副本**（HEAD `3b30466`，工作树干净，没找到任何引用）。
-如果它参与任何构建（镜像 base？），那就是第二条更旧的代码线——留还是删，需要决定。
-（注：2026-10-08 取既有失败基线时在 `~/world/aura-baseline` 建过一个**临时** worktree，已删除；
-`aura-base` 是另一回事、更旧。）
+**A7. 已解决（2026-10-08）：`~/world/aura-base` 已删除。** 它是一个完整克隆（自带 `.git`，
+origin = orbsh/aura），HEAD `3b30466` 是当前 HEAD 的祖先，没有独有内容。取失败基线用的
+临时 worktree `aura-baseline` 也已删除。
 
 ## PRISM —— 待办
 

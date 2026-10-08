@@ -559,6 +559,48 @@ Deferred gates:
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
 
+## 会话记录（2026-10-08，事件面内部布局：instance key 词汇 + 发号器上数据表 + 单物理分区；ADR-0041）
+
+- **触发**：用户逐条审 `event-flow.md` 的措辞——`part_id` 该不该叫 instance_id、
+  `ok_partition(1)/(2)` 各自的理由、`PartitionName` 该不该叫 InstanceName、MqHead
+  为什么单独一张表、MQ 是不是只有 aura 在读写。
+- **根问题认定（用户裁决）**：事件面把**框架内部实现**当成**被建模的领域**在叙述与设计
+  ——同一页两个 partition、用建模面的 index/reduce 解释游标与发号器、把内部编号的命名
+  当契约问题讨论。修法是分两层（契约 / 内部布局），不是改词。
+- **事实核对**：MQ 面的读写只有 aura 自己（静态、闭合、单写者）；摊位只声明事件名，
+  能读写的只有自己类型 ns 的 document，外加两个只作用于**本实例绑定队列**的 host fn
+  （`ctx_queue_depth`/`ctx_skip_to_head`，`ctx.rs`，先经 `bound_instance_key` 解析）。
+- **裁决（ADR-0041）**：① 词汇 = instance key：`part_id`→`instance_key_id`、
+  `PartitionName`→`InstanceKeyRegistry`（ns 21）、`mq::Partition`→`mq::InstanceKey`、
+  `SINGLETON_PART`→`SINGLETON_KEY_ID`、`bound_partition`→`bound_instance_key`、
+  `partition_id_of`/`partition_name_of`/`resolve_partition_id` 相应改名；`EventName`/
+  `BoothName` **不改**（名字有信息量；且「registry」已被 EventRoute「订阅注册表」占用，
+  一个词指两件事正是本轮在清的毛病）。② `MqHead`（ns 24）撤销：写头 = MqData 上的
+  `HighWater(seq)` reduce（`head_seq()` 读水位 +1，随行的 put 把它折上）；借 watermark
+  不回撤这条例外，立场是「发号器的值必须比它的行活得久，视图做不到」——只在框架内部、
+  静态访问面下成立（没有第三方兼容面需要发号器独立存在）。③ `#[ok_partition(2)]` 从
+  MqCursor 删除，物理分区只留 MqData 一处（唯一的批量追加 + 范围删除 workload）。
+  ④ 文档分两层重述，`#[ok_ns]`/`#[ok_partition]`/`#[ok_reduce]` 降为实现注记。
+- **代码落地**：`mq.rs`（改名 + 撤表 + MqData 双 reduce + `head_seq()` + append/skip_to_head
+  改写）、`events.rs`/`instance.rs`/`ctx.rs`、`realm/tests/mq_okm.rs`、
+  `engine/tests/{events,queue_relief}.rs`、`booth/src/lib.rs`（`InstanceId.key` 注释）。
+- **文档（双语）**：新增 ADR-0041（含「为什么这一张叫 Registry」的注记）；
+  `event-flow.md`/`-en.md` 的 §1/§2 第 2–5 步/§6.1/§6.2/§6.3/§7/§8.1/§8.4 同批。
+  ADR-0039 §1 与 ADR-0040 的表按「落地当时措辞」保留，由 ADR-0041 注记修订（ADR-0040
+  自己的规矩）；§8.3/§8.4 里 2026-10-02 的历史条目照旧。
+- **跨仓（okm）**：MODELING 两语新增「开放词汇：名字 → 代理 id」（行 `[ns][id]` +
+  `by_name` 索引 + `HighWater(id)` 发号 + 两条纪律）与「读一个 reduce」（entry 键
+  `[ns][slot][group 段]`、derive marker `__OkmReduce_{Row}_{n}`、`&key`/`&row` 只用来
+  编码 group 段、`None` 语义、slot 在 reduce 段 `0x2` 且与索引计数无关、`scan_reduces`
+  返还 group 段而非解出的 key）；并修正相邻那句 stale 的「slot 续接索引计数器」。
+- **验证**：`cargo check --workspace --all-targets` 干净；`cargo test --workspace
+  --no-fail-fast` 除既有失败 `exec_booth::bgi_booth_ctx_invoke_to_sibling` 外全绿。
+  基线取证：`git worktree add`——**必须放在 `~/world` 下**（`Cargo.toml` 里 `../probe`
+  是相对 path 依赖，放进 scratch 会解析失败）；或沿用 2026-10-02b 那次的
+  `git archive HEAD` + 软链法。
+- **提交**：aura `74221de`、okm `559d031`。`docs/HANDOFF.md`/`.zh-CN.md` 在本轮开始前
+  已在暂存区，未纳入这两笔（仍 staged，待用户处置）。本会话记录本身待提交。
+
 ## 会话记录（2026-10-02b，4.17/4.18/4.19 落地：事件面身份 + 分区代理字典 + 游标保留）
 
 - **代码落地（ADR-0038/0039/0040，全部在一个 working tree 内，未提交）**：

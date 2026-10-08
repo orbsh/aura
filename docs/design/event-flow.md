@@ -3,13 +3,28 @@
 > **语言：** [English](event-flow-en.md)（主文档） · [中文](event-flow.md)
 
 本文是事件平面的单一整合文档，分两层叙述：**契约**（emit/`@on`、队列、保留承诺）与
-**内部布局**（键空间与引擎注解——后者只是实现注记，见 ADR-0041）。正文按推导组织：约束怎样逼出每一个持久面（§2）→ 作者声明什么
-（§3）→ 注册一次性装配（§4）→ 每次 emit 的匹配（§5）→ 投递、消费与保留（§6）→ 推导的
-落点即键空间布局（§7）→ 终态裁决与实施清单（§8，4.13+ 挂账）。原
-`ns-layout.md`/`ns-layout-en.md` 退为指针。裁决依据：ADR-0007/0012（接收者集合是运行时
-事实）、ADR-0026（类型级存储面）、ADR-0002（事件不占真实 ns）、ADR-0038（消费者集合与
-身份：通配收窄、单字典、声明语义、无静默丢弃）、ADR-0039（分区编码与游标保留承诺）、ADR-0041（事件面内部布局：实例键词汇、发号器长在数据表上、只留一处物理分区）、
-`docs/design/partitioning.md` §1（路由终态目标）、[分布式协作拓扑](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md) §2（顺序层的上限：为何跨分区不做全局排序）。
+**内部布局**（键空间与引擎注解——后者只是实现注记，见 ADR-0041）。
+
+正文的行进顺序：
+
+1. §2 从约束推导出每一个持久面（推导链）；
+2. §3–§6 是运行时机制，按发生顺序走：作者声明什么 → 注册一次性装配 → 每次 emit 的
+   匹配 → 投递、消费与保留（各章指回它实现的推导步）；
+3. §7 是推导的落点——键空间布局表，兼内部布局（引擎注解只在这里作实现注记）；
+4. §8 是终态裁决与实施清单（4.13+ 挂账）。
+
+原 `ns-layout.md`/`ns-layout-en.md` 退为指针。
+
+裁决依据：
+
+- ADR-0007/0012——接收者集合是运行时事实（无 emits 白名单，dead ring 是观测面）；
+- ADR-0002——事件不占真实 ns；ADR-0026——类型级存储面；
+- ADR-0038——消费者集合与身份：通配收窄、单字典、声明语义、无静默丢弃；
+- ADR-0039——分区编码与游标保留承诺；
+- ADR-0041——事件面内部布局：实例键词汇、发号器长在数据表上、只留一处物理分区；
+- `docs/design/partitioning.md` §1——路由终态目标；
+- [分布式协作拓扑](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md)
+  §2——顺序层的上限：为何跨分区不做全局排序。
 
 ## 1 词汇与不变式
 
@@ -26,10 +41,11 @@
   碰撞即错误投递、不可反查被删（ADR-0039 §1）。**这个词只属于事件面**：okm 的物理 KV
   分区（`#[ok_partition]`）是引擎的 compaction 分组，是另一回事，只在 §7 的实现注记里
   出现（ADR-0041 §2）。
-- **参与者（Booth）**：谁在消费。类型名走**唯一字典**（ns 30）拿 id；实例名不进任何
-  **消费身份**不进字典——游标的主语是类型（ADR-0038 §2，已落；见 §8.3）；实例键本身确有字典（ns 21），那是给队列切片发号，不是给消费者发身份。
+- **参与者（Booth）**：谁在消费。类型名走**唯一字典**（ns 30）拿 id；**消费身份**不进
+  字典——游标的主语是类型（ADR-0038 §2，已落；见 §8.3）。实例键本身确有字典（ns 21），
+  那是给队列切片发号，不是给消费者发身份。
 
-四条不变式（§2 的推导即它们的展开）：
+五条不变式（§2 的推导即它们的展开）：
 
 1. **emit 无接收者地址**。发起者只喊事实 `emit(event, data)`；接收者集合是运行时
    事实，发起时不可知也不应可知（ADR-0012：无 emits 白名单，dead ring 是观测面）。
@@ -170,12 +186,12 @@
 - 匹配走**内存** `EventRouter`：`exact: HashMap<事件名, Vec<Route>>` +
   `wildcard: Vec<(前缀, Route)>`（线性扫——通配数构造性地小，Trie 是过度设计）。
 - 匹配形状是集合不是单值：一个事件名可同时命中精确路由和若干通配路由，逐条独立投递。
-- **无命中 = dead ring**（`realm.dead_events.push`，有界、可观测——ADR-0012 的
-  观测面）。注意方向：dead ring 只收「无任何路由匹配」的事件；有路由匹配但实例
-  没活着的不是丢失，是 backlog 写入（§6.1）。另有一条入口：匹配到了路由但
-  `mq::append` 失败（存储故障），事件同样落 dead ring——它收了「没写完的事实」，
-  与「没人订阅」共用同一个观测面。第三条入口（匹配到路由但无真目标）已随 ADR-0038 §4
-  落地（`MissingKeyField`），见 §1 不变式 5。
+- **dead ring**（`realm.dead_events.push`：有界环形缓冲，进程内存、重启即空——它收
+  「没送达的事实」作诊断输出，不是可重试的工作）。方向要分清：有路由匹配但实例没活着
+  不是丢失，是 backlog 写入（§6.1）。三个入口（`DeadReason`）：`NoRoute`（无任何路由
+  匹配）、`MissingKeyField`（匹配到路由但 payload 缺声明的 key 字段，ADR-0038 §4）、
+  `AppendFailed`（匹配到但 `mq::append` 存储故障——没写完的事实与没人订阅共用一个
+  观测面）。
 - 持久真相源是 EventRoute 注册表（ns 25）：重启后路由存活，不需要重新内省脚本；
   内存 router 是它的热面，boot reload 时经同一注册代码重建。注册表行是
   订阅事实 + 压缩水位分母。
@@ -184,30 +200,38 @@
 
 ### 6.1 投递与切片解析（当前形状）
 
-逐匹配 route：
+emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass 激活目标），再按切片去重
+入队。**这一段零 KV 访问**：匹配读内存 router（持久真相源是 EventRoute ns 25，§5），
+解析读 emit 自带的 payload，目标进内存实例表——第一次落存储在入队。每条匹配 route
+的解析：
 
 ```
-slice  =  key_field 空 → InstanceKey::Singleton
-         否则 payload[key_field] as str → InstanceKey::Named(该值)   // 恰好一个目标
-         缺字段/非字符串 → 畸形事件：带 MissingKeyField 落 dead ring（ADR-0038 §4）
-target = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 切片值}
-激活      → 不在实例表就先 instance() 拉起（同 pass 内先激活后投递）
-入队      → mq::append(event, &InstanceKey, payload)   按 (事件名, 切片) 去重
+切片  key_field 为空        → InstanceKey::Singleton            （无键投递）
+      payload[key_field]    → InstanceKey::Named(该值)          （恰好一个目标）
+      字段缺失 / 非字符串    → 畸形事件：落 dead ring（MissingKeyField，ADR-0038 §4）
+目标  InstanceId{ booth_type,
+        key = 单例实例 key "__singleton__"（无键时）
+            / 切片值（键位时） }
+激活  目标不在实例表 → 先 instance() 拉起，再投递（同一 pass 内，先激活后写入）
+入队  mq::append(event, &InstanceKey, payload) → MqData（ns 22）
+            全局按 (具体事件名, 切片) 去重
 ```
 
-三个如实的注脚：
+四个注脚：
 
-1. **`__default__` 兜底已退役**（ADR-0038 §4）：payload 缺声明的 key 字段 = 畸形事件，
-   带原因标签落 dead ring，不再静默喂给一个没人寻址的兜底实例；与「扫描零命中」同级。
-2. **一条 route 恰好产出一个目标**（单键路由）。"一次 emit 扇出到 N 个实例"
-   在类型级早就有（多类型订一事 = EventRoute 多行）；缺的是**类型内**按业务
-   事实扇出（region.escalation → 西部所有门店）——单字段表达不了，扫描天然
-   一对多（§8.1）。
-3. **投递/消费两侧的切片一致性靠构造**：消费端 `bound_instance_key` 用本实例的
-   key 回填 route 的 key_field 语义，与投递端从 payload 取值的约定在类型层
-   对齐（instance key 同时是投递侧取的值与消费侧自己的 key，同值靠构造——ADR-0041 §1）。
-4. 去重键是 `(具体事件名, 切片)`：多个类型订同一事件时只入队一次，队列对
-   所有订阅者扇出；一次 emit 对同一切片写两行就是双投递。
+1. **`__default__` 兜底已退役**（ADR-0038 §4）：payload 缺声明的 key 字段是**畸形事件**，
+   带原因标签落 dead ring——它到达不了任何人，与「扫描零命中」同级；不再静默喂给一个
+   没人寻址的兜底实例。
+2. **一条 route 恰好产出一个目标**（单键路由）。跨类型的扇出早已存在：多个类型订同一
+   事件 = EventRoute 多行 = 各自的游标读同一行。缺的是**类型内**按业务事实扇出
+   （`region.escalation` → 西部所有门店）——单字段表达不了，访问方法扫描天然一对多
+   （§8.1 的目标形状）。
+3. **投递/消费两侧的切片一致性靠构造**：投递侧从 payload 的 `key_field` 取值，消费侧
+   `bound_instance_key` 用本实例自己的 key 回填同一条 route 的 key_field 语义——同一个
+   值的两个读法，两侧不约定也会对上（ADR-0041 §1）。
+4. **去重键 = `(具体事件名, 切片)`**：两个类型订同一事件、key 解析出同一个值时只入队
+   一次，队列对所有订阅者扇出（一行数据、N 个游标）；一次 emit 对同一切片写两行就是
+   双投递。
 
 ### 6.2 消费循环
 
@@ -223,11 +247,8 @@ target = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = �
 
 游标的主语是**类型**（ADR-0038 §2）：两个类型订同一事件各持独立游标。
 
-- **booth_id 段的混装已成历史**：同一个 resolve 曾既接类型名（EventRoute 登记、
-  `routes_of_booth`）又接参与者名 `"type/key"`（游标语义），压缩路径里
-  `split_once('/')` 手工抠类型名就是它的下游症状。**已落（ADR-0038 §2）**：唯一字典
-  （ns 30，`mq::booth_id_of` → `meta::resolve_booth_id`），游标键第三段 = `booth_id`，
-  参与者名不再发号。
+- 游标键第三段 = `booth_id`（ns 30 的唯一类型字典，`mq::booth_id_of` →
+  `meta::resolve_booth_id`；参与者名不再发号——混装年代的始末见 §8.3）。
 - **通配语义**：无 key 订阅投递给该类型的**单例实例**（`partitioning.md` §1 原文即此
   语义）——消费者集合必须是闭集（§1 不变式 5、§6.3）。已落（ADR-0038 §1）：消费循环只为
   单例实例绑定无 key 路由，其余实例不绑；wildcard fan-out 测试已随语义改写。
@@ -282,22 +303,23 @@ target = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = �
 | 31 | BoothDef | `booth_id u32` | 摊位定义行：name/language/encoding/idle_ttl + `code_sha256` 指针；introspected schema 走动态段 nTLV | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | 代码字节内容寻址（ADR-0027）：纯内容行，构造性不可变 | meta.rs |
 
-事件面自留的订阅者身份字典（旧 ns 33）**已删除**（ADR-0038 §2），不占新分段任何号位。
+事件面自留的订阅者身份字典（旧 ns 33）**已删除**（ADR-0038 §2），不占新分段任何号位；
+双字典的收编由此完成——唯一字典 = ns 30。
 
-**实现注记（物理分区，非事件面词汇）**：`#[ok_partition]` 是引擎的 compaction 分组。
-只有 MqData 带一个（partition 1）——它是唯一的「批量追加 + 范围删除」workload；MqCursor 的
-点写与摊位状态同类，住默认键空间（ADR-0041 §4）。`SINGLETON_KEY_ID = 0`。
+**两条编号纪律**（细则见 ADR-0040）：
 
-**切片就是实例键（ADR-0039 §1 立、ADR-0041 §1 定名）**：`InstanceKeyRegistry`（ns 21）发定宽
-`u32` id（与另两张字典同一布局），`0` 保留给无键投递、发号从 1 起（构造性不可达），
-`part_hash`/FNV-1a/`part_id_of`/`part_hash_of` 已删，路由层用 `mq::InstanceKey`
-（Singleton | Named）结构标记而非魔法字符串。理由：开放词汇走代理 id 是本节既有的规则；
-okm 主键构造上定宽（`KeyEncode` 遇 `String` 编译期 panic），内联字符串表达不出来；而哈希
-带来碰撞即错误投递、保留值与值空间共用名字空间、哈希不可反查（运维列不出人话队列）。
-键（logical）：MqData `[event_id][instance_key_id][seq]` 16 B、MqCursor
-`[event_id][instance_key_id][booth_id]` 12 B；写头 = MqData 的 `HighWater(seq)` 水位
-（原 MqHead 表已撤，ADR-0041 §3）。`MqCursor.last_active_ms`（§6.3 的过期谓词）随
-ADR-0039 §2 落地。
+- **号位永不复用**：一个号一旦属于某张表，就永不给另一张表。ns 只增不减——类型注销
+  不回收，复用键空间前缀等于把旧数据读成新数据（id 与 ns 永不复用是同一条裁决）。
+- **低位块编译期固定**：新框架面从空段取号且必须进本表（双语同步）；摊位类型永不落进
+  低位块；`#[ok_ns]`/`#[ok_partition]` 注解改动必须同步本页——权威定义住代码。
+  2026-10-02 的重新编号把旧号 `30–35`/`40–42` 整段作废，而新 meta 段（30–32）正落在
+  旧事件面的号上——既有部署上清除低位块是一次运维动作（代价含已持久化的摊位定义与
+  代码 blob，部署方要重新注册类型；ADR-0040 记录在案），ADR-0041 的改名与撤表随同一次
+  清除吸收。新库没有可清除的东西。
+
+**实现注记（物理分区，非事件面词汇）**：`#[ok_partition]` 是引擎的 compaction 分组，
+与事件面的「切片」无关。只有 MqData 带一个（partition 1）——它是唯一的「批量追加 +
+范围删除」workload；MqCursor 的点写与摊位状态同类，住默认键空间（ADR-0041 §4）。
 
 摊位类型 ns（运行时）：注册类型 = 唯一字典发 id、数据 ns = `100 + id`，单调不复用；
 ns 内是 interface_schema 声明的 collections + 访问方法（槽位 `ns + slot` 编码，
@@ -312,12 +334,8 @@ dict/junction 基址住 collection schema 常量）；实例是 ns 内 document�
 即「把旧数据读成新数据」）。清除的代价比「mq 字节转瞬即逝」更大：已持久化的摊位定义与
 代码 blob 一并作废，部署方要重新注册类型（ADR-0040 记录在案）。新库没有可清除的东西。
 
-**词汇表不占真实 ns**：开放词汇（事件名、实例键）走代理 id + 文本索引，封闭
-词汇（booth 类型）才配真实 ns——EventName/InstanceKeyRegistry/BoothName(ns 20/21/30) 的形态
-由此而来；ns 只增不减（类型注销不回收——复用键空间前缀等于把旧数据读成新数据，id 与 ns
-永不复用是同一条裁决）。
-
-双字典的收编已完成：唯一字典 = ns 30（ADR-0038 §2 已落，事件面自留表已删）。
+**词汇表不占真实 ns**：开放词汇（事件名、实例键）走代理 id + 文本索引（ns 20/21 的
+形态），封闭词汇（booth 类型）才配真实 ns（ns 30）。
 
 ## 8 终态裁决与实施清单（4.13+ 挂账）
 
@@ -381,35 +399,25 @@ emit 都激活一个新实例，而新实例游标从 0 起 = 重放该队列现
 历史留档：正交方案当年的卡点正是通配的参与者级扇出（两实例共享 singleton 游标会让一条
 消息只被一个消费，当时被读作语义回归）；裁决解在另一头——那个语义本就该是单例投递。
 
-落地连带（已完成）：`bound_partition`/`routes_of_*`/compact 的解析链改造、测试调用点、
+落地连带（已完成，当时名 `bound_partition`，ADR-0041 起为 `bound_instance_key`）：解析链改造、测试调用点、
 `by_type` → `by_booth` 索引、`split_once('/')` 消失。残余（未覆盖）：实例键空间仍用
 `"__singleton__"` 哨兵字符串，payload 里字面等于它的 key 仍会别名到单例**实例**——
 让实例身份结构化会牵动整个 call model 与 probe 缝上的 `InstanceId`（ADR-0038 已记录）。
 
 ### 8.4 分区身份、键空间分段与游标保留承诺（已落，ADR-0039 §1/§2、ADR-0040）
 
-分区改为代理字典（`PartitionName`，哈希删除）；低位块分两段（事件面 20–29、meta 面
-30–39，段内概念序）；`cursor_ttl` 全局配置（默认 30 天），过期退出分母、不删行。机制与
-理由见 §6.3 与 §7。
+实例键改为代理字典（裁定时的名字是 PartitionName；哈希删除）；低位块分两段（事件面
+20–29、meta 面 30–39，段内概念序）；`cursor_ttl` 全局配置（默认 30 天），过期退出
+分母、不删行。机制与理由见 §6.3 与 §7。
 
-落地连带（已完成）：`#[ok_ns]` 改号、`PartitionName` 表 + `mq::Partition` 结构标记、
-键宽收紧、`crates/config` 的 `mq { cursor_ttl }` + realm 字段、`MqCursor.last_active_ms`
-（v2 热尾 + 0 哨兵）、分母改造（`booth_subscribes`）+ 惰性行回收（`drop_cursor`）。
-**同期改名（2026-10-02 第二批）**：第三段与游标键的标识符 `type_id` → `booth_id`、
-派生索引 `by_type` → `by_booth`（ADR-0032 的 booth 命名清扫落到字段层）。MqData 的第三段
-是**序列** `seq`（`MqHead.last_seq`，`last+1`）——不是时间戳：它是排序键兼行的身份，
-墙钟读数混进来只会带来碰撞（同毫秒覆盖 = 丢数据）与回拨（落到游标之下 = 静默丢弃），
-唯一性由「emit 路径持 realm 锁 = 单写者」保证；`mq::skip_to_now` → `mq::skip_to_head`
-（脚本面 host fn `ctx_skip_to_now` → `ctx_skip_to_head` 同步改名，aura 侧与 probe carrier
-白名单一并更新）。
-**既有部署**需清除低位块（新 meta 段落在旧事件面的号上；代价含已持久化的定义与代码 blob，
-ADR-0040 记录在案）。
-**同期（2026-10-08，ADR-0041）**：事件面词汇改用 instance key（`part_id`→`instance_key_id`、
-`PartitionName`→`InstanceKeyRegistry`、`mq::Partition`→`mq::InstanceKey`、`SINGLETON_PART`→
-`SINGLETON_KEY_ID`，函数 `bound_partition`→`bound_instance_key` 等）；`MqHead`（ns 24）撤销，
-写头改由 MqData 的 `HighWater(seq)` 水位承载（发号与写行同批、同物理分区）；`#[ok_partition(2)]`
-从 MqCursor 删除，只留 MqData 的 partition 1；文档分「契约 / 内部布局」两层重述，引擎注解
-降为实现注记。迁移由 ADR-0040 的清除吸收。
+落地连带（已完成）：`#[ok_ns]` 改号、`InstanceKeyRegistry` 表（裁定当时名 `PartitionName`）
++ `mq::InstanceKey` 结构标记、键宽收紧、`crates/config` 的 `mq { cursor_ttl }` + realm 字段、
+`MqCursor.last_active_ms`（v2 热尾 + 0 哨兵）、分母改造（`booth_subscribes`）+ 惰性行回收
+（`drop_cursor`）、游标键标识符 `type_id` → `booth_id`（ADR-0032 命名清扫落到字段层）、
+seq 由 `max(now_ms, last+1)` 改为纯序列（理由已并入 §2 第 5 步，不在此重复）。
+**2026-10-08（ADR-0041）**：词汇改用 instance key、`MqHead`（ns 24）撤销改由 MqData 的
+`HighWater(seq)` 承载、`#[ok_partition(2)]` 删除——见 §2/§7 与 ADR-0041，不在此重复。
+既有部署需清除低位块（代价见 §7 的编号纪律，ADR-0040 记录在案）。
 
 ### 8.5 杂项挂账（仍开放）
 

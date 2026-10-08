@@ -218,7 +218,10 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     reference), emit delivery path (resolve targets per event via the ns's scan),
     EventRoute registry row shape (persist access-method references), consumer
     spawn (one instance per resolved id — the queue cursor model already per-(event,
-    partition), instances subscribe as today).
+    partition), instances subscribe as today), PLUS the ADR-0042 batch riding the
+    same landing: `InstanceId.key` → `aura_booth::InstanceKey { Singleton, Named }`
+    (the sentinel `__singleton__` retires; no storage migration — see ADR-0042).
+    Both rewrite the EventRoute row's resolution contract; one migration, not two.
   - RULED (ADR-0038 §3, 2026-10-02) — the two questions this phase left open are
     closed: the resolve path is named PER EVENT in the schema block (`receives`
     declares it, no type-wide default — a default is defined only when every
@@ -558,6 +561,21 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-10-08b，A2 裁决：实例身份结构化；ADR-0042）
+
+- **触发**：A6/A7 清账完成后排下一项时，用户裁决「现在就裁」A2（`__singleton__` 哨兵
+  残余），与 Phase 4.13 配对——两者动同一张 EventRoute 行形状，分开做 = 两次迁移。
+- **裁决（ADR-0042）**：`InstanceId.key` 变为枚举 `InstanceKey { Singleton, Named(String) }`
+  （aura_booth 侧，与 mq 面的切片枚举 `mq::InstanceKey` 刻意同构但类型独立）；哨兵字符串
+  从框架整体退役；字面别名构造性不可达（ADR-0039 给切片 id 0 的待遇上移一平面）。
+- **裁决前的事实核对（全部调用点）**：`instance_of`、消费循环绑定规则、
+  `bound_instance_key`、probe 会话键格式、ctx 泄压阀回传；**状态面核实不受影响**
+  （`store_exec` 用脚本提供的 key 对类型 ns 键控文档，实例键从不进状态键——无存储迁移）；
+  probe 不依赖哨兵字面量（grep 核实），会话键格式是唯一可观察缝（`Singleton` 渲染为
+  `{type}/` 空键段；脚本继续看到字符串键，单例渲染为空串）。
+- **文档**：ADR-0042 双语新增；ADR-0038 残余段按日期记录规矩加「已由 ADR-0042 关闭」指针。
+- **实施**：随 Phase 4.13 落地（EventRoute 行形状 + resolve 终态 + 本枚举改造一批）。
 
 ## 会话记录（2026-10-08，事件面内部布局：instance key 词汇 + 发号器上数据表 + 单物理分区；ADR-0041）
 

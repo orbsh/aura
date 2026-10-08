@@ -240,8 +240,7 @@ pub struct Ctx {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct InstanceId {
     pub booth_type: String,
-    /// Partition key: instance identity within the type (session_id,
-    /// node_id, ...).
+    /// Instance key: identity within the type (session_id, node_id, ...).
     pub key: String,
 }
 

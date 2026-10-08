@@ -264,7 +264,7 @@ impl Realm {
                         // queue for it, so its valve answers "no route of
                         // '<type>' binds '<event>'" — the subscription truth,
                         // not a silent no-op.
-                        let part = crate::mq::bound_partition(&store, &booth_type, &booth_key, event)?
+                        let part = crate::mq::bound_instance_key(&store, &booth_type, &booth_key, event)?
                             .ok_or_else(|| anyhow::anyhow!("{name}: no route of '{booth_type}' binds '{event}'"))?;
                         if skip {
                             crate::mq::skip_to_head(&store, event, &part, &booth_type)?;

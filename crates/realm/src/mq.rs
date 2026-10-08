@@ -9,29 +9,31 @@
 //!   verify (the text-first regime's documented cost: no delimiter, so
 //!   "add" prefix-matches "add_to_cart"; the row comparison is the
 //!   exactness).
-//! - `PartitionName` (21) — the partition vocabulary (ADR-0039 §1), the
-//!   same registry pattern: `by_name` text index + a `HighWater` watermark
-//!   issues a fixed-width id, and the reverse direction (id → name) is
-//!   available for ops. The FNV-1a hash is retired: an okm primary key is
-//!   fixed-width by CONSTRUCTION (`KeyEncode` panics on a `String`), so a
-//!   partition had to BE an id — and `0` (the reserved singleton) is then
-//!   an id the issuer cannot produce, instead of a value sharing the space
-//!   with real keys.
-//! - `MqData` (22) — `[event_id][part_id][seq]` → payload. An event
+//! - `InstanceKeyRegistry` (21) — the instance-key registry (the shape settled
+//!   in ADR-0039 §1, named in ADR-0041 §1), the same registry pattern:
+//!   `by_name` text index + a `HighWater` watermark issues a fixed-width id,
+//!   and the reverse direction (id → name) is available for ops. The FNV-1a
+//!   hash is retired: an okm primary key is fixed-width by CONSTRUCTION
+//!   (`KeyEncode` panics on a `String`), so an instance key had to BE an id —
+//!   and `0` (reserved for key-less delivery) is then an id the issuer cannot
+//!   produce, instead of a value sharing the space with real keys.
+//! - `MqData` (22) — `[event_id][instance_key_id][seq]` → payload. An event
 //!   belongs to no booth: one row per emitted event, N subscribers = N
-//!   cursors. The sort key is the per-partition SEQUENCE (a counter, not a
-//!   timestamp — MqHead issues it): the sort order IS the delivery order,
+//!   cursors. The sort key is the per-slice SEQUENCE (a counter, not a
+//!   timestamp — MqData's own `HighWater(seq)` watermark issues it, ADR-0041
+//!   §3): the sort order IS the delivery order,
 //!   and a fact's wall-clock time rides a payload field instead.
-//! - `MqCursor` (23) — `[event_id][part_id][booth_id]` → last consumed seq
+//! - `MqCursor` (23) — `[event_id][instance_key_id][booth_id]` → last consumed seq
 //!   plus `last_active_ms` (ADR-0039 §2: the global `cursor_ttl` predicate
 //!   reads it; the value 0 means UNMARKED and never expires). The wall
 //!   clock enters retention here, and only here — the sequence never
 //!   pretends to be a time.
-//! - `MqHead` (24) — `[event_id][part_id]` → the last issued seq. The
-//!   per-partition write head: append reads it, assigns `last + 1`, writes
-//!   it back. O(1) append (the old max-scan over the partition prefix is
-//!   gone) and one writer of the sequence (the emit path holds the realm
-//!   lock across append), so two emitters can never mint the same seq.
+//! - (24 is vacated — ADR-0041 §3 retired the write-head table.) The head is
+//!   now MqData's second reduce, `HighWater(seq)`: append reads the watermark,
+//!   assigns `last + 1`, and the row's own put folds it — O(1) append (the old
+//!   max-scan over the slice prefix is gone), one writer of the sequence (the
+//!   emit path holds the realm lock across append), and issuance lands in the
+//!   same batch as the row it numbers.
 //! - `EventRoute` (25) — the PERSISTED subscription registry: one row per
 //!   (event, booth). The booth id resolves through the meta plane's
 //!   ONE booth dictionary (ADR-0038 §2) — this plane keeps no
@@ -39,13 +41,14 @@
 //!   narrowed to the singleton instance (ADR-0038 §1) there is no
 //!   participant-level identity left to issue.
 //!
-//! Backlog = range scan after the cursor; skip-to-head = cursor write to
-//! the partition head (cursors are monotonic — advance never rewinds).
-//! The queue's DEPTH is a live `Count` reduce over MqData grouped by
-//! (event_id, part_id) — the write path folds +1 on append and unfolds
-//! −1 on watermark compaction, so `depth()` is one point read, never a
-//! (the zero-scan operational surface; the skip-to-head decision
-//! reads it directly).
+//! Backlog = range scan after the cursor; skip-to-head = cursor write to the
+//! slice's write head (cursors are monotonic — advance never rewinds). The
+//! slice's DEPTH is a live `Count` reduce over MqData grouped by (event_id,
+//! instance_key_id) — the write path folds +1 on append and unfolds −1 on
+//! watermark compaction, so `depth()` is one point read, never a scan (the
+//! zero-scan operational surface; the skip-to-head decision reads it directly).
+//! The WRITE HEAD is the second reduce on the same table, `HighWater(seq)`
+//! (ADR-0041 §3).
 
 use okm_core::document::Collection;
 use okm_core::{KeyEncode, Document, DocumentEncode, ReduceCodec};
@@ -71,20 +74,21 @@ pub struct EventName {
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct PartitionNameKey {
+pub struct InstanceKeyRegistryKey {
     pub id: u32,
 }
 
-/// The partition vocabulary (ADR-0039 §1): `by_name` text index + a
-/// `HighWater` watermark issuing the proxy id. `SINGLETON_PART` (0) is
-/// never issued, so the reserved singleton is structurally unreachable
-/// rather than a value that shares the space with real keys.
+/// The instance-key registry (the shape settled in ADR-0039 §1, the name in
+/// ADR-0041 §1): `by_name` text index + a `HighWater` watermark issuing the
+/// proxy id. `SINGLETON_KEY_ID` (0) is never issued, so key-less delivery is
+/// structurally unreachable rather than a value that shares the space with
+/// real keys.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(PartitionNameKey)]
+#[ok_ref(InstanceKeyRegistryKey)]
 #[ok_index(by_name { fields(name) })]
 #[ok_reduce(HighWater(id) { group(global) })]
 #[ok_ns(21)]
-pub struct PartitionName {
+pub struct InstanceKeyRegistry {
     pub name: String,
     /// Payload mirror of the proxy id — the MAX reduce folds over payload
     /// fields (okm ADR-0024 gives hooks the key, but the mirror keeps the
@@ -100,45 +104,42 @@ pub struct PartitionName {
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MqDataKey {
     pub event_id: u32,
-    /// The proxied partition id (ADR-0039 §1): a dictionary-issued u32,
-    /// or `SINGLETON_PART` for a key-less subscription's queue.
-    pub part_id: u32,
-    /// The per-partition SEQUENCE (MqHead issues it): the sort order IS
-    /// the delivery order. A counter, not a timestamp — a fact's wall time
-    /// rides a payload field and never sorts.
+    /// The instance key's proxy id (ADR-0039 §1 established the shape,
+    /// ADR-0041 §1 named it): the dictionary-issued u32 of the routing
+    /// value, or `SINGLETON_KEY_ID` for a key-less subscription's queue.
+    pub instance_key_id: u32,
+    /// The per-slice SEQUENCE: the sort order IS the delivery order. Issued
+    /// by the `HighWater(seq)` watermark this table carries (ADR-0041 §3).
+    /// A counter, not a timestamp — a fact's wall time rides a payload field
+    /// and never sorts.
     pub seq: u64,
 }
 
-/// Per-partition write head: the last sequence number issued by append.
-/// One row per partition (bounded — same cardinality as the partitions
-/// themselves); the O(1) alternative to scanning the data prefix for max.
-#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct MqHeadKey {
-    pub event_id: u32,
-    pub part_id: u32,
-}
-
-#[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(MqHeadKey)]
-#[ok_ns(24)]
-pub struct MqHead {
-    pub last_seq: u64,
-}
+// The write head has NO table of its own (ADR-0041 §3): it is MqData's
+// `HighWater(seq)` watermark, so ns 24 is vacated and issuance folds in the same
+// put that writes the row. See MqData below and `head_seq`.
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MqDataKey)]
 #[ok_partition(1)]
 #[ok_ns(22)]
-// Backlog depth as a live count (ADR-0023 preset, ADR-0024 key-field
-// group): append folds +1, watermark compaction's delete unfolds -1 —
-// the write path maintains it, `depth()` reads it as one point get.
-#[ok_reduce(Count { group(event_id, part_id) })]
+// Two live reduces on the data table:
+// - `Count` (ADR-0023 preset, ADR-0024 key-field group): append folds +1,
+//   watermark compaction's delete unfolds -1 — the write path maintains it,
+//   `depth()` reads it as one point get;
+// - `HighWater(seq)`: THE WRITE HEAD (ADR-0041 §3). Append reads the watermark
+//   (`head_seq`), adds one, and this row's own put folds it — so issuance and
+//   the row land in one batch, one physical partition. A watermark never falls
+//   (its unfold is a no-op): an issuer's value must outlive its rows, and a
+//   view cannot.
+#[ok_reduce(Count { group(event_id, instance_key_id) })]
+#[ok_reduce(HighWater(seq) { group(event_id, instance_key_id) })]
 pub struct MqData {}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MqCursorKey {
     pub event_id: u32,
-    pub part_id: u32,
+    pub instance_key_id: u32,
     /// The booth TYPE id (ADR-0038 §2): one dictionary for the whole
     /// system (the meta plane's, ns 30), not a participant name.
     pub booth_id: u32,
@@ -146,8 +147,9 @@ pub struct MqCursorKey {
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MqCursorKey)]
-#[ok_partition(2)]
 #[ok_ns(23)]
+// No physical partition (ADR-0041 §4): a point table, the same class as booth
+// state, which lives in the default keyspace.
 // v2: `last_active_ms` appended at the hot tail (append-only rule — a row
 // persisted before the field decodes it as 0, which the `cursor_ttl`
 // predicate reads as UNMARKED = never expires).
@@ -357,7 +359,7 @@ impl okm_core::storage::VirtualStorage for MqStore {
 // Registry resolve: name → id (assign on first sight). Exact match = index
 // prefix scan + row verify ("add" scans "add_to_cart" too — text-first
 // regime); miss = append with the next id. Two vocabularies resolve here:
-// event names (ns 20) and partition names (ns 21). The booth-TYPE id is NOT
+// event names (ns 20) and instance keys (ns 21). The booth-TYPE id is NOT
 // resolved here: ADR-0038 §2 moved it to the meta plane's single dictionary
 // (ns 30), which the delegating helpers below reach.
 // ---------------------------------------------------------------------------
@@ -386,29 +388,30 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     Ok(id)
 }
 
-/// A queue slice: the reserved singleton, or a dictionary-issued partition.
+/// A queue slice: the reserved key-less singleton, or a dictionary-issued
+/// instance key.
 /// A structural marker, not a magic string (ADR-0039 §1): the singleton
 /// never enters the name dictionary, so no payload key can alias into it.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Partition {
+pub enum InstanceKey {
     /// Key-less delivery (wildcards and `@on` with no key field).
     Singleton,
     /// The instance key the route resolved.
     Named(String),
 }
 
-/// The resolved id for a queue slice: `SINGLETON_PART` for the singleton,
+/// The resolved id for a queue slice: `SINGLETON_KEY_ID` for the singleton,
 /// else the dictionary-issued partition id (allocated on first sight).
-pub fn part_id(store: &MqStore, part: &Partition) -> anyhow::Result<u32> {
+pub fn instance_key_id(store: &MqStore, part: &InstanceKey) -> anyhow::Result<u32> {
     match part {
-        Partition::Singleton => Ok(SINGLETON_PART),
-        Partition::Named(name) => resolve_partition_id(store, name),
+        InstanceKey::Singleton => Ok(SINGLETON_KEY_ID),
+        InstanceKey::Named(name) => resolve_instance_key_id(store, name),
     }
 }
 
-fn resolve_partition_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, PartitionNameKey, PartitionName>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_PartitionName_by_name>(name.as_bytes()) {
+fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
+    let mut t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
+    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -418,23 +421,23 @@ fn resolve_partition_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     // Miss: next id = the HighWater reduce's value + 1 (no scan; ids are
     // never reused — unfold is a no-op for this watermark). The reserved
     // singleton (0) is therefore unreachable by construction.
-    let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_PartitionName_0>(
+    let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_InstanceKeyRegistry_0>(
         t.store(),
-        <PartitionName as Document>::NS_PREFIX,
-        &PartitionNameKey { id: 0 },
-        &PartitionName { name: String::new(), id: 0, global: 0 },
+        <InstanceKeyRegistry as Document>::NS_PREFIX,
+        &InstanceKeyRegistryKey { id: 0 },
+        &InstanceKeyRegistry { name: String::new(), id: 0, global: 0 },
     )
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
-    t.put(&PartitionNameKey { id }, &PartitionName { name: name.to_string(), id, global: 0 });
+    t.put(&InstanceKeyRegistryKey { id }, &InstanceKeyRegistry { name: name.to_string(), id, global: 0 });
     Ok(id)
 }
 
 /// The id already assigned to a partition name (None = never seen). Peek,
 /// never allocate — the ops/observation direction.
-pub fn partition_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
-    let t = Collection::<MqStore, PartitionNameKey, PartitionName>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_PartitionName_by_name>(name.as_bytes()) {
+pub fn instance_key_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
+    let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
+    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(Some(hit.0.decoded.id));
@@ -447,9 +450,9 @@ pub fn partition_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<u32
 /// The registered name for a partition id (None = never issued) — the
 /// dictionary's reverse direction, which the retired hash could not offer:
 /// it is what lets ops render a queue in human terms.
-pub fn partition_name_of(store: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
-    let t = Collection::<MqStore, PartitionNameKey, PartitionName>::new(store.clone());
-    Ok(t.get(&PartitionNameKey { id }).map(|row| row.name))
+pub fn instance_key_of(store: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
+    let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
+    Ok(t.get(&InstanceKeyRegistryKey { id }).map(|row| row.name))
 }
 
 /// The booth's identity id (delegated to the meta plane's single dictionary,
@@ -477,28 +480,41 @@ pub fn cursor_expired(last_active_ms: u64, now: u64, ttl: std::time::Duration) -
     now.saturating_sub(last_active_ms) >= ttl.as_millis() as u64
 }
 
-/// Append one event to a partition; returns the assigned sequence number.
-/// O(1): the head row (MqHead) carries the partition's last issued seq, so
-/// append is a read + `last + 1` + write — never a max scan over the
-/// partition prefix. The emit path holds the realm lock across this call,
-/// which is what makes the sequence single-writer (two emitters cannot mint
-/// the same seq). A counter, deliberately: the value carries no wall-clock
+/// The slice's write head: the last sequence issued for (event, instance key),
+/// read from MqData's `HighWater(seq)` watermark (ADR-0041 §3). One point read
+/// of the reduce entry; absent = 0 (nothing issued yet).
+fn head_seq(store: &MqStore, event_id: u32, instance_key_id: u32) -> anyhow::Result<u64> {
+    let mut header = Vec::with_capacity(4);
+    header.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
+    header.extend_from_slice(<MqData as Document>::NS_PREFIX);
+    Ok(okm_core::reduce_get::<MqStore, __OkmReduce_MqData_1>(
+        store,
+        &header,
+        &MqDataKey { event_id, instance_key_id, seq: 0 },
+        &MqData {},
+    )
+    .unwrap_or(0))
+}
+
+/// Append one event to a queue slice; returns the assigned sequence number.
+/// O(1): MqData's `HighWater(seq)` watermark carries the slice's last issued
+/// seq, so append is a point read + `last + 1` + the row's own put (which folds
+/// the watermark — same batch, one physical partition; ADR-0041 §3), never a max
+/// scan over the slice prefix. The emit path holds the realm lock across this
+/// call, which is what makes the sequence single-writer (two emitters cannot
+/// mint the same seq). A counter, deliberately: the value carries no wall-clock
 /// meaning, so nothing downstream can mistake it for a timestamp.
 pub fn append(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     payload: &serde_json::Value,
 ) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_id(store, part)?;
-    let mut head_t = Collection::<MqStore, MqHeadKey, MqHead>::new(store.clone());
-    let head_key = MqHeadKey { event_id, part_id };
-    let last = head_t.get(&head_key).map(|h| h.last_seq).unwrap_or(0);
-    let seq = last + 1;
-    head_t.put(&head_key, &MqHead { last_seq: seq });
+    let instance_key_id = instance_key_id(store, part)?;
+    let seq = head_seq(store, event_id, instance_key_id)? + 1;
     let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
-    t.put(&MqDataKey { event_id, part_id, seq }, &MqData {});
+    t.put(&MqDataKey { event_id, instance_key_id, seq }, &MqData {});
     // Payload → dynamic segment, fully native. The emit chain guarantees
     // an object top (routing reads the instance key from data fields;
     // handlers receive objects) — no wrapping convention exists here or
@@ -514,29 +530,30 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
-    t.put_document(&MqDataKey { event_id, part_id, seq }, &obj);
+    t.put_document(&MqDataKey { event_id, instance_key_id, seq }, &obj);
     Ok(seq)
 }
 
-/// The reserved singleton partition id: key-less routes (wildcards and
-/// key-less @on) bind here. The dictionary issuer never produces 0, so the
-/// reservation is structural by construction (ADR-0039 §1).
-pub const SINGLETON_PART: u32 = 0;
+/// The reserved id for key-less delivery: wildcards and key-less `@on` slices.
+/// The registry issuer never produces 0, so the reservation is structural by
+/// construction (ADR-0039 §1). The singleton INSTANCE's own key is `SINGLETON`
+/// below — a name in the instance namespace, not this id.
+pub const SINGLETON_KEY_ID: u32 = 0;
 
-/// The singleton INSTANCE's key (an instance-namespace name, not a
-/// partition value): a key-less route's delivery target and the instance
-/// that consumes the singleton queue.
+/// The singleton INSTANCE's key (a name in the instance namespace, not an
+/// instance-key id): a key-less route's delivery target and the instance that
+/// consumes the singleton slice.
 pub const SINGLETON: &str = "__singleton__";
 
 /// The subscriber's cursor (0 = nothing consumed). The subscriber is the
 /// booth TYPE (ADR-0038 §2): one dictionary id, no participant name.
-pub fn cursor(store: &MqStore, event: &str, part: &Partition, booth_type: &str) -> anyhow::Result<u64> {
+pub fn cursor(store: &MqStore, event: &str, part: &InstanceKey, booth_type: &str) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     Ok(t.get(&MqCursorKey {
         event_id,
-        part_id: part_id(store, part)?,
+        instance_key_id: instance_key_id(store, part)?,
         booth_id,
     })
     .map(|c| c.cursor)
@@ -551,14 +568,14 @@ pub fn cursor(store: &MqStore, event: &str, part: &Partition, booth_type: &str) 
 pub fn advance(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     booth_type: &str,
     seq: u64,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    let key = MqCursorKey { event_id, part_id: part_id(store, part)?, booth_id };
+    let key = MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id };
     let current = t.get(&key).map(|c| c.cursor).unwrap_or(0);
     if seq <= current {
         return Ok(());
@@ -572,18 +589,18 @@ pub fn advance(
 pub fn backlog(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     after_seq: u64,
 ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_id(store, part)?;
+    let instance_key_id = instance_key_id(store, part)?;
     let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
     prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&part_id.to_be_bytes());
+    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
     for suffix in store.scan_suffix(&prefix) {
         if suffix.len() < 8 {
@@ -593,9 +610,9 @@ pub fn backlog(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq > after_seq
-            && t.get(&MqDataKey { event_id, part_id, seq }).is_some() {
+            && t.get(&MqDataKey { event_id, instance_key_id, seq }).is_some() {
                 // Reconstruct from the dynamic segment (name-keyed).
-                let v = match t.get_document(&MqDataKey { event_id, part_id, seq }) {
+                let v = match t.get_document(&MqDataKey { event_id, instance_key_id, seq }) {
                     Some(obj) if !obj.contains_key("_root") => {
                         let mut m = serde_json::Map::new();
                         for (k, dv) in &obj {
@@ -617,15 +634,15 @@ pub fn backlog(
     Ok(out)
 }
 
-/// The queue's backlog depth: rows still stored in (event, partition).
+/// The queue's backlog depth: rows still stored in (event, instance key).
 /// One point read of the live `Count` reduce — the zero-scan operational
 /// surface the skip-to-head decision reads. Absent group (no rows ever,
 /// or everything compacted away with the count at its zero state) is 0.
-pub fn depth(store: &MqStore, event: &str, part: &Partition) -> anyhow::Result<u64> {
+pub fn depth(store: &MqStore, event: &str, part: &InstanceKey) -> anyhow::Result<u64> {
     let Some(event_id) = event_id_of(store, event)? else {
         return Ok(0);
     };
-    let part_id = part_id(store, part)?;
+    let instance_key_id = instance_key_id(store, part)?;
     let mut header = Vec::with_capacity(4);
     header.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     header.extend_from_slice(<MqData as Document>::NS_PREFIX);
@@ -633,7 +650,7 @@ pub fn depth(store: &MqStore, event: &str, part: &Partition) -> anyhow::Result<u
         okm_core::reduce_get::<MqStore, __OkmReduce_MqData_0>(
             store,
             &header,
-            &MqDataKey { event_id, part_id, seq: 0 },
+            &MqDataKey { event_id, instance_key_id, seq: 0 },
             &MqData {},
         )
         .unwrap_or(0),
@@ -648,7 +665,7 @@ pub fn depth(store: &MqStore, event: &str, part: &Partition) -> anyhow::Result<u
 pub fn rewind_cursor(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     booth_type: &str,
     seq: u64,
 ) -> anyhow::Result<()> {
@@ -656,7 +673,7 @@ pub fn rewind_cursor(
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
-        &MqCursorKey { event_id, part_id: part_id(store, part)?, booth_id },
+        &MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id },
         &MqCursor { cursor: seq, last_active_ms: now_ms() },
     );
     Ok(())
@@ -669,33 +686,31 @@ pub fn rewind_cursor(
 pub fn age_cursor(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     booth_type: &str,
     last_active_ms: u64,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    let key = MqCursorKey { event_id, part_id: part_id(store, part)?, booth_id };
+    let key = MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id };
     let cursor = t.get(&key).map(|c| c.cursor).unwrap_or(0);
     t.put(&key, &MqCursor { cursor, last_active_ms });
     Ok(())
 }
 
-/// skip-to-head: jump the cursor to the partition head, discarding the
-/// stale backlog (the relief valve per the ruling).
+/// skip-to-head: jump the cursor to the slice's write head (MqData's
+/// `HighWater(seq)` watermark), discarding the stale backlog (the relief valve
+/// per the ruling).
 pub fn skip_to_head(
     store: &MqStore,
     event: &str,
-    part: &Partition,
+    part: &InstanceKey,
     booth_type: &str,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
-    let part_id = part_id(store, part)?;
-    let head = Collection::<MqStore, MqHeadKey, MqHead>::new(store.clone())
-        .get(&MqHeadKey { event_id, part_id })
-        .map(|h| h.last_seq)
-        .unwrap_or(0);
+    let instance_key_id = instance_key_id(store, part)?;
+    let head = head_seq(store, event_id, instance_key_id)?;
     advance(store, event, part, booth_type, head)
 }
 
@@ -799,12 +814,12 @@ pub fn routes_of_booth(
 // falls out of the denominator (its row is removable by prefix scan).
 // ---------------------------------------------------------------------------
 
-/// Delete mq-data rows in a partition with seq < `min_seq`. Returns the
+/// Delete mq-data rows in a slice with seq < `min_seq`. Returns the
 /// number of rows removed.
 pub fn delete_before(
     store: &MqStore,
     event_id: u32,
-    part_id: u32,
+    instance_key_id: u32,
     min_seq: u64,
 ) -> anyhow::Result<usize> {
     let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
@@ -813,7 +828,7 @@ pub fn delete_before(
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
     prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&part_id.to_be_bytes());
+    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut removed = 0;
     for suffix in store.scan_suffix(&prefix) {
         if suffix.len() < 8 {
@@ -823,7 +838,7 @@ pub fn delete_before(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq < min_seq {
-            t.delete_by_pkey(&MqDataKey { event_id, part_id, seq });
+            t.delete_by_pkey(&MqDataKey { event_id, instance_key_id, seq });
             removed += 1;
         }
     }
@@ -836,7 +851,7 @@ pub fn delete_before(
 pub fn cursor_rows(
     store: &MqStore,
     event_id: u32,
-    part_id: u32,
+    instance_key_id: u32,
 ) -> anyhow::Result<Vec<(u32, u64, u64)>> {
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     let mut prefix = Vec::new();
@@ -844,7 +859,7 @@ pub fn cursor_rows(
     prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
     prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
     prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&part_id.to_be_bytes());
+    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
     for suffix in store.scan_suffix(&prefix) {
         if suffix.len() < 4 {
@@ -854,7 +869,7 @@ pub fn cursor_rows(
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);
-        let row = t.get(&MqCursorKey { event_id, part_id, booth_id });
+        let row = t.get(&MqCursorKey { event_id, instance_key_id, booth_id });
         out.push((
             booth_id,
             row.as_ref().map(|c| c.cursor).unwrap_or(0),
@@ -871,9 +886,9 @@ pub fn cursor_rows(
 /// read the cursor back as 0 and re-deliver the surviving rows. This call
 /// is therefore only for rows already below the watermark (proof that
 /// nothing can replay).
-pub fn drop_cursor(store: &MqStore, event_id: u32, part_id: u32, booth_id: u32) -> anyhow::Result<()> {
+pub fn drop_cursor(store: &MqStore, event_id: u32, instance_key_id: u32, booth_id: u32) -> anyhow::Result<()> {
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    t.delete_by_pkey(&MqCursorKey { event_id, part_id, booth_id });
+    t.delete_by_pkey(&MqCursorKey { event_id, instance_key_id, booth_id });
     Ok(())
 }
 
@@ -888,16 +903,16 @@ pub fn event_name_of(store: &MqStore, event_id: u32) -> anyhow::Result<Option<St
 /// watermark denominator and the consumer loop's binding use. An exact
 /// row matches by id; a wildcard row (the registry stores the PREFIX as
 /// its event name) matches when the concrete name starts with it. The
-/// returned slice is `Partition::Singleton` for a key-less route and
-/// `Partition::Named(instance_key)` for a keyed one (the emit path derives
+/// returned slice is `InstanceKey::Singleton` for a key-less route and
+/// `InstanceKey::Named(instance_key)` for a keyed one (the emit path derives
 /// the partition from the same field, so subscriber and queue agree by
 /// construction). None = no route of this booth type binds the event.
-pub fn bound_partition(
+pub fn bound_instance_key(
     store: &MqStore,
     booth_type: &str,
     instance_key: &str,
     event: &str,
-) -> anyhow::Result<Option<Partition>> {
+) -> anyhow::Result<Option<InstanceKey>> {
     let Some(event_id) = event_id_of(store, event)? else {
         return Ok(None);
     };
@@ -921,9 +936,9 @@ pub fn bound_partition(
             // type has no bound queue for it (the valve reports "no route"
             // rather than aiming at a queue it does not consume).
             if key_field.is_empty() {
-                return Ok((instance_key == SINGLETON).then_some(Partition::Singleton));
+                return Ok((instance_key == SINGLETON).then_some(InstanceKey::Singleton));
             }
-            return Ok(Some(Partition::Named(instance_key.to_string())));
+            return Ok(Some(InstanceKey::Named(instance_key.to_string())));
         }
     }
     Ok(None)

@@ -2,7 +2,10 @@
 
 > **Languages:** [English](event-flow-en.md) (primary) · [中文](event-flow.md)
 
-The single integrated document for the event plane, organized as a DERIVATION:
+The single integrated document for the event plane, in two layers: the CONTRACT
+(emit/`@on`, queues, the retention promise) and the INTERNAL LAYOUT (the keyspace
+and the engine annotations — the latter are implementation notes only, ADR-0041).
+It is organized as a DERIVATION:
 what constraints force each persistent surface (§2) → what authors declare (§3) →
 the one-time registration assembly (§4) → matching per emit (§5) → delivery,
 consumption and retention (§6) → the derivation's landing point, the keyspace
@@ -12,7 +15,8 @@ Rulings it records: ADR-0007/0012 (the receiver set is a runtime fact),
 ADR-0026 (type-level storage plane), ADR-0002 (events never occupy a real ns),
 ADR-0038 (the consumer set and identity: wildcard narrowing, one dictionary,
 declaration semantics, no silent drops), ADR-0039 (partition encoding and the
-cursor retention promise), `docs/design/partitioning.md` §1 (the routing end
+cursor retention promise), ADR-0041 (the event plane's internal layout: the
+instance-key vocabulary, the issuer on the data table, one physical partition), `docs/design/partitioning.md` §1 (the routing end
 state), and the wiki's [Distributed Collaboration Topology](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md)
 §2 (the ceiling on order: why cross-partition events are never globally ordered).
 
@@ -23,17 +27,27 @@ magnet:
 
 - **Event**: a fact that happened — an open vocabulary. Events never occupy a
   real ns; they get a proxy id from the EventName dictionary.
-- **Partition**: the queue's slice identity, derived from the instance key the
-  route resolves. Landed (ADR-0039 §1): a PROXIED VOCABULARY — the PartitionName
-  dictionary (ns 21) issues a fixed-width `u32` id, one shape with the event and
-  type dictionaries. Reason: an okm primary key is fixed-width by construction
-  (`KeyEncode` panics on a `String`), so an inline string is not expressible,
-  while "an open vocabulary gets a proxy id" is this document's own rule. The
-  hash is gone, `0` is an id the issuer cannot produce, and the routing layer
-  speaks `mq::Partition` (`Singleton | Named`) instead of a magic string.
+- **Instance key**: the addressing unit of a delivery — on the subscriber side
+  the subscriber's own instance key, on the emit side the payload value the
+  route's `key_field` points at (the two agree by construction, §6.1). It is at
+  the same time the queue's SLICE identity: one event is sliced by instance key,
+  one fact per key lands as ONE row, and each subscriber type reads it through
+  its own cursor. The key value comes from data (an open vocabulary), so it takes
+  a proxy id: the **InstanceKeyRegistry dictionary (ns 21)** issues a fixed-width
+  `u32` (one layout with the event and type dictionaries), `0` stays reserved for
+  key-less delivery (the singleton slice) and is unreachable by issuance, and the
+  routing layer speaks `mq::InstanceKey` (`Singleton | Named`) instead of a magic
+  string. Reason: an okm primary key is fixed-width by construction (`KeyEncode`
+  panics on a `String`), so an inline string is not expressible; a hash once
+  bought the width and was deleted for mis-delivering on collision and being
+  unreadable (ADR-0039 §1). **The word belongs to the event plane alone**: okm's
+  physical KV partition (`#[ok_partition]`) is the engine's compaction group, a
+  different thing, and appears only as an implementation note in §7 (ADR-0041 §2).
 - **Booth**: who consumes. The type name takes its id from the ONE type dictionary
-  (ns 30); instance names enter no dictionary at all — a cursor's subject is the
-  TYPE (ADR-0038 §2, landed; see §8.3).
+  (ns 30); CONSUMER identity enters no dictionary — a
+  cursor's subject is the TYPE (ADR-0038 §2, landed; see §8.3); the instance key
+  does have a dictionary of its own (ns 21), but it issues ids for the queue
+  slice, not for a consumer identity.
 
 Four invariants (§2 is their unfolding):
 
@@ -53,10 +67,10 @@ Four invariants (§2 is their unfolding):
    queues do not — backlog replay rides the cursor, not a live process. The
    promise is BOUNDED: idle long enough and the backlog is forfeit (ADR-0039
    §2, `cursor_ttl`).
-4. **Subscriptions are type-level; consumption positions are instance-level.**
-   The EventRoute row's subject is a type; the MqCursor row's subject is a
-   participant (the current shape — ADR-0038 §1 narrows it to the singleton
-   instance; see §8.3).
+4. **Subscriptions are type-level; consumption positions are type-level.**
+   The EventRoute row's subject is a type, and so is the MqCursor row's (ADR-0038
+   §2 landed — a participant-level cursor makes the consumer set open and is
+   refused; see §8.3).
 5. **No silent drops.** Every matched route of every emit either produces at
    least one real target, or leaves an observable record (ADR-0038 §4; today's
    entries are §5 and §6.1). The accompanying precondition: a queue's consumer
@@ -67,7 +81,10 @@ Four invariants (§2 is their unfolding):
 
 The event plane has no design space to pick from: every step is forced by the
 previous one. Walk the chain and §7's keyspace table is simply where it lands
-(each step names its landing table and ns).
+(each step names its landing table and ns). §7 is also the internal-layout table:
+engine annotations (`#[ok_ns]`/`#[ok_partition]`/…) appear there as implementation
+notes — they are how a landing is implemented, never why it is the landing
+(ADR-0041 §2).
 
 1. **The caller does not know who is listening** (invariant 1). → Delivery
    cannot address receivers, and no checkable receiver whitelist exists; "nobody
@@ -77,40 +94,57 @@ previous one. Walk the chain and §7's keyspace table is simply where it lands
    first, each party takes what is theirs". **Landing: MqData (ns 22)** — one
    row per emit, payload riding along; the key carries no booth identity,
    because an event belongs to no booth (invariant 3).
-   Key `[event_id u32][part_id u32][seq u64]` (16 B, `#[ok_partition(1)]`, sharded by
-   event_id); value = the payload's DYNAMIC segment (a native nTLV map with no declared
-   fields — the key fixes identity, and the event's own shape is the author's data) plus
-   the live `Count` reduce (group = the key's event_id + part_id, step 11).
+   Key `[event_id u32][instance_key_id u32][seq u64]` (16 B); value = the payload's
+   DYNAMIC segment (a native nTLV map with no declared fields — the key fixes
+   identity, and the event's own shape is the author's data) plus TWO live reduces:
+   `Count { group(event_id, instance_key_id) }` (queue depth, step 11) and
+   `HighWater(seq) { group(event_id, instance_key_id) }` (**the write head**, i.e.
+   the issuer, step 5). (The table carries `#[ok_partition(1)]`: the engine's
+   physical KV partition, see §7's implementation note.)
 3. **Each consumer must know independently how far it has read, and consumers
    can die** (scale-to-zero, eviction, hot swap). → The consumption position
    must be persisted per subscriber and must be monotonic: **Landing: MqCursor
    (ns 23)**, its subject a subscriber, never rewinding (this is what makes
    skip-to-head durable — a skipped backlog must not re-surface on the next
    drain).
-   Key `[event_id u32][part_id u32][booth_id u32]` (12 B, `#[ok_partition(2)]`);
-   value = `cursor u64` (the last consumed seq; 0 = nothing consumed) +
-   `last_active_ms u64` (v2 hot tail: the `cursor_ttl` predicate's input; 0 = unmarked,
-   never expired).
+   Key `[event_id u32][instance_key_id u32][booth_id u32]` (12 B); value =
+   `cursor u64` (the last consumed seq; 0 = nothing consumed) + `last_active_ms u64`
+   (v2 hot tail: the `cursor_ttl` predicate's input; 0 = unmarked, never expired).
+   It is a point table, the same class as booth state, and carries no physical
+   partition (ADR-0041 §4).
 4. **Different batches of the same event must queue separately** (cross-instance
-   parallel, same-instance serial). → The queue must be sliced: **partition =
-   the instance key the route resolves**. A partition value is an open vocabulary,
-   so it takes the proxy id this document's §7 already prescribes (ADR-0039 §1,
-   landed: the PartitionName dictionary issues it and the hash is gone — a hash only
-   bought fixed width, and an okm primary key is fixed-width anyway, so an inline
-   string was never expressible).
-   The dictionary's landing — **PartitionName (ns 21)**: key `id u32` (4 B, issuance
-   starts at 1; 0 is left to the singleton and is structurally unreachable); value =
-   `name String` (the raw partition value) + `id u32` mirror (the reduce folds payload
-   fields) + `global u32` (single group, constant 0) + the `by_name` text index
-   (name → id) + the `HighWater(id)` reduce (a registry-wide watermark — the same shape
-   steps 6/8 use).
-5. **Appending must not scan the whole partition for max; and the sequence can have
-   only one issuer.** → **Landing: MqHead (ns 24)**, the
-   per-partition write head: key `[event_id u32][part_id u32]` (8 B), value =
-   `last_seq u64` (the largest sequence number issued for that partition); append reads
-   it, computes `last + 1`, writes it back — O(1), with no second scan.
+   parallel, same-instance serial). → The queue is sliced by **instance key**:
+   **the slice segment's value = the instance key the route resolves** (the
+   subscriber side = this instance's key, the emit side = the payload value of the
+   route's `key_field`; the two agree by construction). The key value comes from
+   data, so it is an open vocabulary and takes the **proxy id** this document's §7
+   already prescribes (ADR-0039 §1, landed: the hash is gone — a hash only bought
+   fixed width, and an okm primary key is fixed-width anyway, so an inline string
+   was never expressible). One id covers ONE INSTANCE PER SUBSCRIBER TYPE: the data
+   key carries no booth segment, so one fact per key lands as one row that several
+   types read through their own cursors (the fan-out dedup — not "one instance,
+   one id", ADR-0041 §1).
+   The dictionary's landing — **InstanceKeyRegistry (ns 21)**: key `id u32` (4 B,
+   issuance starts at 1; 0 is left to key-less delivery and is structurally
+   unreachable); value = `name String` (the instance key verbatim) + `id u32` mirror
+   (the reduce folds payload fields) + `global u32` (single group, constant 0) + the
+   `by_name` text index (name → id) + the `HighWater(id)` reduce (a registry-wide
+   watermark — the same shape steps 6/8 use).
+5. **Appending must not scan the whole slice for max; and the sequence can have
+   only one issuer.** → **Landing: the `HighWater(seq)` watermark on MqData**
+   (already hung in step 2): append reads the watermark (one point read of the
+   reduce entry), computes `+1`, and the data row's own put folds it — O(1), with
+   no second scan, and issuance and the row land in ONE physical partition (the
+   append's atomic domain). **Why a watermark can be the issuer**: okm's reduce
+   discipline is "acc = the fold over the rows the table currently holds", and
+   `HighWater` is that discipline's DECLARED exception (unfold is a no-op) — an
+   issuer's value must outlive its rows, and a view cannot; so retention
+   compaction deleting rows never lowers the head. The separate head table
+   (MqHead, ns 24) is retired by this: the access surface is static,
+   single-writer and framework-internal, so no third-party compatibility surface
+   needs the issuer to exist on its own (ADR-0041 §3).
    — **"Why a counter and not a timestamp?"** Because this value is the SORT KEY, and
-   within a partition the sort key is the row's identity, so it must be totally ordered
+   within a slice the sort key is the row's identity, so it must be totally ordered
    and unique — and only "read the head, add one" gives that: (1) a second source (a raw
    wall reading) produces EQUAL keys for two appends in the same millisecond, and equal
    okm primary keys mean the later write OVERWRITES the earlier row — not a duplicate
@@ -167,7 +201,7 @@ previous one. Walk the chain and §7's keyspace table is simply where it lands
     schema copy → `StorePlan::from_schema` compiles the storage routing table
     (collections / indexes / reduces, slot encodings).
 11. **Ops must read queue depth with zero scans** (the skip-to-now decision
-    input). → A live `Count` reduce on MqData (group(event_id, part_id)):
+    input). → A live `Count` reduce on MqData (group(event_id, instance_key_id)):
     append folds +1, watermark compaction deleting rows folds −1, so `depth()`
     is one point read, never a scan.
 
@@ -240,17 +274,17 @@ inside a type is the identity** — the event name itself carries no subject.
 
 ## 6. Delivery, consumption, retention
 
-### 6.1 Delivery and partition resolution (the current shape)
+### 6.1 Delivery and slice resolution (the current shape)
 
 Per matched route:
 
 ```
-partition =  key_field empty → Partition::Singleton
-            else payload[key_field] as str → Partition::Named(that value)   // exactly one
-            absent/non-string → a MALFORMED event: dead ring with MissingKeyField (ADR-0038 §4)
-target   = InstanceId{booth_type, the singleton instance's key = "__singleton__", else the value}
+slice  =  key_field empty → InstanceKey::Singleton
+          else payload[key_field] as str → InstanceKey::Named(that value)   // exactly one
+          absent/non-string → a MALFORMED event: dead ring with MissingKeyField (ADR-0038 §4)
+target = InstanceId{booth_type, the singleton instance's key = "__singleton__", else the slice value}
 activation → not in the instance table? instance() first (same pass, before any send)
-enqueue    → mq::append(event, &Partition, payload)   deduped by (event, partition)
+enqueue    → mq::append(event, &InstanceKey, payload)   deduped by (event name, slice)
 ```
 
 Honest footnotes:
@@ -264,27 +298,28 @@ Honest footnotes:
    rows); what cannot be expressed is fanning out WITHIN a type by business
    fact (region.escalation → every western store) — a single field cannot,
    a scan naturally can (§8.1).
-3. **Delivery/consumption partition agreement is by construction**: the
-   consumer's `bound_partition` re-derives the route's key_field semantics
-   from "this instance's key" — instance name = partition name = key-field
-   value is the trinity today (a contract, not a mechanism).
-4. The dedupe key is `(concrete event name, partition)`: several types on one
+3. **Delivery/consumption slice agreement is by construction**: the
+   consumer's `bound_instance_key` re-derives the route's key_field semantics
+   from "this instance's key" — the instance key IS both the value the emit side
+   read and the key this consumer holds, and the two agree by construction
+   (ADR-0041 §1).
+4. The dedupe key is `(concrete event name, slice)`: several types on one
    event enqueue once and the queue fans out to all subscribers; two rows for
-   one partition from one emit would be double delivery.
+   one slice from one emit would be double delivery.
 
 ### 6.2 The consumption loop
 
 `crates/realm/src/instance.rs`: activation binds the subscription set (the
 in-memory `router.routes_of`) and then each instance runs one consumer loop:
 
-- A keyed route: partition = this instance's key; a key-less route (wildcards
-  included): partition = the singleton.
+- A keyed route: slice = this instance's key; a key-less route (wildcards
+  included): slice = the singleton.
 - Every cycle sweeps ALL bound queues: a wildcard subscription re-expands via
   `mq::events_matching(prefix)` into concrete event names each pass (new names
   join automatically); other subscriptions use the declared event name itself.
 - Per queue: read the cursor → `mq::backlog` (the rows after the cursor) → run
   each row's `run_job` serially → `mq::advance`. `backlog` is a full scan of the
-  partition prefix (no batch cap); convergence rides cursor advance and
+  slice prefix (no batch cap); convergence rides cursor advance and
   compaction.
 - A cycle with no progress parks 50 ms. **Same-instance serial, cross-instance
   parallel lives in this loop, not in locks.**
@@ -350,8 +385,9 @@ denominator is the **EventRoute registry**, not the raw cursor keys:
 One realm's persistent plane = one okm instance; the framework low block has two
 bands (ADR-0040): **the event plane, ns 20–29**, and **the meta plane, ns 30–39**
 (inside a band, table order is conceptual — vocabulary → data → positions →
-registry); **booth type nss** allocate at runtime from 100; `26–29` (the event
-plane's empty middle) and `33–99` stay reserved.
+registry); **booth type nss** allocate at runtime from 100; `24` (vacated when
+ADR-0041 retired MqHead) and `26–29` (the event plane's empty middle), plus `33–99`,
+stay reserved.
 
 The framework low block (ADR-0040, landed). **Full key/value layouts — field order,
 widths, sentinels and the index/reduce shapes — live in §2's landing lines per step;
@@ -361,11 +397,11 @@ this table is the index, and the authoritative definition lives in the code
 | ns | table | key | purpose | code |
 |---|---|---|---|---|
 | 20 | EventName | `id u32` | event-name dictionary (`by_name` text index; open vocabulary takes proxy ids, never a real ns) | mq.rs |
-| 21 | **PartitionName** (new) | `id u32` | the partition dictionary (ADR-0039 §1): `by_name` text index + `HighWater` watermark, reverse resolution (id → name) for ops; the FNV-1a hash is gone | mq.rs |
-| 22 | MqData | `[event_id u32][part_id u32][seq u64]` | event data: one row per emit, N subscribers = N cursors; sort key = the per-partition sequence (a counter); carries the live `Count` reduce (same-key group) behind `depth()`'s point read | mq.rs |
-| 23 | MqCursor | `[event_id u32][part_id u32][booth_id u32]` | subscription cursor: last consumed seq, monotonic; the third segment is the ns 30 type id; `last_active_ms` joins the row (ADR-0039 §2, landed) | mq.rs |
-| 24 | MqHead | `[event_id u32][part_id u32]` | partition write head (the sequence issuer): value `last_seq u64`; O(1) append (`last+1`), single-writer under the realm lock | mq.rs |
-| 25 | EventRoute | `[event_id u32][booth_id u32]` | persisted subscription registry (`by_booth` index); wildcards ride the same row shape storing the PATTERN; `booth_id` = the ns 30 type id | mq.rs |
+| 21 | **InstanceKeyRegistry** | `id u32` | the instance-key dictionary (ADR-0039 §1 established, ADR-0041 §1 named): `by_name` text index + `HighWater` watermark, reverse resolution (id → instance key) for ops; the FNV-1a hash is gone | mq.rs |
+| 22 | MqData | `[event_id u32][instance_key_id u32][seq u64]` | event data: one row per emit, N subscribers = N cursors (types share the row); sort key = the per-slice sequence (a counter); carries TWO live reduces: `Count` (behind `depth()`'s point read) and `HighWater(seq)` (the write head = the issuer, ADR-0041 §3); the table carries `#[ok_partition(1)]` | mq.rs |
+| 23 | MqCursor | `[event_id u32][instance_key_id u32][booth_id u32]` | subscription cursor: last consumed seq, monotonic; the third segment is the ns 30 booth id; `last_active_ms` joins the row (ADR-0039 §2); no physical partition (ADR-0041 §4) | mq.rs |
+| 24 | — (empty) | | the write head retired with MqHead; MqData's `HighWater(seq)` carries it (ADR-0041 §3) | |
+| 25 | EventRoute | `[event_id u32][booth_id u32]` | persisted subscription registry (`by_booth` index); wildcards ride the same row shape storing the PATTERN; `booth_id` = the ns 30 booth id | mq.rs |
 | 30 | **BoothName** (was TypeName; renamed dbc5d60, renumbered Phase 4.18) | `id u32` | the unique booth-TYPE dictionary: `by_name` index + `HighWater(id)` preset + data-ns allocation (`100+id`); resolves BOTH ways (name→id `resolve_booth_id`, id→name `booth_name_of`) | meta.rs |
 | 31 | BoothDef | `booth_id u32` | booth definition row per type: name/language/encoding/idle_ttl + the `code_sha256` pointer; the introspected schema rides the dynamic segment (structured nTLV, never opaque text) | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | content-addressed code bytes (ADR-0027): pure content rows, immutable by construction — same key different bytes is a hash collision, not a state | meta.rs |
@@ -373,21 +409,26 @@ this table is the index, and the authoritative definition lives in the code
 The event plane's own subscriber-identity dictionary (the old ns 33) is **deleted**
 (ADR-0038 §2) and takes no number in the new bands.
 
-Partition annotations: MqData = partition 1 (by event_id), MqCursor =
-partition 2; `SINGLETON_PART = 0`.
+**Implementation note (physical partitions — not event-plane vocabulary)**:
+`#[ok_partition]` is the engine's compaction group. Only MqData carries one
+(partition 1) — it is the sole bulk-append + range-delete workload; MqCursor's
+point writes are the same class as booth state and live in the default keyspace
+(ADR-0041 §4). `SINGLETON_KEY_ID = 0`.
 
-**Landed (ADR-0039 §1)**: the partition is a PROXIED VOCABULARY —
-`PartitionName` (ns 21) issues a fixed-width `u32` id (one layout with the other
-two dictionaries), `0` stays reserved for the singleton and issuance starts at 1
-(structurally unreachable), `part_hash`/FNV-1a/`part_id_of`/`part_hash_of` are
-gone, and the routing layer speaks `mq::Partition` (`Singleton | Named`) rather
-than comparing a magic string. The reason: an open vocabulary takes a proxy id,
-which is this document's own rule; an okm primary key is fixed-width by
-construction (`KeyEncode` panics on a `String`), so an inline string is not
-expressible; and the hash brought mis-delivery on collision, a reserved value
-sharing a namespace with the value space, and a mapping no ops surface can read
-back. Key widths tightened: MqData 20→16 B, MqCursor 16→12 B, MqHead 12→8 B.
-`MqCursor.last_active_ms` (§6.3's expiry predicate) landed in the same batch.
+**The slice IS the instance key (established by ADR-0039 §1, named by ADR-0041
+§1)**: `InstanceKeyRegistry` (ns 21) issues a fixed-width `u32` id (one layout with the
+other two dictionaries), `0` stays reserved for key-less delivery and issuance
+starts at 1 (structurally unreachable), `part_hash`/FNV-1a/`part_id_of`/
+`part_hash_of` are gone, and the routing layer speaks `mq::InstanceKey`
+(`Singleton | Named`) rather than comparing a magic string. The reason: an open
+vocabulary takes a proxy id, which is this document's own rule; an okm primary key
+is fixed-width by construction (`KeyEncode` panics on a `String`), so an inline
+string is not expressible; and the hash brought mis-delivery on collision, a
+reserved value sharing a namespace with the value space, and a mapping no ops
+surface can read back. Keys (logical): MqData `[event_id][instance_key_id][seq]`
+16 B, MqCursor `[event_id][instance_key_id][booth_id]` 12 B; the write head is
+MqData's `HighWater(seq)` watermark (the MqHead table is retired, ADR-0041 §3).
+`MqCursor.last_active_ms` (§6.3's expiry predicate) landed with ADR-0039 §2.
 
 Booth type nss (runtime): registering a type issues the id from the unique
 dictionary and allocates data ns = `100 + id` — monotonic with the id, never
@@ -412,8 +453,8 @@ transient": persisted booth definitions and code blobs go with it, so a deployme
 re-registers its types (ADR-0040 records this). A fresh store has nothing to wipe.
 
 **Vocabulary tables never take a real ns**: open vocabularies (event names,
-partition names, participant names) ride proxy ids + text indexes; only closed
-vocabularies (booth types) earn a real ns — the EventName/PartitionName/BoothName
+instance keys) ride proxy ids + text indexes; only closed
+vocabularies (booth types) earn a real ns — the EventName/InstanceKeyRegistry/BoothName
 shape (ns 20/21/30) follows from this. Nss only grow: deregistering a type
 reclaims nothing — reusing a keyspace prefix reads old data as new data, and
 "ids and nss are never reused" is one ruling.
@@ -449,7 +490,7 @@ evaluate (framework, per emit): probe = payload[probe_field]
                               → scan the index prefix: each hit's ROW PROXY KEY =
                                 a target instance key (fan-out, b-default)
                               → per-target activation + enqueue deduped by
-                                (event, partition) (already exists)
+                                (event, slice) (already exists)
 ```
 
 Ruled this round:
@@ -469,11 +510,11 @@ Ruled this round:
   at the row-structure layer, no sentinel mixing): for keyed cases the two are
   equivalent and key_field is cheaper (zero scan); migration is per type.
 - **Multi-target failure semantics**: per-target dead-ring/record, consistent
-  with ADR-0012 (appends are already per-partition independent — failure
+  with ADR-0012 (appends are already per-slice independent — failure
   granularity comes for free).
-- **MQ formats unchanged**: `append(event, partition)` rows and per-(event,
-  partition) cursors already fit one-to-many delivery; only the route side
-  must produce a SET of partitions.
+- **MQ formats unchanged**: `append(event, slice)` rows and per-(event,
+  slice) cursors already fit one-to-many delivery; only the route side
+  must produce a SET of slices.
 
 **Ruled (ADR-0038 §3)**: ① declaration granularity = per event, with no type
 default — `resolve` is a function of (type, event), and a type-wide default is
@@ -544,6 +585,16 @@ drop); uniqueness comes from "the emit path holds the realm lock = one writer".
 `ctx_skip_to_now` → `ctx_skip_to_head`, in aura and in probe's steel carrier allowlist). An EXISTING deployment must wipe the low
 block (the new meta band lands on numbers the old event plane used; the cost
 includes persisted definitions and code blobs — ADR-0040 records it).
+**Same window (2026-10-08, ADR-0041)**: the event-plane vocabulary moves to the
+instance key (`part_id`→`instance_key_id`, `PartitionName`→`InstanceKeyRegistry`,
+`mq::Partition`→`mq::InstanceKey`, `SINGLETON_PART`→`SINGLETON_KEY_ID`, and
+`bound_partition`→`bound_instance_key` among the functions); `MqHead` (ns 24) is
+retired and the write head becomes MqData's `HighWater(seq)` watermark (issuance
+folds with the row that carries it — one batch, one physical partition);
+`#[ok_partition(2)]` leaves MqCursor, leaving MqData's partition 1 as the only
+physical partition; the document is restated in two layers (contract / internal
+layout) with the engine annotations demoted to implementation notes. Migration is
+absorbed by ADR-0040's wipe.
 
 ### 8.5 Misc backlog (still open)
 

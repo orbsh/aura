@@ -2,12 +2,13 @@
 
 > **语言：** [English](event-flow-en.md)（主文档） · [中文](event-flow.md)
 
-本文是事件平面的单一整合文档，按推导组织：约束怎样逼出每一个持久面（§2）→ 作者声明什么
+本文是事件平面的单一整合文档，分两层叙述：**契约**（emit/`@on`、队列、保留承诺）与
+**内部布局**（键空间与引擎注解——后者只是实现注记，见 ADR-0041）。正文按推导组织：约束怎样逼出每一个持久面（§2）→ 作者声明什么
 （§3）→ 注册一次性装配（§4）→ 每次 emit 的匹配（§5）→ 投递、消费与保留（§6）→ 推导的
 落点即键空间布局（§7）→ 终态裁决与实施清单（§8，4.13+ 挂账）。原
 `ns-layout.md`/`ns-layout-en.md` 退为指针。裁决依据：ADR-0007/0012（接收者集合是运行时
 事实）、ADR-0026（类型级存储面）、ADR-0002（事件不占真实 ns）、ADR-0038（消费者集合与
-身份：通配收窄、单字典、声明语义、无静默丢弃）、ADR-0039（分区编码与游标保留承诺）、
+身份：通配收窄、单字典、声明语义、无静默丢弃）、ADR-0039（分区编码与游标保留承诺）、ADR-0041（事件面内部布局：实例键词汇、发号器长在数据表上、只留一处物理分区）、
 `docs/design/partitioning.md` §1（路由终态目标）、[分布式协作拓扑](https://github.com/orbsh/wiki/blob/main/distributed-collaboration-topology.md) §2（顺序层的上限：为何跨分区不做全局排序）。
 
 ## 1 词汇与不变式
@@ -15,14 +16,18 @@
 事件平面有三个正交词汇，混用是历史上最容易出错的地方：
 
 - **事件（Event）**：发生的事实，开放词汇。不占真实 ns，占 EventName 代理 id。
-- **分区（Partition）**：队列的切片标识，由路由解析出的 instance key 派生。
-  今天：值 = 字符串 → FNV-1a 定宽 u64 哈希，`0` 保留给单例分区（碰撞映射到 1）。
-  已落（ADR-0039 §1）：分区是**代理词汇**——PartitionName 字典（ns 21）发定宽 `u32`
-  id，与事件名/类型名同构。理由：okm 主键在构造上定宽（`KeyEncode` 遇 `String` 编译期
-  panic），内联字符串表达不出来；而开放词汇走代理 id 本就是本节的既有规则。哈希已删，
-  `0` 是发号不可达的哨兵 id，路由层用 `mq::Partition`（Singleton | Named）做结构标记。
+- **实例键（Instance key）**：投递的寻址单位——订阅侧是订阅者自己的 instance key，
+  emit 侧是 route 声明的 key 字段所指的 payload 值；两侧同值由构造保证（§6.1）。它同时
+  是**队列的切片标识**：同一事件按实例键切片，同一键的一份事实只落一行，由各订阅类型
+  各自的游标去读。键值来自数据、是开放词汇，走代理 id：**InstanceKeyRegistry 字典（ns 21）**
+  发定宽 `u32`（与事件名/类型名同一布局），`0` 保留给无键投递（单例切片）、发号不可达，
+  路由层用 `mq::InstanceKey`（Singleton | Named）做结构标记。理由：okm 主键在构造上定宽
+  （`KeyEncode` 遇 `String` 编译期 panic），内联字符串表达不出来；哈希曾用来换定宽，因
+  碰撞即错误投递、不可反查被删（ADR-0039 §1）。**这个词只属于事件面**：okm 的物理 KV
+  分区（`#[ok_partition]`）是引擎的 compaction 分组，是另一回事，只在 §7 的实现注记里
+  出现（ADR-0041 §2）。
 - **参与者（Booth）**：谁在消费。类型名走**唯一字典**（ns 30）拿 id；实例名不进任何
-  字典——游标的主语是类型（ADR-0038 §2，已落；见 §8.3）。
+  **消费身份**不进字典——游标的主语是类型（ADR-0038 §2，已落；见 §8.3）；实例键本身确有字典（ns 21），那是给队列切片发号，不是给消费者发身份。
 
 四条不变式（§2 的推导即它们的展开）：
 
@@ -35,8 +40,8 @@
 3. **队列先于消费者存在**。MqData 键里没有摊位身份（"事件不属于任何摊位"）；
    实例可以死（scale-to-zero），队列不跟着死——backlog 重放靠游标，不靠活进程。
    但这条承诺是有界的：死得够久，积压作废（ADR-0039 §2 的 `cursor_ttl`）。
-4. **类型级订阅，实例级消费位置**。EventRoute 行主语是类型；MqCursor 行主语是
-   参与者（当前形状——ADR-0038 §1 已裁收窄为单例投递，见 §8.3）。
+4. **类型级订阅，类型级消费位置**。EventRoute 行主语是类型；MqCursor 行主语也是
+   类型（ADR-0038 §2 已落——参与者级游标是开集，已否决，见 §8.3）。
 5. **无静默丢弃**。每条 emit 的每个匹配 route 要么产生至少一个真目标，要么留下
    一条可观测记录（ADR-0038 §4；今天的入口见 §5、§6.1）。配套前提：一个队列的
    消费者集合必须是**闭集**——它同时是保留承诺（§6.3）与通配收窄（ADR-0038 §1）
@@ -45,33 +50,44 @@
 ## 2 从约束推导持久面
 
 事件平面没有可以挑的设计空间：每一步都是上一步逼出来的。链条走完，§7 的键空间表就是
-它的落点（每一步末尾括注落点表与 ns 号）。
+它的落点（每一步末尾括注落点表与 ns 号）。§7 同时是内部布局表：`#[ok_ns]`/`#[ok_partition]`
+一类引擎注解只在那里作为实现注记出现，它们是落点的实现方式，不是推导的理由（ADR-0041 §2）。
 
 1. **发起者不知道谁在听**（不变式 1）。→ 投递不能按地址寻址，也不存在可校验的接收者
    白名单；「没人订阅」只能事后观测（dead ring）。
 2. **一个事实可能有 N 个消费者，且它们互不相识**。→ 投递不能是函数调用或返回值，只能
    是「事实先落盘，各方自取」。**落点：MqData（ns 22）**——一行一个 emit、payload 随行；
    键里没有摊位身份，因为事件不属于任何摊位（不变式 3）。
-   键 `[event_id u32][part_id u32][seq u64]`（16 B，`#[ok_partition(1)]`，按 event_id 分片）；
-   值 = payload 的**动态段**（native nTLV map，无声明字段——键已定身份，事件自身的形状是
-   作者的数据）+ 挂 live `Count` reduce（group = 键的 event_id + part_id，见第 11 步）。
+   键 `[event_id u32][instance_key_id u32][seq u64]`（16 B）；值 = payload 的**动态段**
+   （native nTLV map，无声明字段——键已定身份，事件自身的形状是作者的数据）+ 挂两个 live
+   reduce：`Count { group(event_id, instance_key_id) }`（队列深度，第 11 步）与
+   `HighWater(seq) { group(event_id, instance_key_id) }`（**写头即发号器**，第 5 步）。
+   （表带 `#[ok_partition(1)]`：引擎的物理 KV 分区，见 §7 的实现注记。）
 3. **每个消费者要独立地知道自己读到哪，而消费者可以死**（scale-to-zero、驱逐、热替换）。
    → 消费位置必须独立持久，且单调：**落点：MqCursor（ns 23）**，行主语是订阅者，
    绝不回卷（skip-to-head 的持久性靠这条——跳过的 backlog 不得在下一轮 drain 重现）。
-   键 `[event_id u32][part_id u32][booth_id u32]`（12 B，`#[ok_partition(2)]`）；
-   值 = `cursor u64`（最后消费的 seq，0 = 未消费）+ `last_active_ms u64`（v2 热尾：
-   `cursor_ttl` 谓词的输入，0 = 未标记、永不判过期）。
+   键 `[event_id u32][instance_key_id u32][booth_id u32]`（12 B）；值 = `cursor u64`
+   （最后消费的 seq，0 = 未消费）+ `last_active_ms u64`（v2 热尾：`cursor_ttl` 谓词的输入，
+   0 = 未标记、永不判过期）。它是点表，与摊位状态同类，不带物理分区（ADR-0041 §4）。
 4. **同一事件的不同批次要能各自排队**（异实例并行，同实例串行）。
-   → 队列要切分：**partition = 路由解析出的 instance key**。分区值是开放词汇，按 §7 的
-   既有规则走**代理 id**（ADR-0039 §1 已落：PartitionName 字典发号、哈希删除——哈希只能
-   解决定宽，而 okm 主键本就要求定宽、内联字符串根本表达不出来）。
-   字典落点 **PartitionName（ns 21）**：键 `id u32`（4 B，发号从 1 起，0 留给单例、构造性
-   不可达）；值 = `name String`（原始分区值）+ `id u32` 镜像（reduce 折载荷字段）+
-   `global u32`（单组常量 0）+ `by_name` 文本索引（名→id）+ `HighWater(id)` reduce
+   → 队列按**实例键**切分：**切片段的值 = 路由解析出的 instance key**（订阅侧 = 本实例的
+   key，emit 侧 = route 声明的 key 字段的 payload 值；同值由构造保证）。键值来自数据、是
+   开放词汇，按 §7 的既有规则走**代理 id**（ADR-0039 §1 已落：哈希删除——哈希只能解决
+   定宽，而 okm 主键本就要求定宽、内联字符串根本表达不出来）。一个 id 覆盖**每个订阅类型
+   各一个**实例：数据键不带 booth 段，所以同一键的一份事实只落一行、由多类型各持游标去读
+   （这是扇出去重，不是「一个实例一个 id」——ADR-0041 §1）。
+   字典落点 **InstanceKeyRegistry（ns 21）**：键 `id u32`（4 B，发号从 1 起，0 留给无键投递、
+   构造性不可达）；值 = `name String`（instance key 原文）+ `id u32` 镜像（reduce 折载荷
+   字段）+ `global u32`（单组常量 0）+ `by_name` 文本索引（名→id）+ `HighWater(id)` reduce
    （注册表级水位，见第 6/8 步同一形态）。
-5. **追加不能扫全分区取 max；而序列只能有一个发号者。** → **落点：MqHead（ns 24）**
-   分区写头：键 `[event_id u32][part_id u32]`（8 B），值 = `last_seq u64`（该分区已发出的
-   最大序列号）；追加读它、算 `last + 1`、写回——O(1)，且没有第二次扫描。
+5. **追加不能扫全分区取 max；而序列只能有一个发号者。** → **落点：MqData 上的
+   `HighWater(seq)` 水位**（第 2 步已挂）：追加读水位（reduce entry 一次点读）、算 `+1`，
+   由数据行自己的 put 把它折上去——O(1)，没有第二次扫描，且发号与写行落进同一个物理分区
+   （append 的原子域）。**为什么水位能当发号器**：okm 的 reduce 账本纪律是「acc 等于主表
+   当前行集合的 fold」，而 `HighWater` 是这条纪律**声明出来的例外**（unfold 是 no-op）——
+   发号器的值必须比行活得久，视图做不到；所以保留压缩删行永远不会让写头下降。原先单独的
+   写头表（MqHead，ns 24）由此撤销：访问面静态、单写者、框架内部，没有第三方兼容面需要
+   发号器独立存在（ADR-0041 §3）。
    ——**「为什么是计数器而不是时间戳？」**：这个值是**排序键**，在同一分区内它就是行的身份，
    所以必须全序且唯一——这两点只有「读头 + 1」给得了：① 另起一个墙钟来源（同毫秒两次追加
    算出相等的键）会让同一个主键的后一次写入**覆盖**前一次（不是重复投递，是丢数据）；
@@ -109,7 +125,7 @@
     ns = `100 + id`（ADR-0026，单调不复用）→ 取上传的持久 schema 副本 →
     `StorePlan::from_schema` 编译存储路由表（collections/索引/reduce 的槽位编码）。
 11. **运维要零扫描地看队列深度**（skip-to-head 的决策输入）。→ MqData 上挂 live `Count`
-    reduce（group(event_id, part_id)）：append 折 +1、水位压缩删行折 −1，`depth()` 是
+    reduce（group(event_id, instance_key_id)）：append 折 +1、水位压缩删行折 −1，`depth()` 是
     一次点读，永不扫描。
 
 链条收束成一句：**事件是事实（要队列），订阅是关系（要注册表），两者都不许在键里带
@@ -166,17 +182,17 @@
 
 ## 6 投递、消费与保留
 
-### 6.1 投递与分区解析（当前形状）
+### 6.1 投递与切片解析（当前形状）
 
 逐匹配 route：
 
 ```
-partition =  key_field 空 → Partition::Singleton
-            否则 payload[key_field] as str → Partition::Named(该值)   // 恰好一个目标
-            缺字段/非字符串 → 畸形事件：带 MissingKeyField 落 dead ring（ADR-0038 §4）
-target   = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 分区值}
-激活       → 不在实例表就先 instance() 拉起（同 pass 内先激活后投递）
-入队       → mq::append(event, &Partition, payload)   按 (event, partition) 去重
+slice  =  key_field 空 → InstanceKey::Singleton
+         否则 payload[key_field] as str → InstanceKey::Named(该值)   // 恰好一个目标
+         缺字段/非字符串 → 畸形事件：带 MissingKeyField 落 dead ring（ADR-0038 §4）
+target = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 切片值}
+激活      → 不在实例表就先 instance() 拉起（同 pass 内先激活后投递）
+入队      → mq::append(event, &InstanceKey, payload)   按 (事件名, 切片) 去重
 ```
 
 三个如实的注脚：
@@ -187,22 +203,22 @@ target   = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 
    在类型级早就有（多类型订一事 = EventRoute 多行）；缺的是**类型内**按业务
    事实扇出（region.escalation → 西部所有门店）——单字段表达不了，扫描天然
    一对多（§8.1）。
-3. **投递/消费两侧的分区一致性靠构造**：消费端 `bound_partition` 用"本实例的
-   key"回填 route 的 key_field 语义，与投递端从 payload 取值的约定在类型层
-   对齐（实例名=分区名=键字段值三位一体是今天的隐含契约）。
-4. 去重键是 `(具体事件名, partition)`：多个类型订同一事件时只入队一次，队列对
-   所有订阅者扇出；一次 emit 对同一分区写两行就是双投递。
+3. **投递/消费两侧的切片一致性靠构造**：消费端 `bound_instance_key` 用本实例的
+   key 回填 route 的 key_field 语义，与投递端从 payload 取值的约定在类型层
+   对齐（instance key 同时是投递侧取的值与消费侧自己的 key，同值靠构造——ADR-0041 §1）。
+4. 去重键是 `(具体事件名, 切片)`：多个类型订同一事件时只入队一次，队列对
+   所有订阅者扇出；一次 emit 对同一切片写两行就是双投递。
 
 ### 6.2 消费循环
 
 `crates/realm/src/instance.rs`：实例激活时绑定订阅集（内存 `router.routes_of`），
 然后每个实例起一条 consumer loop：
 
-- 键位路由：partition = 本实例的 key；键空路由（含通配）：partition = 单例。
+- 键位路由：切片 = 本实例的 key；键空路由（含通配）：切片 = 单例。
 - 每轮扫**全部**绑定队列：通配订阅用 `mq::events_matching(prefix)` 每轮重新展开成
   具体事件名（新名字自动加入）；其余订阅用声明的事件名本身。
 - 每个队列：读游标 → `mq::backlog(取游标之后的行)` → 逐行 `run_job` 串行执行 →
-  `mq::advance`。backlog 是分区前缀的全扫（无批上限），收敛靠游标推进与压缩。
+  `mq::advance`。backlog 是切片前缀的全扫（无批上限），收敛靠游标推进与压缩。
 - 一轮无进展则 park 50ms。**同实例串行、异实例并行在这个循环里，不在锁里。**
 
 游标的主语是**类型**（ADR-0038 §2）：两个类型订同一事件各持独立游标。
@@ -226,12 +242,12 @@ target   = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 
   消失，其陈旧游标行随之掉出分母（§4 的 drop 语义在下游的解释）。
   （实施 §6.3 时补的一处：原先只按精确 event_id 查表，会让**通配**订阅者静默掉出分母、
   积压被压缩吃掉——违反 §1 不变式 5。）
-- 水位 = 分母内游标的最小值；`delete_before(event, partition, min_seq)` 删掉 mq-data
+- 水位 = 分母内游标的最小值；`delete_before(event, slice, min_seq)` 删掉 mq-data
   中 seq < 水位的行为止。分母为空（没有注册订阅者）时不动。
 - seq 比较即顺序比较（§2 第 5 步：它是计数器，不是时间）。
 - **depth**：MqData 的 live `Count` reduce 一次点读（§2 第 11 步）——skip-to-head
   的决策输入，永不扫描。
-- **skip-to-head**（`mq::skip_to_head`；脚本面 host fn 同名 `ctx_skip_to_head`，probe carrier 白名单已同步）：把游标跳到分区写头，丢弃陈旧 backlog（泄压
+- **skip-to-head**（`mq::skip_to_head`；脚本面 host fn 同名 `ctx_skip_to_head`，probe carrier 白名单已同步）：把游标跳到写头（该切片的 seq 水位），丢弃陈旧 backlog（泄压
   阀）。游标单调（`advance` 只进不退）是它持久的原因；`rewind_cursor` 仅测试支持，
   生产路径不用。
 - **游标过期（ADR-0039 §2，已落）**：全局 `cursor_ttl`（`EngineConfig` 一个字段，
@@ -248,7 +264,8 @@ target   = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 
 
 一个 realm 的持久面 = 一个 okm 实例；框架低位块分两段（ADR-0040）：**事件面 ns 20–29**、
 **meta 面 ns 30–39**（段内表序是概念序：词汇 → 数据 → 位置 → 注册表）；**摊位类型 ns**
-运行时从 100 起分配；空段 `26–29`（事件面空段）与 `33–99` 预留。
+运行时从 100 起分配；空段 `24`（ADR-0041 撤 MqHead 后腾出）与 `26–29`（事件面空段）、
+`33–99` 预留。
 
 框架低位块（ADR-0040，已落）。**键/值完整布局——字段顺序、宽度、哨兵与索引/reduce 形态
 ——见 §2 各步的落点行；本表是索引，权威定义住代码（`#[ok_ns]`/`#[ok_layout]`）**：
@@ -256,27 +273,31 @@ target   = InstanceId{booth_type, 单例实例 key = "__singleton__"，否则 = 
 | ns | 表 | 键 | 用途 | 代码 |
 |---|---|---|---|---|
 | 20 | EventName | `id u32` | 事件名字典（`by_name` 文本索引；开放词汇不占真实 ns，代理 id 形态） | mq.rs |
-| 21 | **PartitionName**（新） | `id u32` | 分区字典（ADR-0039 §1）：`by_name` 文本索引 + `HighWater` 水位，反解析 id→名供运维；FNV-1a 哈希已删 | mq.rs |
-| 22 | MqData | `[event_id u32][part_id u32][seq u64]` | 事件数据：一行一个 emit，N 订阅者 = N 游标；排序键 = 每分区序列（计数器）；挂 live `Count` reduce（group 同键）供 `depth()` 点读 | mq.rs |
-| 23 | MqCursor | `[event_id u32][part_id u32][booth_id u32]` | 订阅游标：最后消费 seq，单调不回卷；第三段 = ns 30 的类型 id；另增 `last_active_ms`（ADR-0039 §2，已落） | mq.rs |
-| 24 | MqHead | `[event_id u32][part_id u32]` | 分区写头（序列发号器）：值 `last_seq u64`；O(1) 追加（`last+1`），realm 锁下单写 | mq.rs |
-| 25 | EventRoute | `[event_id u32][booth_id u32]` | 持久订阅注册表（`by_booth` 索引）；通配同行形态存模式串；`booth_id` = ns 30 的类型 id | mq.rs |
+| 21 | **InstanceKeyRegistry** | `id u32` | 实例键字典（ADR-0039 §1 立、ADR-0041 §1 定名）：`by_name` 文本索引 + `HighWater` 水位，反解析 id→实例键供运维；FNV-1a 哈希已删 | mq.rs |
+| 22 | MqData | `[event_id u32][instance_key_id u32][seq u64]` | 事件数据：一行一个 emit，N 订阅者 = N 游标（多类型共享一行）；排序键 = 每切片序列（计数器）；挂两个 live reduce：`Count`（`depth()` 点读）与 `HighWater(seq)`（写头=发号器，ADR-0041 §3）；表带 `#[ok_partition(1)]` | mq.rs |
+| 23 | MqCursor | `[event_id u32][instance_key_id u32][booth_id u32]` | 订阅游标：最后消费 seq，单调不回卷；第三段 = ns 30 的 booth id；另增 `last_active_ms`（ADR-0039 §2）；无物理分区（ADR-0041 §4） | mq.rs |
+| 24 | —（空） | | 写头随 MqHead 撤销，改由 MqData 的 `HighWater(seq)` 承载（ADR-0041 §3） | | 
+| 25 | EventRoute | `[event_id u32][booth_id u32]` | 持久订阅注册表（`by_booth` 索引）；通配同行形态存模式串；`booth_id` = ns 30 的 booth id | mq.rs |
 | 30 | **BoothName**（原 TypeName；改名 dbc5d60、改号 Phase 4.18） | `id u32` | 摊位类型唯一字典：`by_name` 索引 + `HighWater(id)` preset + 数据 ns 分配（`100+id`）；双向解析（名→id `resolve_booth_id`、id→名 `booth_name_of`） | meta.rs |
 | 31 | BoothDef | `booth_id u32` | 摊位定义行：name/language/encoding/idle_ttl + `code_sha256` 指针；introspected schema 走动态段 nTLV | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | 代码字节内容寻址（ADR-0027）：纯内容行，构造性不可变 | meta.rs |
 
 事件面自留的订阅者身份字典（旧 ns 33）**已删除**（ADR-0038 §2），不占新分段任何号位。
 
-partition 注解：MqData=partition 1（按 event_id）、MqCursor=partition 2；`SINGLETON_PART = 0`。
+**实现注记（物理分区，非事件面词汇）**：`#[ok_partition]` 是引擎的 compaction 分组。
+只有 MqData 带一个（partition 1）——它是唯一的「批量追加 + 范围删除」workload；MqCursor 的
+点写与摊位状态同类，住默认键空间（ADR-0041 §4）。`SINGLETON_KEY_ID = 0`。
 
-**已落（ADR-0039 §1）**：分区是**代理词汇**——`PartitionName`（ns 21）发定宽 `u32` id
-（与另两张字典同一布局），`0` 保留给单例、发号从 1 起（构造性不可达），
-`part_hash`/FNV-1a/`part_id_of`/`part_hash_of` 已删，路由层用 `mq::Partition`
+**切片就是实例键（ADR-0039 §1 立、ADR-0041 §1 定名）**：`InstanceKeyRegistry`（ns 21）发定宽
+`u32` id（与另两张字典同一布局），`0` 保留给无键投递、发号从 1 起（构造性不可达），
+`part_hash`/FNV-1a/`part_id_of`/`part_hash_of` 已删，路由层用 `mq::InstanceKey`
 （Singleton | Named）结构标记而非魔法字符串。理由：开放词汇走代理 id 是本节既有的规则；
 okm 主键构造上定宽（`KeyEncode` 遇 `String` 编译期 panic），内联字符串表达不出来；而哈希
 带来碰撞即错误投递、保留值与值空间共用名字空间、哈希不可反查（运维列不出人话队列）。
-键宽随之收紧：MqData 20→16 B、MqCursor 16→12 B、MqHead 12→8 B。
-`MqCursor.last_active_ms`（§6.3 的过期谓词）同批落地。
+键（logical）：MqData `[event_id][instance_key_id][seq]` 16 B、MqCursor
+`[event_id][instance_key_id][booth_id]` 12 B；写头 = MqData 的 `HighWater(seq)` 水位
+（原 MqHead 表已撤，ADR-0041 §3）。`MqCursor.last_active_ms`（§6.3 的过期谓词）随
+ADR-0039 §2 落地。
 
 摊位类型 ns（运行时）：注册类型 = 唯一字典发 id、数据 ns = `100 + id`，单调不复用；
 ns 内是 interface_schema 声明的 collections + 访问方法（槽位 `ns + slot` 编码，
@@ -291,8 +312,8 @@ dict/junction 基址住 collection schema 常量）；实例是 ns 内 document�
 即「把旧数据读成新数据」）。清除的代价比「mq 字节转瞬即逝」更大：已持久化的摊位定义与
 代码 blob 一并作废，部署方要重新注册类型（ADR-0040 记录在案）。新库没有可清除的东西。
 
-**词汇表不占真实 ns**：开放词汇（事件名、分区名、参与者名）走代理 id + 文本索引，封闭
-词汇（booth 类型）才配真实 ns——EventName/PartitionName/BoothName(ns 20/21/30) 的形态
+**词汇表不占真实 ns**：开放词汇（事件名、实例键）走代理 id + 文本索引，封闭
+词汇（booth 类型）才配真实 ns——EventName/InstanceKeyRegistry/BoothName(ns 20/21/30) 的形态
 由此而来；ns 只增不减（类型注销不回收——复用键空间前缀等于把旧数据读成新数据，id 与 ns
 永不复用是同一条裁决）。
 
@@ -318,7 +339,7 @@ partitioning.md §1 记录的目标：`key_field` 取 payload 字段（恰好一
                             → StorePlan.entries →(okm-entry::collection_from_entry)
                               DynamicCollection over 类型 ns（4.16 已落好的解析面）
                             → 扫 index 前缀：命中行代理键 = 目标实例 key（扇出 b 缺省）
-                            → 逐目标激活 + 按 (event, partition) 去重入队（现成）
+                            → 逐目标激活 + 按 (event, 切片) 去重入队（现成）
 ```
 
 已定案（本轮对话敲定）：
@@ -332,9 +353,9 @@ partitioning.md §1 记录的目标：`key_field` 取 payload 字段（恰好一
 - **旧单字段形态保留为行的另一种形状**（判别在行结构层，不搞哨兵混合）：
   keyed 场景两者等价且 key_field 更便宜（零扫描）；迁移逐类型进行。
 - **多目标失败语义**：逐目标 dead-ring/失败记录，与 ADR-0012 一致（append 本就
-  逐 partition 独立，失败天然逐条）。
-- **MQ 格式不动**：`append(event, partition)` 本就逐分区独立行、游标逐
-  (event, partition)——扇出能力缺的只是路由侧"产出一组 partition"这一步。
+  逐切片独立，失败天然逐条）。
+- **MQ 格式不动**：`append(event, slice)` 本就逐切片独立行、游标逐
+  (event, 切片)——扇出能力缺的只是路由侧"产出一组切片"这一步。
 
 **已裁（ADR-0038 §3）**：①声明粒度 = 逐事件，没有类型默认——`resolve` 是 (type, event)
 的函数，类型级默认只在「该类型每个事件恰好同构」时才有定义；且缺省值必须唯一确定语义
@@ -383,6 +404,12 @@ emit 都激活一个新实例，而新实例游标从 0 起 = 重放该队列现
 白名单一并更新）。
 **既有部署**需清除低位块（新 meta 段落在旧事件面的号上；代价含已持久化的定义与代码 blob，
 ADR-0040 记录在案）。
+**同期（2026-10-08，ADR-0041）**：事件面词汇改用 instance key（`part_id`→`instance_key_id`、
+`PartitionName`→`InstanceKeyRegistry`、`mq::Partition`→`mq::InstanceKey`、`SINGLETON_PART`→
+`SINGLETON_KEY_ID`，函数 `bound_partition`→`bound_instance_key` 等）；`MqHead`（ns 24）撤销，
+写头改由 MqData 的 `HighWater(seq)` 水位承载（发号与写行同批、同物理分区）；`#[ok_partition(2)]`
+从 MqCursor 删除，只留 MqData 的 partition 1；文档分「契约 / 内部布局」两层重述，引擎注解
+降为实现注记。迁移由 ADR-0040 的清除吸收。
 
 ### 8.5 杂项挂账（仍开放）
 

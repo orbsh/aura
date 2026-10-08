@@ -1,8 +1,8 @@
-use aura_realm::mq::{self, Partition};
+use aura_realm::mq::{self, InstanceKey};
 
 /// A named slice (the shape a keyed route produces).
-fn named(name: &str) -> Partition {
-    Partition::Named(name.to_string())
+fn named(name: &str) -> InstanceKey {
+    InstanceKey::Named(name.to_string())
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn mq_roundtrip() {
     let vs = mq::MqStore::mem();
     let seq1 = mq::append(&vs, "add_to_cart", &named("alice"), &serde_json::json!({"item": "book"})).unwrap();
     let seq2 = mq::append(&vs, "add_to_cart", &named("alice"), &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}})).unwrap();
-    // The sort key is the per-partition SEQUENCE (MqHead issues it): a
+    // The sort key is the per-slice SEQUENCE (MqData's HighWater(seq) issues it): a
     // counter, monotonic, never reset — deliberately not a clock.
     assert!(seq1 > 0 && seq2 > seq1, "the sequence counter is monotonic: {seq1} -> {seq2}");
     // The cursor's subject is the BOOTH (ADR-0038 §2): no participant
@@ -46,30 +46,30 @@ fn partition_dictionary_is_a_proxied_vocabulary() {
     // the issuer cannot produce and the mapping reads back (which the hash
     // could not).
     let vs = mq::MqStore::mem();
-    assert_eq!(mq::SINGLETON_PART, 0);
-    assert_eq!(mq::part_id(&vs, &Partition::Singleton).unwrap(), mq::SINGLETON_PART);
+    assert_eq!(mq::SINGLETON_KEY_ID, 0);
+    assert_eq!(mq::instance_key_id(&vs, &InstanceKey::Singleton).unwrap(), mq::SINGLETON_KEY_ID);
 
-    let a = mq::part_id(&vs, &named("alice")).unwrap();
+    let a = mq::instance_key_id(&vs, &named("alice")).unwrap();
     assert_eq!(a, 1, "the first issued id is 1 — 0 is reserved for the singleton");
-    assert_eq!(mq::part_id(&vs, &named("alice")).unwrap(), a, "idempotent: the id is issued, not computed");
-    let b = mq::part_id(&vs, &named("bob")).unwrap();
+    assert_eq!(mq::instance_key_id(&vs, &named("alice")).unwrap(), a, "idempotent: the id is issued, not computed");
+    let b = mq::instance_key_id(&vs, &named("bob")).unwrap();
     assert_ne!(a, b, "distinct names get distinct ids");
 
     // Reverse direction (the ops surface the hash could not offer).
-    assert_eq!(mq::partition_name_of(&vs, a).unwrap().as_deref(), Some("alice"));
-    assert_eq!(mq::partition_name_of(&vs, mq::SINGLETON_PART).unwrap(), None, "the singleton is no dictionary row");
+    assert_eq!(mq::instance_key_of(&vs, a).unwrap().as_deref(), Some("alice"));
+    assert_eq!(mq::instance_key_of(&vs, mq::SINGLETON_KEY_ID).unwrap(), None, "the singleton is no dictionary row");
 
     // Peek never allocates.
-    assert_eq!(mq::partition_id_of(&vs, "carol").unwrap(), None);
-    assert_eq!(mq::partition_id_of(&vs, "alice").unwrap(), Some(a));
+    assert_eq!(mq::instance_key_id_of(&vs, "carol").unwrap(), None);
+    assert_eq!(mq::instance_key_id_of(&vs, "alice").unwrap(), Some(a));
 
     // A key whose literal text equals the singleton INSTANCE's name is just
     // another partition — no aliasing into the singleton queue (the retired
     // hash mapped that string to the reserved value, which let a keyed
     // instance share the singleton's queue).
-    let odd = mq::part_id(&vs, &named(mq::SINGLETON)).unwrap();
-    assert_ne!(odd, mq::SINGLETON_PART);
-    assert_eq!(mq::partition_name_of(&vs, odd).unwrap().as_deref(), Some(mq::SINGLETON));
+    let odd = mq::instance_key_id(&vs, &named(mq::SINGLETON)).unwrap();
+    assert_ne!(odd, mq::SINGLETON_KEY_ID);
+    assert_eq!(mq::instance_key_of(&vs, odd).unwrap().as_deref(), Some(mq::SINGLETON));
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn depth_counts_live_and_skip_to_head_skips_the_backlog() {
 
     // Watermark compaction unfolds: delete below s2 removes {s1}, count drops.
     let eid = mq::event_id_of(&vs, "tick").unwrap().unwrap();
-    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
+    let part = mq::instance_key_id_of(&vs, "u1").unwrap().unwrap();
     let removed = mq::delete_before(&vs, eid, part, s2).unwrap();
     assert_eq!(removed, 1, "the pre-watermark row is gone");
     assert_eq!(mq::depth(&vs, "tick", &named("u1")).unwrap(), 2, "unfold -1 on compaction delete");

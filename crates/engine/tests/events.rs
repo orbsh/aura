@@ -5,12 +5,12 @@
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
-use aura_realm::mq::Partition;
+use aura_realm::mq::InstanceKey;
 use aura_realm::Realm;
 
 /// A keyed slice (what a route with a key field resolves to).
-fn named(key: &str) -> Partition {
-    Partition::Named(key.to_string())
+fn named(key: &str) -> InstanceKey {
+    InstanceKey::Named(key.to_string())
 }
 
 // Steel counter (ADR-0026): per-user count into the type's declared
@@ -334,11 +334,11 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         realm.mq.clone()
     };
     let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
-    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
+    let part = mq::instance_key_id_of(&vs, "u1").unwrap().unwrap();
     let rows = mq::cursor_rows(&vs, eid, part).unwrap();
     assert_eq!(rows.len(), 2, "two registered subscribers: {rows:?}");
     // Caught up = both cursors equal the partition head (the sequence
-    // counter MqHead issues; it is a per-partition 1..N counter, not a
+    // counter MqData's HighWater(seq) issues; a per-slice 1..N counter, not a
     // clock). The last emit's append advanced the head; both subscribers
     // drained it.
     let head = rows.iter().map(|(_, c, _)| *c).max().unwrap();
@@ -455,7 +455,7 @@ async fn wildcard_delivers_to_the_singleton_instance_only() {
     use aura_realm::mq;
     let vs = engine.realm.try_lock().unwrap().mq.clone();
     let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
-    let rows = mq::cursor_rows(&vs, eid, mq::SINGLETON_PART).unwrap();
+    let rows = mq::cursor_rows(&vs, eid, mq::SINGLETON_KEY_ID).unwrap();
     assert_eq!(rows.len(), 1, "one consumer per queue (ADR-0038 §1): {rows:?}");
 }
 
@@ -490,7 +490,7 @@ async fn missing_key_field_is_recorded_not_fallen_back() {
     // Nothing reached the queue plane: no fallback partition, no event id.
     let vs = realm.mq.clone();
     assert!(
-        mq::partition_id_of(&vs, "__default__").unwrap().is_none(),
+        mq::instance_key_id_of(&vs, "__default__").unwrap().is_none(),
         "no fallback partition was ever created"
     );
     assert!(
@@ -540,7 +540,7 @@ async fn expired_cursor_forfeits_its_backlog() {
     // The expired row itself is reclaimed once it sits below the watermark
     // (nothing can replay through a position whose rows are gone).
     let eid = mq::event_id_of(&vs, "e").unwrap().unwrap();
-    let part = mq::partition_id_of(&vs, "u1").unwrap().unwrap();
+    let part = mq::instance_key_id_of(&vs, "u1").unwrap().unwrap();
     let rows = mq::cursor_rows(&vs, eid, part).unwrap();
     assert_eq!(rows.len(), 1, "only stats' cursor remains: {rows:?}");
 }

@@ -14,13 +14,13 @@
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;
-use aura_realm::mq::Partition;
+use aura_realm::mq::InstanceKey;
 use aura_realm::{mq, Realm};
 
 /// A keyed slice (the script's `(on "tick" "user_id")` resolves the
 /// payload's user_id into a named partition).
-fn named(key: &str) -> Partition {
-    Partition::Named(key.to_string())
+fn named(key: &str) -> InstanceKey {
+    InstanceKey::Named(key.to_string())
 }
 
 fn script() -> &'static str {

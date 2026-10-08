@@ -4,7 +4,7 @@
 //! Two rulings shape this file. A queue's consumer set must be CLOSED
 //! (ADR-0038 §1: a key-less subscription delivers to the singleton
 //! instance, so every partition has exactly one consumer) — the slice is a
-//! structural `mq::Partition`, never a magic string. And no emit may be
+//! structural `mq::InstanceKey`, never a magic string. And no emit may be
 //! dropped silently (ADR-0038 §4: a matched route producing no real target
 //! is as observable as an event with no route at all — the `__default__`
 //! fallback instance is retired).
@@ -15,16 +15,16 @@
 
 use super::{Realm, SharedRealm};
 use crate::event::DeadReason;
-use crate::mq::{self, Partition};
+use crate::mq::{self, InstanceKey};
 use aura_booth::InstanceId;
 
 /// The instance a queue slice is delivered to: the slice's own value for a
 /// named partition (instance key = partition value), the type's singleton
 /// instance for a key-less one.
-fn instance_of(part: &Partition) -> String {
+fn instance_of(part: &InstanceKey) -> String {
     match part {
-        Partition::Singleton => mq::SINGLETON.to_string(),
-        Partition::Named(key) => key.clone(),
+        InstanceKey::Singleton => mq::SINGLETON.to_string(),
+        InstanceKey::Named(key) => key.clone(),
     }
 }
 
@@ -52,7 +52,7 @@ impl Realm {
         // of them, a second send would double-deliver. Activation of every
         // matched route's target happens in the SAME pass, before any send,
         // so every subscriber's cursor exists before the message lands.
-        let mut targets: Vec<Partition> = Vec::new();
+        let mut targets: Vec<InstanceKey> = Vec::new();
         for route in routes {
             // Queue identity: @on-declared key → per-(event, partition); no
             // key → per-event singleton queue. The key comes from the event
@@ -60,10 +60,10 @@ impl Realm {
             // STRUCTURAL marker (ADR-0039 §1) — the singleton never enters
             // the name dictionary, so no payload key can alias into it.
             let part = if route.instance_key_field.is_empty() {
-                Partition::Singleton
+                InstanceKey::Singleton
             } else {
                 match data.get(&route.instance_key_field).and_then(|v| v.as_str()) {
-                    Some(key) => Partition::Named(key.to_string()),
+                    Some(key) => InstanceKey::Named(key.to_string()),
                     // ADR-0038 §4: a matched route whose declared key field
                     // is absent (or is not a string) is a MALFORMED event —
                     // not a delivery to some fallback instance. It reaches
@@ -132,14 +132,14 @@ impl Realm {
     async fn compact_queue_locked(
         realm: &mut Realm,
         event: &str,
-        part: &Partition,
+        part: &InstanceKey,
         store: &mq::MqStore,
     ) -> anyhow::Result<()> {
         let Some(event_id) = mq::event_id_of(store, event)? else {
             return Ok(());
         };
-        let part_id = mq::part_id(store, part)?;
-        let rows = mq::cursor_rows(store, event_id, part_id)?;
+        let instance_key_id = mq::instance_key_id(store, part)?;
+        let rows = mq::cursor_rows(store, event_id, instance_key_id)?;
         if rows.is_empty() {
             return Ok(());
         }
@@ -172,7 +172,7 @@ impl Realm {
         }
         if let Some(min_seq) = min_seq {
             if min_seq > 0 {
-                let _ = mq::delete_before(store, event_id, part_id, min_seq)?;
+                let _ = mq::delete_before(store, event_id, instance_key_id, min_seq)?;
             }
             // Inert rows: a cursor at or below the watermark can never
             // replay anything (the rows it would have read are gone), so the
@@ -180,7 +180,7 @@ impl Realm {
             // from accumulating one row per partition ever seen.
             for (booth_id, cursor, _) in &rows {
                 if *cursor < min_seq {
-                    mq::drop_cursor(store, event_id, part_id, *booth_id)?;
+                    mq::drop_cursor(store, event_id, instance_key_id, *booth_id)?;
                 }
             }
         }
@@ -190,7 +190,7 @@ impl Realm {
     pub async fn compact_queue_for_test(
         self_arc: &SharedRealm,
         event: &str,
-        part: &Partition,
+        part: &InstanceKey,
     ) -> anyhow::Result<()> {
         let mut realm = self_arc.lock().await;
         let store = realm.mq.clone();

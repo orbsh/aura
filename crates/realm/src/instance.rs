@@ -4,7 +4,7 @@
 
 use super::{next_seq, Realm, SharedRealm, RemotePending};
 use crate::{event, mq, timer};
-use crate::mq::Partition;
+use crate::mq::InstanceKey;
 use crate::DEFAULT_CURSOR_TTL;
 use aura_booth::{Instance, InstanceId, Job};
 use std::collections::HashMap;
@@ -72,20 +72,20 @@ impl Realm {
             // queue — the old broadcast (every instance holding its own
             // participant cursor on one shared queue behind one shared
             // cursor row) made the retention denominator an open set.
-            let mut subs: Vec<(String, Partition, bool)> = Vec::new();
+            let mut subs: Vec<(String, InstanceKey, bool)> = Vec::new();
             if let Some(_booth) = self.types.get(&id.booth_type) {
                 for route in self.router.routes_of(&id.booth_type) {
                     let partition = if route.instance_key_field.is_empty() {
                         if id.key != mq::SINGLETON {
                             continue;
                         }
-                        Partition::Singleton
+                        InstanceKey::Singleton
                     } else {
                         // For keyed routes the partition value equals the
                         // instance key only when the route derives the key
                         // from the same field emit used — which it does by
                         // construction (emit set key = data[field]).
-                        Partition::Named(id.key.clone())
+                        InstanceKey::Named(id.key.clone())
                     };
                     // The third element marks a wildcard subscription:
                     // route.event is a PATTERN, expanded to concrete names
@@ -115,7 +115,7 @@ impl Realm {
                 // subscription is one name; a wildcard expands to every
                 // registered event matching its prefix (re-expanded each
                 // pass — new concrete names join automatically).
-                let mut queues: Vec<(String, Partition, bool, Vec<String>)> = subs
+                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>)> = subs
                     .into_iter()
                     .map(|(event, part, is_wildcard)| {
                         (event, part, is_wildcard, Vec::new())

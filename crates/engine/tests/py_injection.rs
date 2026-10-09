@@ -61,7 +61,7 @@ async fn binding_face_and_ctx_store_emit_share_one_keyspace() {
         .await
         .unwrap();
 
-    let target = |key: &str| InstanceId { booth_type: "py-inject".into(), key: key.into() };
+    let target = |key: &str| InstanceId { booth_type: "py-inject".into(), key: aura_booth::InstanceKey::Named(key.into()) };
 
     // Binding write → ctx_store_emit read (same session instance).
     let out = engine

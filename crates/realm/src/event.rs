@@ -44,12 +44,22 @@ pub struct EventRouter {
 use std::collections::HashMap;
 
 impl EventRouter {
-    /// Register a precise subscription: `on("order_created", key="user_id")`.
+    /// Register a precise subscription. A NON-empty `key_field` names the
+    /// payload field carrying the instance key (`Field` shape — the
+    /// zero-scan form); an EMPTY one is the key-less singleton delivery
+    /// (`Singleton` shape) — the same "" the ctx face renders for the
+    /// singleton (ADR-0042), so callers need no separate entry point.
     pub fn on(&mut self, event: impl Into<String>, booth_type: &str, key_field: impl Into<String>) {
         let name = event.into();
+        let key_field = key_field.into();
+        let resolution = if key_field.is_empty() {
+            RouteResolution::Singleton
+        } else {
+            RouteResolution::Field(key_field)
+        };
         self.exact.entry(name.clone()).or_default().push(Route {
             booth_type: booth_type.into(),
-            resolution: RouteResolution::Field(key_field.into()),
+            resolution,
             event: name,
         });
     }

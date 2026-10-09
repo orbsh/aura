@@ -607,10 +607,10 @@ def audit(args):
     let routes = realm.router.matches("add_to_cart");
     assert_eq!(routes.len(), 1, "add_to_cart routed to cart");
     assert_eq!(routes[0].booth_type, "cart");
-    assert_eq!(routes[0].instance_key_field, "user_id");
+    assert!(matches!(&routes[0].resolution, aura_booth::RouteResolution::Field(f) if f == "user_id"));
     let routes = realm.router.matches("remove_from_cart");
     assert_eq!(routes.len(), 1, "remove_from_cart routed (no key → singleton)");
-    assert_eq!(routes[0].instance_key_field, "");
+    assert!(matches!(&routes[0].resolution, aura_booth::RouteResolution::Singleton));
     let routes = realm.router.matches("order.created");
     assert_eq!(routes.len(), 1, "order.* wildcard routed");
     assert!(realm.router.matches("unrelated").is_empty());

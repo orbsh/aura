@@ -3,7 +3,8 @@
 > **语言：** 中文（自 2026-10-08 起本文为唯一版本；英文孪生 `HANDOFF.md` 已退役删除）
 
 写于 2026-10-02；2026-10-08 随事件面内部布局落地（ADR-0041）更新、同日随 ADR-0042
-裁决再次更新；**2026-10-09 随 Phase 4.13 + ADR-0042 落地（A1/A2 完成）更新**。范围：
+裁决再次更新；**2026-10-09 随 Phase 4.13 + ADR-0042 落地（A1/A2 完成）、pyo3 0.29
+（A5 关闭）与 executor 项目改名 probe → effector 更新**。范围：
 **aura** 与 **prism** 各自还剩什么。其余可能受影响的兄弟项目在文末点名。
 
 **已落地并已提交（工作树干净）：**
@@ -21,6 +22,12 @@
 | aura | `72fc208` / `e346af5` | 文档：event-flow §8.1/8.2 LANDED、§8.3 残余关闭、partitioning 终态、ADR-0042 状态行、PLAN 勾 4.13 + 会话记录；残差改定性（okm-dynamic 对齐项） |
 | okm | `5b355bf` + `7da4b26` | `feat(okm-dynamic): variable-width trailing index field`（`AccessMethod` 对齐 derive 规则）+ `encode_fields` 接受 cold 字段——aura §8.1 残差的前提 |
 | aura | `c9425e5` | 扫描路由探针改用 Str 索引 + 字符串探针，event-flow §8.1 残差关闭（**依赖 okm 上述提交推送到 orbsh/okm 后生效**——本仓 aura 的 okm 依赖是 git 分支） |
+| okm | `68f3a6f` | `build(okm-python): pyo3 0.25 -> 0.29`——Python 3.14 支持（A5 前提） |
+| effector | `79d278f` | `refactor: rename probe -> effector`（**executor 项目改名**：field/effector 意象搭配 aura；包名/库名/代码/双语文档全扫；远程仓名待手动改） |
+| aura | `513b720` | `fix(realm,engine),test: pyo3 0.25 -> 0.29 unblocks the python carrier (A5)`——含 `EventRouter::on` 空 key = Singleton 修复 |
+| prism | `de07db0` | `fix(gateway,booths): align to aura's event-plane terminal form (P1/P2/P5)`——nushell feature 退役、nu 骑 bgi、`InstanceKey::Named` |
+| aura | `a517789` | `refactor: rename the executor project probe -> effector (aura side)`——62 文件，含连接面 `probes.rs`→`effectors.rs` |
+| prism | `5eae08a` | `refactor: rename the executor project probe -> effector (prism side)` |
 
 裁决文本：`aura/docs/adr/0038-event-plane-identity.md`、
 `0039-partition-encoding-and-retention.md`、`0040-keyspace-bands.md`、
@@ -94,12 +101,14 @@ meta 段（30–32）正落在旧事件面用过的号上，不清就会让新�
 **A4. effector USAGE 双语帧形同步（4.16c 遗留）。** 本次未动：effector 的文档里没有引用被改名的
 host fn，所以「USAGE 同步」的范围需要先定下来（它可能是 4.16c 落地的那批帧形的纯文档扫尾）。
 
-**A5. python 载体在本机无法验证（仍未变）。** `cargo test --features python` 在 link
-`okm-python` 时失败（pyo3 0.25.1 不支持本机 Python 3.14.7）。这是**环境问题，不是代码
-缺陷**——但它意味着 **Phase 4.13/ADR-0042 这批改动之后 python 绑定面同样没有被复验**
-（`InstanceId.key` 枚举化触及 `aura_booth`，python 绑定若直接构造 `InstanceId` 会编译
-失败），且任何写着 `--workspace --features python` 的门（PLAN 的 4.16/4.15 闸门、prism
-的 default features）都需要一台 Python ≤ 3.13 的机器。
+**A5. 已解决（2026-10-09，pyo3 0.25 → 0.29.3；effector `79d278f`、aura `513b720`）。**
+pyo3 0.29 原生支持本机 CPython 3.14。依赖链三仓同批：okm `68f3a6f`（`bindings/okm-python`
++ 注入测试 `Python::initialize`）→ effector `crates/runtime`（python carrier：`attach`/
+`assume_attached`/`detach`/`cast`，三个 py_* 测试补 `required-features = ["python"]`）→
+aura（`EventRouter::on` 空 key = `RouteResolution::Singleton` 修复 + 测试适配 ADR-0042）。
+python 绑定面已复验：`cargo test --features python` **83 过 0 挂**（本机首次；`py_injection`
+的 `InstanceId` 构造改 `InstanceKey::Named`）。本机注意：nix 的 libpython 不在默认链接
+路径，link 需 `RUSTFLAGS="-L <python-LIBDIR>/lib"`——这是 NixOS 侧条件，与 pyo3 版本无关。
 
 **A6. 已解决（2026-10-08，commit `b892792`）。** ADR-0038/0039/0040 的状态行与 PLAN
 条目已改为引用落地提交（`2d1fafb`；ADR-0041 引用 `74221de`）。
@@ -110,38 +119,28 @@ origin = orbsh/aura），HEAD `3b30466` 是当前 HEAD 的祖先，没有独有�
 
 ## PRISM —— 待办
 
-**P1. nushell feature 清理（它挡住其余一切）。** prism 是本机唯一 path 依赖 aura 的项目
-（`aura-booth`、`aura-engine`、`aura-realm`）。它现在**编不过**，原因早于本次改动：
+**P1. 已解决（2026-10-09，prism `de07db0`）。** `nushell` feature 删除；nu echo 摊位
+无条件保留但改骑 bgi 载体（`language: "bgi"`，spawn spec = `nu <共享 bgi_nu.nu fixture>`，
+与 aura `exec_booth.rs` 同一 fixture）。两个 nu echo e2e 测试删除：echo 平面的 dispatch
+规则（type name == handler name）不适用于 bgi fixture 自己的 handler 表；nu 的活体覆盖
+在 aura `bgi_nu_booth_store_emit_roundtrip`。prism 自 2026-09-29 以来第一次编译通过。
 
-```
-package `prism` depends on `aura-engine` with feature `nushell`
-but `aura-engine` does not have that feature
-```
+**P2. 已解决（2026-10-09）——按「不解决」关闭。** python 留在 default features：pyo3 0.29
+（见 A5）使本机 Python 3.14 完全可用，默认构建 32 过 0 挂，无需 opt-in 或钉旧解释器。
 
-PTY/nushell 已在 Phase 4.15 退役（ADR-0035 §6）——nu 现在骑 bgi 载体的 fifo 适配器，**不需要
-任何 feature gate**（已在 effector 确认：`runtime/src/carrier/exec.rs`）。三处要改：
+**P5. 已解决（2026-10-09，随 P1 同批）。** `InstanceId { key: "ws".into() }` 是唯一
+字面量构造点，改 `InstanceKey::Named("ws".into())`。`ReduceLogic` 未使用 import 顺带清掉。
 
-1. `crates/prism/Cargo.toml` —— 删掉 `nushell = ["aura-engine/nushell"]` 这一行，并从
-   `default = [...]` 里去掉 `"nushell"`。
-2. `crates/prism/src/booths.rs` —— 去掉 nu echo 摊位上的 `#[cfg(feature = "nushell")]`：
-   摊位要**无条件保留**（语言仍然可用；删掉它是丢功能，不是清理）。
-3. `crates/prism/tests/echo_e2e.rs` —— 同样去掉 nu 测试上的 cfg，以及约第 181 行那个列表。
-
-然后构建。prism 自 2026-09-29 起没编过，所以预期还有别的漂移；真正的验收是**第一次成功的
-`cargo check`**，不是上面这三处编辑。
-
-**P2. `python` 在 prism 的 default features 里**（`default = ["steel", "python", "nushell",
-"wasmtime", "fjall"]`）。在本机上这与 A5 是同一个 pyo3/Python-3.14 原因，让默认构建不可能。
-要么把 `python` 从 `default` 里去掉（保留为 opt-in），要么钉一个 ≤3.13 的解释器；否则本地检查
-永远得写 `--no-default-features --features steel,wasmtime,fjall`。
-
-**P3. 编译通过之后（prism 自己的 PLAN，`prism/docs/PLAN.md`）。** Phase 1（WS 网关：鉴权 +
-解析 + 把 turn 提交为 realm 事件、经事件订阅回流）是部分落地——身份那一半 LANDED
-2026-09-25，Phase 1.9（静态代码导出）LANDED 2026-09-26；把 Phase 1 收尾，然后 Phase 2
+**P3. 进行中（prism 自己的 PLAN，`prism/docs/PLAN.md`）。** Phase 1 剩两块：①
+logout 已落地（2026-10-09，prism 侧）：`Registry::logout` 解绑 + 连接 auth 字段同臂清零，
+`identity_e2e.rs::logout_clears_binding_and_auth_field` 锁定（同 socket 立即生效、重连
+匿名、幂等）；server-side revocation 仍开放。② turn verbs + streaming on Gravity
+hosting——**被 gravity 挡住**：gravity 仓当前只有 README + PLAN 零代码，Phase 4（Booth
+binding）才产生 prism 要代理的 turn 事件，等 gravity Milestone A 落地后回来。然后 Phase 2
 （CLI 包同一套 WS 协议——不开第二个 RPC 面）。Phase 1.5 是无代码的范围注记。
 
-**P4. 对着新 aura 测试前先处理 dev store。** 如果 prism 有既有的 aura 存储目录，先清低位块
-（见 A3），或者把测试指到一个全新的目录——否则第一次运行就会把旧行读成新表。
+**P4. 已降级为注记（2026-10-09 核实）。** prism 全部测试用 `tempfile::tempdir()` 新建库，
+不存在既有 aura 存储目录可被读错的问题；只有部署态（非测试）dev store 才需要 A3 的清除。
 
 **P5. 2026-10-02 核实的非问题 → 2026-10-09 复核后有一条升级为实活。** prism 只碰
 `aura_realm::meta::{code_hash, code_hex, get_blob}`、`aura_realm::mq::MqStore`、

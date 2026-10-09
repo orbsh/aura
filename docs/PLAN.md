@@ -562,6 +562,67 @@ Deferred gates:
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
 
+## 会话记录（2026-10-09b，HANDOFF 合并入 PLAN：pyo3 0.29 / effector 改名 / prism P1-P5）
+
+> 本节吸收 `docs/HANDOFF.zh-CN.md` 的待办状态（HANDOFF 不再单独维护待办；此后待办以
+> 本 PLAN 各 Phase 条目 + 会话记录为准）。上一节（2026-10-09）之后的落地：
+
+- **A5 关闭——pyo3 0.25 → 0.29.3，python 载体本机首次全绿。** 依赖链三仓同批：
+  - okm `68f3a6f`：`bindings/okm-python` 升级（`PyObject`→`Py<PyAny>`、
+    `with_gil`→`attach`、`downcast`→`cast`、注入测试 `Python::initialize`），
+    注入测试 3/3（CPython 3.14 首次跑通）。
+  - effector `crates/runtime`：python carrier 同批迁移（`attach`/`assume_attached`/
+    `detach`/`cast`）；`py_introspect`/`py_merge`/`py_schema` 三个测试补
+    `required-features = ["python"]`（它们无条件 import python carrier，一直破坏
+    steel-only 构建）；`--features python` 38 过 0 挂。
+  - aura `513b720`：**根因修复**——`EventRouter::on` 原来无条件构造
+    `RouteResolution::Field(key_field)`，而 registry 的 Singleton 臂与 engine 的无 key
+    `@on` 都以 `""` 表示单例；`Field("")` 在投递面查 `data.get("")` → MissingKeyField
+    落死信，单例订阅的精确事件收不到。修法：空 key = `Singleton`（与 ADR-0042 的
+    ctx 渲染同一约定，调用方无需新入口）。`py_injection` 的 `InstanceId` 构造改
+    `InstanceKey::Named`（ADR-0042 预判的编译面，落实）。`--features python` 83 过 0 挂。
+  - **本机注意**：nix 的 libpython 不在默认链接路径，link 需
+    `RUSTFLAGS="-L <python-LIBDIR>/lib"`——NixOS 侧条件，与 pyo3 版本无关。
+- **executor 项目改名 probe → effector**（aura `a517789`、effector `79d278f`、
+  prism `5eae08a`）。裁决：aura = 场，executor = 场中把决策变成作用的部件，
+  field/effector 意象轴击败 actuator（其 robotics 驱动器语义偏窄且与 actor 无呼应）。
+  全扫：包名 `effector-{runtime,protocol,config}`、库名 `effector_*`、
+  `ProbeConfig`→`EffectorConfig`、连接面 `probes.rs`→`effectors.rs`、
+  `ProbeConn`→`EffectorConn`、`serve_probes`→`serve_effectors`、`realm.probes`→
+  `realm.effectors`、测试 `remote_probe.rs`→`remote_effector.rs`、双语文档。
+  **保留**：`probe_field`（扫描路由机制名，非项目名）。远程仓名手动改。
+- **prism P1/P2/P5 一批（`de07db0`）**：`nushell` feature 退役（nu echo 摊位无条件
+  保留但改骑 bgi 载体，spawn spec = `nu <共享 bgi_nu.nu fixture>`；两个 nu echo e2e
+  删除——echo 平面 dispatch 规则不适用 bgi fixture 自带的 handler 表，活体覆盖在
+  aura `bgi_nu_booth_store_emit_roundtrip`）；P2 按「不解决」关闭——python 留
+  default features（pyo3 0.29 使本机 3.14 完全可用，默认构建 32 过 0 挂）；
+  P5 落实——`InstanceId { key: "ws" }` 唯一字面量构造点改 `InstanceKey::Named`。
+  prism 自 2026-09-29 以来第一次编译通过。
+- **prism P4 降级为注记**：全部测试用 `tempfile::tempdir()` 新建库，不存在可被读错的
+  既有 aura 存储目录；A3 的清除只对部署态 dev store 有意义。
+- **prism P3 半块：logout 落地（prism `60c5830`）**：`Registry::logout` 解绑设备 +
+  dispatch 新 `logout` 臂同臂清零 §3 的连接 auth 字段（谓词本连接立即生效）；
+  `identity_e2e.rs::logout_clears_binding_and_auth_field` 锁定（同 socket 上 auth 门
+  事件重新报错、带 device echo 重连匿名、二次 logout 幂等）。Phase 1 剩余：
+  server-side revocation（开放，机制面与 logout 共享，触发方/授权面不同——挂
+  `/admin`、粒度 per-device vs per-user、是否需要已吊销标记）；turn verbs + streaming
+  **被 gravity 阻塞**（gravity 仓零代码，Milestone A 落地后才产生 prism 要代理的
+  turn 事件）。
+
+### 待办快照（接替 HANDOFF 的 A*/P* 编号）
+
+| 项 | 状态 |
+|---|---|
+| A3 既有部署清低位块 | 开放——运维动作，仅部署态 dev store 相关 |
+| A4 effector USAGE 双语帧形同步 | 开放——范围待定（4.16c 帧形批次文档扫尾） |
+| A5 pyo3 / python 载体 | **关闭**（本节） |
+| A6/A7 | 已关闭（2026-10-08） |
+| P1 nushell feature | **关闭**（`de07db0`） |
+| P2 python in default | **关闭**（不解决） |
+| P3 prism Phase 1 收尾 | 进行中——logout 已落地；revocation 开放；turn verbs/streaming 阻塞于 gravity |
+| P4 dev store | 降级注记 |
+| P5 InstanceKey 构造面 | **关闭**（`de07db0`） |
+
 ## 会话记录（2026-10-09，Phase 4.13 + ADR-0042 落地：路由终态 + 实例身份结构化）
 
 - **落地**（commits `33ef84e` + `e3690ac`，4.13 与 ADR-0042 同批，动同一张

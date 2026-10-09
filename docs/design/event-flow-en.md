@@ -553,20 +553,25 @@ SINGLE key field (the instance key is one String; a composite row key has
 no honest rendering — multi-key is a registration error, not a convention).
 End-to-end lock: `engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`.
 
-**Residual (open, okm side)**: okm-dynamic's declared index entries encode
-the indexed-field values into the KEY (`[ns][slot][index-field segment]
-[pkey]`, no delimiter or length frame inside the segment), so index fields
-must be fixed-width (`fields_width` rejects variable-width) — scan-route
-probes therefore match only FixedBytes/U64-class fields for now. The
-storage layer does not reject variable-width (the cold segment is
-name-keyed; an email stores fine); what is missing is the VARIABLE-WIDTH
-INDEX SEGMENT as an entry shape. The end state is length-prefixed framing
-of variable-width segments (scan routes need equality matching only, never
-range order — losing byte order is irrelevant). Until okm lands it, the
-capacity constraint on a variable-length business key lives explicitly in
-the schema (a fixed-width field) — a declaration-time constraint, not a
-runtime hash alias (any "digest index" would reopen the aliasing class
-ADR-0038/0042 just closed; not done).
+**Residual (an okm-dynamic alignment item, not a design divergence)**:
+okm-dynamic's declared index (`AccessMethod`) rejects variable-width fields
+outright (`fields_width`), while the COMPILE-TIME mode (okm-core `KvIndex`
++ okm-derive) SUPPORTS them — `IndexFuncResult for String` documents "raw
+UTF-8, no length prefix, text-first", and the derive's validation rule is
+"at most one variable-width field, and it must be LAST"
+(`okm-derive/src/schema.rs`: the primary-key tail is cut from the entry's
+END, so a trailing variable-width segment still locates); aura's own
+`EventName`/`InstanceKeyRegistry` (a by_name index over a String) is the
+compile-time mode's living example. The dynamic mode's primary-key tail is
+equally fixed-width (`schema.key_len`), so `okm_core::scan_index`'s
+tail-truncation logic applies directly — this is okm-dynamic LAGGING the
+existing okm-core shape, an implementation gap needing no new entry shape
+and no framing. Once aligned, a scan-route probe matches a String field
+(last index field) directly. Until then, the capacity constraint on a
+variable-length business key lives explicitly in the schema (a fixed-width
+field) — a declaration-time constraint, not a runtime hash alias (any
+"digest index" would reopen the aliasing class ADR-0038/0042 just closed;
+not done).
 
 ### 8.2 The EventRoute row shape (LANDED, Phase 4.13)
 

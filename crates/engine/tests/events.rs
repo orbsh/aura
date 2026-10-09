@@ -543,3 +543,118 @@ async fn expired_cursor_forfeits_its_backlog() {
     let rows = mq::cursor_rows(&vs, eid, part).unwrap();
     assert_eq!(rows.len(), 1, "only stats' cursor remains: {rows:?}");
 }
+
+// ------------------------------------ Phase 4.13 (the scan route end state) --
+
+/// The scan route end state (event-flow.md §8.1): a subscription declared
+/// with `resolve = {collection, index, probe_field}` resolves its targets
+/// per emit by scanning the OWNING TYPE's collection index — one hit row
+/// per target, so one emit fans out to MANY instances. The instance key IS
+/// the hit row's primary key (single key field, canonical string form:
+/// U64 id → "1"/"2"). One type plays both roles: it owns the routing rows
+/// (email → id, indexed by_email) and subscribes to the event through
+/// them; the handler records each delivery under its OWN id — ctx.self_id
+/// is the identity the scan produced (identity is never declared).
+#[tokio::test]
+async fn scan_route_fans_out_to_the_hit_rows() {
+    use aura_realm::mq;
+
+    // Index field: FixedBytes(32) — okm-dynamic index segments take
+    // fixed-width fields only (the leftmost-prefix scan has no framing);
+    // the email is a BYTE-EXACT key, no digest in sight (a U64 summary
+    // would reintroduce the aliasing class ADR-0038/0042 retired).
+    const SCRIPT: &str = r#"(define (schema) (hash "storage" (hash "collections" (hash "subscribers" (hash
+  "schema" (hash "key_len" 8
+        "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "layout_version" 1 "hot_width" 40 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "email" "ty" "FixedBytes" "width" 32 "offset" 0 "tag" 0)
+                           (hash "name" "hits" "ty" "U64" "width" 8 "offset" 32 "tag" 0))
+        "cold_fields" (list)
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288))
+  "indexes" (list (hash "name" "by_email" "slot" 4096 "fields" (list "email") "kind" "plain")))))))
+(define (interface_schema args) (schema))
+;; email bytes → FixedBytes payload (the probe rides the event as an array).
+(define (newsletter args)
+  (let* ((me (hash-ref args "me"))
+         (cur (ctx_store_emit (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" me))))
+         (c (if (void? cur) 0 (if (hash-contains? cur "hits") (hash-ref cur "hits") 0))))
+    (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
+                       "key" (hash "id" me)
+                       "doc" (hash "email" (if (void? cur) (probe-bytes) (hash-ref cur "email"))
+                                   "hits" (+ c 1))))
+    (+ c 1)))
+(define (probe-bytes) (list))
+(define (enroll args)
+  (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
+                     "key" (hash "id" (hash-ref args "id"))
+                     "doc" (hash "email" (hash-ref args "bytes") "hits" 0)))
+  (hash-ref args "id"))
+(define (hits args)
+  (let* ((cur (ctx_store_emit (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" (hash-ref args "id"))))))
+    (if (void? cur) 0 (if (hash-contains? cur "hits") (hash-ref cur "hits") 0))))
+"#;
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let mut booth = BoothType::script("notify", "steel", SCRIPT);
+    // The receives declaration rides the introspection normally; the
+    // introspection ctx carries no realm, so the declaration is applied
+    // host-side here — the same shape the engine's resolve arm consumes.
+    // (This IS the scan-route declaration surface; router.on_resolve.)
+    booth.receives.push(aura_booth::ReceiveDecl {
+        event: "newsletter".into(),
+        resolution: aura_booth::RouteResolution::Scan {
+            collection: "subscribers".into(),
+            index: "by_email".into(),
+            probe_field: "email".into(),
+        },
+        wildcard: false,
+    });
+    engine.register(booth).await.unwrap();
+
+    // Seed: ids 1 and 2 share a@x; 3 has b@x. The email rides the payload
+    // as its 32-byte fixed-width form (JSON array of bytes).
+    let bytes = |s: &str| {
+        let mut b = vec![0u8; 32];
+        b[..s.len()].copy_from_slice(s.as_bytes());
+        serde_json::json!(b)
+    };
+    for (id, email) in [(1u64, "a@x"), (2, "a@x"), (3, "b@x")] {
+        engine
+            .invoke(
+                InstanceId { booth_type: "notify".into(), key: aura_booth::InstanceKey::Named(id.to_string()) },
+                "enroll",
+                serde_json::json!({ "id": id, "bytes": bytes(email) }),
+            )
+            .await
+            .unwrap();
+    }
+
+    // One emit, probe a@x → TWO targets (rows 1, 2); row 3 is untouched.
+    // The probe = the exact 32-byte email of a@x: matches rows 1, 2 only.
+    let probe = bytes("a@x");
+    Realm::emit(&engine.realm, None, "newsletter", serde_json::json!({
+        "event": "newsletter", "email": probe
+    }))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // The delivery is observable in the mq plane: one queue slice per hit
+    // row key ("1"/"2" — the scan produced the identity, nothing declared
+    // it), each with its own consumer cursor advanced past seq 1. The
+    // non-matching row (id 3, ehash 7) produced NO slice and NO cursor.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let vs = engine.realm.try_lock().unwrap().mq.clone();
+    let eid = mq::event_id_of(&vs, "newsletter").unwrap().unwrap();
+    for key in ["1", "2"] {
+        let kid = mq::instance_key_id_of(&vs, key).unwrap().expect("the slice exists");
+        let rows = mq::cursor_rows(&vs, eid, kid).unwrap();
+        assert_eq!(rows.len(), 1, "exactly one consumer cursor on slice {key}");
+        assert!(rows[0].1 >= 1, "the instance consumed its delivery");
+        let bl = mq::backlog(&vs, "newsletter", &mq::InstanceKey::Named(key.into()), rows[0].1).unwrap();
+        assert!(bl.is_empty(), "the backlog was drained");
+    }
+    let kid3 = mq::instance_key_id_of(&vs, "3").unwrap()
+        .expect("the dictionary row exists (the enroll invoke registered the instance)");
+    assert!(mq::cursor_rows(&vs, eid, kid3).unwrap().is_empty(),
+        "b@x's row matched nothing — no delivery, no cursor");
+}

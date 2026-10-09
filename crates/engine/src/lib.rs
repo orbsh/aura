@@ -132,10 +132,28 @@ impl Engine {
             }
             // Introspected declarations land ON THE TYPE (one declaration
             // surface); register_type assembles routes as a side effect.
+            // Phase 4.13: each event's resolution is declared per event —
+            // `resolve` (scan reference), `key` (payload field), or NEITHER
+            // (= singleton delivery; no type-wide default, ADR-0038 §3).
             if let Some(receives) = schema.get("receives").and_then(|r| r.as_object()) {
                 for (event, spec) in receives {
-                    let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                    booth = booth.on(event.clone(), key_field);
+                    if let Some(resolve) = spec.get("resolve") {
+                        let get = |f: &str| {
+                            resolve.get(f).and_then(|v| v.as_str())
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "receives['{event}'].resolve: missing string field `{f}`"
+                                ))
+                        };
+                        booth = booth.on_resolve(
+                            event.clone(),
+                            get("collection")?,
+                            get("index")?,
+                            get("probe_field")?,
+                        );
+                    } else {
+                        let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
+                        booth = booth.on(event.clone(), key_field);
+                    }
                 }
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {

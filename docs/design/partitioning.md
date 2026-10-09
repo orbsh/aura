@@ -14,8 +14,8 @@
 instance key 的解析已随 Phase 4.13 落到终态：路由表声明 `RouteResolution`——单例 /
 payload 字段（`Field`，取不到 = 畸形事件落 dead ring，无兜底实例）/ **访问方法扫描**
 （`Scan`，事件经该类型 ns 的索引扫出命中行主键 = 实例键，扫描天然一对多，一次 emit
-投递多个实例）。约束：扫描路由的集合主键必须是单 key 字段；索引字段当前须定宽
-（okm-dynamic 变宽索引字段对齐挂账，见 event-flow.md §8.1 残差）。
+投递多个实例）。约束：扫描路由的集合主键必须是单 key 字段；索引字段支持
+变宽（Str）末位字段（okm-dynamic 已对齐，见 event-flow.md §8.1）。
 
 ## 2. booth_type：类型与实例
 

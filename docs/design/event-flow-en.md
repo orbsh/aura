@@ -553,25 +553,16 @@ SINGLE key field (the instance key is one String; a composite row key has
 no honest rendering — multi-key is a registration error, not a convention).
 End-to-end lock: `engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`.
 
-**Residual (an okm-dynamic alignment item, not a design divergence)**:
-okm-dynamic's declared index (`AccessMethod`) rejects variable-width fields
-outright (`fields_width`), while the COMPILE-TIME mode (okm-core `KvIndex`
-+ okm-derive) SUPPORTS them — `IndexFuncResult for String` documents "raw
-UTF-8, no length prefix, text-first", and the derive's validation rule is
-"at most one variable-width field, and it must be LAST"
-(`okm-derive/src/schema.rs`: the primary-key tail is cut from the entry's
-END, so a trailing variable-width segment still locates); aura's own
-`EventName`/`InstanceKeyRegistry` (a by_name index over a String) is the
-compile-time mode's living example. The dynamic mode's primary-key tail is
-equally fixed-width (`schema.key_len`), so `okm_core::scan_index`'s
-tail-truncation logic applies directly — this is okm-dynamic LAGGING the
-existing okm-core shape, an implementation gap needing no new entry shape
-and no framing. Once aligned, a scan-route probe matches a String field
-(last index field) directly. Until then, the capacity constraint on a
-variable-length business key lives explicitly in the schema (a fixed-width
-field) — a declaration-time constraint, not a runtime hash alias (any
-"digest index" would reopen the aliasing class ADR-0038/0042 just closed;
-not done).
+**Residual CLOSED (2026-10-09, okm `5b355bf`+`7da4b26`)**: okm-dynamic's
+`AccessMethod` now follows the compile-time mode's (okm-core `KvIndex` +
+okm-derive) existing rule — a variable-width (Str) field may be an index
+field, at most one and last only, the segment carries raw UTF-8 with no
+frame, and the fixed-width pkey tail is cut from the entry's END;
+`encode_fields` (the probe encoding surface) accepts cold fields too.
+Aura's scan-route probes match String fields directly (the test
+`scan_route_fans_out_to_the_hit_rows` now uses a Str index + a string
+probe). The digest-index prohibition stands: any "digest index" would
+reopen the aliasing class ADR-0038/0042 just closed.
 
 ### 8.2 The EventRoute row shape (LANDED, Phase 4.13)
 

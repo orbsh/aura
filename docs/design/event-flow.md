@@ -390,19 +390,13 @@ dead-ring，与 ADR-0038 §4 的无静默丢弃一致。**已实施**（Phase 4.
 （实例键是一个 String，复合行键没有诚实的渲染，多键 = 注册错误而非约定）。
 端到端锁定：`engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`。
 
-**残差（okm-dynamic 对齐项，非设计分歧）**：okm-dynamic 的声明式索引
-（`AccessMethod`）一刀切拒绝变宽字段（`fields_width`），而编译期模式
-（okm-core `KvIndex` + okm-derive）**支持**——`IndexFuncResult for String`
-明文「raw UTF-8，无长度前缀，text-first」，derive 校验规则是「变宽字段至多
-一个且必须排末位」（`okm-derive/src/schema.rs`：主键尾段从条目尾部切，末位
-变宽仍可定位）；aura 自己的 `EventName`/`InstanceKeyRegistry`（by_name 索引，
-name 是 String）就是编译期模式的活例。动态模式的主键尾段同样是定宽
-（`schema.key_len`），`okm_core::scan_index` 的尾部截断逻辑可直接适用——
-所以这是 okm-dynamic **落后于 okm-core 既有形状**的实现缺口，不需要新条目
-形态、不需要帧化。对齐后扫描路由的探针可直接对 String 字段（末位索引字段）
-做等值匹配。落地前，变长业务键的容量约束显式写在 schema（定宽字段）——这是
-声明期约束，不是运行期哈希别名（任何「摘要索引」都会重开 ADR-0038/0042 刚
-关掉的别名类，不做）。
+**残差已关闭（2026-10-09，okm `5b355bf`+`7da4b26`）**：okm-dynamic 的
+`AccessMethod` 已对齐编译期模式（okm-core `KvIndex` + okm-derive）的既有规则——
+变宽（Str）字段可作索引字段，至多一个、必须末位，条目段裸 UTF-8 无帧，pkey
+定宽尾段从条目尾部截断；`encode_fields`（探针编码面）同样接受 cold 字段。
+aura 的扫描路由探针现在直接对 String 字段做等值匹配（测试
+`scan_route_fans_out_to_the_hit_rows` 已改用 Str 索引 + 字符串探针）。
+摘要索引的禁令不变：任何「摘要索引」都会重开 ADR-0038/0042 刚关掉的别名类。
 
 ### 8.2 EventRoute 行形状（已落地，Phase 4.13）
 

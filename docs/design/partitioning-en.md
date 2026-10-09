@@ -27,9 +27,8 @@ catch-all instance) / **access-method scan** (`Scan`: the event resolves
 through the type's ns index, each hit row's primary key = the target
 instance key; a scan is one-to-many by nature, so a single emit can
 deliver to multiple instances). Constraints: a scan-route collection's
-primary key must be a single key field; index fields must currently be
-fixed-width (the okm-dynamic variable-width index-field alignment is on the
-backlog — see event-flow.md §8.1 residual).
+primary key must be a single key field; index fields support a trailing
+variable-width (Str) field (okm-dynamic aligned — see event-flow.md §8.1).
 
 ## 2. booth_type: type vs instance
 

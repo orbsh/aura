@@ -559,39 +559,32 @@ async fn expired_cursor_forfeits_its_backlog() {
 async fn scan_route_fans_out_to_the_hit_rows() {
     use aura_realm::mq;
 
-    // Index field: FixedBytes(32) — okm-dynamic index segments take
-    // fixed-width fields only (the leftmost-prefix scan has no framing);
-    // the email is a BYTE-EXACT key, no digest in sight (a U64 summary
-    // would reintroduce the aliasing class ADR-0038/0042 retired).
+    // Index field: Str — the okm-dynamic variable-width trailing segment
+    // (aligned with the derive's rule: raw UTF-8, no frame, the pkey tail
+    // cuts it). The email is an exact string probe; a digest would
+    // reintroduce the aliasing class ADR-0038/0042 retired.
     const SCRIPT: &str = r#"(define (schema) (hash "storage" (hash "collections" (hash "subscribers" (hash
   "schema" (hash "key_len" 8
         "key_fields" (list (hash "name" "id" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
-        "layout_version" 1 "hot_width" 40 "payload_header_len" 3
-        "hot_fields" (list (hash "name" "email" "ty" "FixedBytes" "width" 32 "offset" 0 "tag" 0)
-                           (hash "name" "hits" "ty" "U64" "width" 8 "offset" 32 "tag" 0))
-        "cold_fields" (list)
+        "layout_version" 1 "hot_width" 8 "payload_header_len" 3
+        "hot_fields" (list (hash "name" "hits" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
+        "cold_fields" (list (hash "name" "email" "ty" "Str" "width" 0 "offset" 0 "tag" 0))
         "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288))
   "indexes" (list (hash "name" "by_email" "slot" 4096 "fields" (list "email") "kind" "plain")))))))
 (define (interface_schema args) (schema))
-;; email bytes → FixedBytes payload (the probe rides the event as an array).
 (define (newsletter args)
   (let* ((me (hash-ref args "me"))
          (cur (ctx_store_emit (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" me))))
          (c (if (void? cur) 0 (if (hash-contains? cur "hits") (hash-ref cur "hits") 0))))
     (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
                        "key" (hash "id" me)
-                       "doc" (hash "email" (if (void? cur) (probe-bytes) (hash-ref cur "email"))
-                                   "hits" (+ c 1))))
+                       "doc" (hash "hits" (+ c 1))))
     (+ c 1)))
-(define (probe-bytes) (list))
 (define (enroll args)
   (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
                      "key" (hash "id" (hash-ref args "id"))
-                     "doc" (hash "email" (hash-ref args "bytes") "hits" 0)))
+                     "doc" (hash "email" (hash-ref args "email") "hits" 0)))
   (hash-ref args "id"))
-(define (hits args)
-  (let* ((cur (ctx_store_emit (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" (hash-ref args "id"))))))
-    (if (void? cur) 0 (if (hash-contains? cur "hits") (hash-ref cur "hits") 0))))
 "#;
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let mut booth = BoothType::script("notify", "steel", SCRIPT);
@@ -610,29 +603,23 @@ async fn scan_route_fans_out_to_the_hit_rows() {
     });
     engine.register(booth).await.unwrap();
 
-    // Seed: ids 1 and 2 share a@x; 3 has b@x. The email rides the payload
-    // as its 32-byte fixed-width form (JSON array of bytes).
-    let bytes = |s: &str| {
-        let mut b = vec![0u8; 32];
-        b[..s.len()].copy_from_slice(s.as_bytes());
-        serde_json::json!(b)
-    };
+    // Seed: ids 1 and 2 share a@x; 3 has b@x. The email is a plain string
+    // (the variable-width index field takes it directly).
     for (id, email) in [(1u64, "a@x"), (2, "a@x"), (3, "b@x")] {
         engine
             .invoke(
                 InstanceId { booth_type: "notify".into(), key: aura_booth::InstanceKey::Named(id.to_string()) },
                 "enroll",
-                serde_json::json!({ "id": id, "bytes": bytes(email) }),
+                serde_json::json!({ "id": id, "email": email }),
             )
             .await
             .unwrap();
     }
 
     // One emit, probe a@x → TWO targets (rows 1, 2); row 3 is untouched.
-    // The probe = the exact 32-byte email of a@x: matches rows 1, 2 only.
-    let probe = bytes("a@x");
+    // The probe = the exact email string of a@x: matches rows 1, 2 only.
     Realm::emit(&engine.realm, None, "newsletter", serde_json::json!({
-        "event": "newsletter", "email": probe
+        "event": "newsletter", "email": "a@x"
     }))
     .await
     .unwrap();

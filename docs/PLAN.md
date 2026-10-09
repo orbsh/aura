@@ -581,6 +581,9 @@ Deferred gates:
     有损压缩，会重开 0038/0042 刚关掉的别名类。终态 = okm-dynamic 对齐 okm-core
     既有规则（变宽字段可索引、至多一个、必须末位——主键尾段从条目尾部截断，
     derive 与 `EventName` by_name 索引已在用同一形状），非新条目形态、非帧化。
+    **残差同日关闭**（okm `5b355bf`+`7da4b26`）：okm-dynamic `AccessMethod`
+    接受末位 Str 索引字段 + `encode_fields` 接受 cold 字段；aura 测试改用
+    Str 索引 + 字符串探针，残差记录在 event-flow §8.1 划为已关闭。
   - **端到端锁定**：`engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`
     ——一次 emit 探针 a@x 扇出到两行（主键 = 实例键 "1"/"2"，扫描产出身份而非声明），
     各切片恰一游标且耗尽；不命中行无投递无游标（空扇出 ≠ 死信）。

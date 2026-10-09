@@ -27,7 +27,7 @@ Where the sentinel actually lives today (all call sites verified):
    `id.key == mq::SINGLETON`.
 3. `mq.rs::bound_instance_key` — returns `Singleton` only when the caller's
    instance key equals the sentinel.
-4. `instance.rs` — the probe session identity is the string
+4. `instance.rs` — the effector session identity is the string
    `"{booth_type}/{key}"`; a singleton instance's key contributes
    `__singleton__` to it.
 5. `ctx.rs` — the relief-valve fns pass `self_id.key` (the sentinel, for a
@@ -70,7 +70,7 @@ pub struct InstanceId {
   reservation to document, no collision to police. `SINGLETON`/`__singleton__`
   retires from `mq.rs`; a named instance whose key text equals the old sentinel
   is just an instance named that.
-- **Session identity** (`instance.rs`): the probe session key formats
+- **Session identity** (`instance.rs`): the effector session key formats
   `Singleton` as `{type}/` (empty key segment — the session is per type) and
   `Named(k)` as `{type}/{k}`. An empty key segment is unambiguous because
   `Named` keys are non-empty by the routing rule (a payload key field must
@@ -111,6 +111,6 @@ pub struct InstanceId {
 - **Docs**: `event-flow.md`/`-en.md` §1 (vocabulary: the instance key gains the
   variant form), §6.1 (the target line), §6.2 (the binding rule), §8.3 (the
   residual paragraph closed).
-- **Probe seam**: the session-key format change is observable only in probe's
-  session directory naming; probe holds no dependency on the sentinel literal
-  (grep verified), so no probe change rides this.
+- **Effector seam**: the session-key format change is observable only in effector's
+  session directory naming; effector holds no dependency on the sentinel literal
+  (grep verified), so no effector change rides this.

@@ -1,5 +1,5 @@
 //! Unified call model (Phase 3.5): one call mode for every target —
-//! realm Booth, remote Probe, future HTTP — built on oneshot +
+//! realm Booth, remote Effector, future HTTP — built on oneshot +
 //! `pending_calls` + `reply_to`.
 //!
 //! Two-tier waiting, split at the ENTRY by static declaration (never
@@ -39,7 +39,7 @@ pub enum Tier {
 }
 
 /// Per-target call declaration. Part of the booth/target registry (the
-/// same registration that names carried languages for probes).
+/// same registration that names carried languages for effectors).
 #[derive(Clone, Debug)]
 pub struct CallSpec {
     pub tier: Tier,

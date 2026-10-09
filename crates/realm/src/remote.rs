@@ -1,4 +1,4 @@
-//! Remote-probe plane: code delivery base URL (ADR-0027). Split out of
+//! Remote-effector plane: code delivery base URL (ADR-0027). Split out of
 //! lib.rs per ADR-0029.
 
 use super::Realm;

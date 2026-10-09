@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 aura-booth = { path = "../booth" }
-probe-runtime = { path = "../../../probe/crates/runtime" }
-probe-protocol = { path = "../../../probe/crates/protocol" }
+effector-runtime = { path = "../../../effector/crates/runtime" }
+effector-protocol = { path = "../../../effector/crates/protocol" }
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde"] }
 okm-dynamic = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-wire = { git = "https://github.com/orbsh/okm", branch = "main" }
@@ -24,9 +24,9 @@ tokio-util = { version = "0.7.19", features = ["time"] }
 [features]
 default = []
 fjall = ["dep:fjall"]
-steel = ["probe-runtime/steel"]
-python = ["probe-runtime/python"]
-wasmtime = ["probe-runtime/wasmtime"]
+steel = ["effector-runtime/steel"]
+python = ["effector-runtime/python"]
+wasmtime = ["effector-runtime/wasmtime"]
 
 [dependencies.anyhow]
 workspace = true

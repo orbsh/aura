@@ -43,7 +43,7 @@ const SCRIPT: &str = r#"
                         "key" (hash "id" 2) "doc" (hash "count" 42)))
   (collection-get! "notes" (list->vector (list 0 0 0 0 0 0 0 2))))
 
-;; Post-eviction probe: reads id=1 THROUGH the rebuilt binding — the
+;; Post-eviction effector: reads id=1 THROUGH the rebuilt binding — the
 ;; durable rows survive the ephemeral per-VM registry.
 (define (bind_get args)
   (collection-get! "notes" (list->vector (list 0 0 0 0 0 0 0 1))))

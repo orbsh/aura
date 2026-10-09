@@ -21,11 +21,11 @@ fn echo() -> BoothType {
 }
 
 fn bgi_bin() -> String {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/target/debug/examples/");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
     let full = format!("{path}bgi_loop");
     assert!(
         std::path::Path::new(&full).exists(),
-        "bgi_loop missing — build it in ~/world/probe: cargo build -p actor-guest --examples"
+        "bgi_loop missing — build it in ~/world/effector: cargo build -p actor-guest --examples"
     );
     full
 }

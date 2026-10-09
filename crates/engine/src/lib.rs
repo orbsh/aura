@@ -208,7 +208,7 @@ impl Engine {
     }
 
     /// The unified call (Phase 3.5): every surface — CLI, HTTP, remote
-    /// Probe, booth ctx.invoke — converges here. Hot targets return
+    /// Effector, booth ctx.invoke — converges here. Hot targets return
     /// Done on wait; cold targets return Pending(call_id) and the
     /// result arrives via resolve_call.
     pub async fn call(
@@ -298,5 +298,5 @@ fn parse_ttl(v: &serde_json::Value) -> Option<std::time::Duration> {
     }
 }
 
-pub mod probes;
+pub mod effectors;
 pub mod host_wire;

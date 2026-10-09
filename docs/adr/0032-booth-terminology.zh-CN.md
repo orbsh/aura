@@ -3,7 +3,7 @@
 > **语言：** [English](0032-booth-terminology.md)（主文档） · [中文](0032-booth-terminology.zh-CN.md)
 
 **状态：** Accepted（2026-09-26）——命名裁决；代码改名 + 文档清扫随本 ADR 落地，
-跨仓对齐（probe/prism/gravity/okm/wiki）同批落地。
+跨仓对齐（effector/prism/gravity/okm/wiki）同批落地。
 
 ## 背景
 
@@ -29,7 +29,7 @@
 
 **realm 参与者命名为 booth（中文：摊位）。** 读者此前看到的一切 "actor"——
 本地或远程、Rust 注册或浏览器驱动——都是摊位：申报接口（摊货自报）、接收路由
-事件、应答调用、持有自己的状态。层级词汇与 probe 配对：**probe = 远程执行**
+事件、应答调用、持有自己的状态。层级词汇与 effector 配对：**effector = 远程执行**
 （跑控制平面代码的执行容量，拨入；名字不变，ADR 不变），**booth = 远程/本地
 参与**（带自己的代码和存储）。
 
@@ -45,13 +45,13 @@
    永远读不到那篇修正文档；清扫本身就是修正。外部概念保留 actor 一词：
    Akka/Erlang/Orleans/Actix/tellus 的讨论、"the actor model"、ActorRef、
    Virtual Actor——那些命名的是别的系统的思想，realm.md §5.8/§5.9 对比章
-   依赖它们原地不动。probe 侧的工件名（~/world/probe 的 `actor-guest`、
+   依赖它们原地不动。effector 侧的工件名（~/world/effector 的 `actor-guest`、
    `counter_actor`）不归本次改名管辖。
 4. **"actor" 一词在讨论调度的行文里仍然合法**（"actor 模型从未要求确定性"
    读作对外部范式的指称；realm.md §5.1 的术语校准段维持对照的诚实）。被
    禁用的是把 actor 用作【我们的参与者】的名字。
 
-备选考量：`worker`（被线程池义项过度占用，且会模糊 probe 的执行容量概念）、
+备选考量：`worker`（被线程池义项过度占用，且会模糊 effector 的执行容量概念）、
 `consumer`（对投递是 MQ 真话，但丢掉串行状态语义，且暗含只拉取）、`nexus`
 （占了 realm 已持有的枢纽位）、`beacon`/`transponder`（意象鲜明，但方向性
 意象与拨入/拨出的对称性打架）。选 `booth` 的决定性理由是方向中立，且它把
@@ -62,7 +62,7 @@ ADR-0031 的治理词汇自然承载（申报=摊货自报、审批=市场所有
 
 - **本次提交：** aura 代码 + aura 文档清扫；realm.md §5.1 的配对句变成一个
   指针（术语校准段作为定义保留）。
-- **跨仓对齐（同批落地）：** probe（注释/文档；线上本无
+- **跨仓对齐（同批落地）：** effector（注释/文档；线上本无
   `actor_type` 字段，无需帧改动）、prism（`actors.rs` → `booths.rs`、
   `echo_actors` → `echo_booths`、path 依赖）、gravity（PLAN/README 措辞）、
   okm 文档、wiki（中文术语用"摊位"；外部范式页不动）。

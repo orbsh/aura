@@ -96,7 +96,7 @@ EVENT and its absence means singleton; and no emit may be dropped silently.**
 ### 3. Declaration semantics: per event, absence = singleton, three shapes are three mechanisms
 
 - `resolve` answers "which of MY instances does THIS event's payload point at" —
-  a function of (type, event), not of type. Different events of one type probe
+  a function of (type, event), not of type. Different events of one type effector
   different collections/indexes; a type-wide default is defined only when every
   event of the type happens to be isomorphic, which is a coincidence, not a rule.
 - A default value must fix its semantics uniquely: no `resolve` and no
@@ -110,7 +110,7 @@ EVENT and its absence means singleton; and no emit may be dropped silently.**
   (3) resolution by index scan → types with storage (Phase 4.13).
   Keeping (2) is not an optimization of (3); it is what makes stateless types
   expressible.
-- A route row stores the collection/index/probe **names**; resolution lives with
+- A route row stores the collection/index/effector **names**; resolution lives with
   the schema owner. Storing slot/ns numbers would make position the identity, and
   any schema edit would silently re-point the row.
 - **Consequence:** Phase 4.13's open question ("per-event naming vs type default

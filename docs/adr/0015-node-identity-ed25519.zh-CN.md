@@ -6,10 +6,10 @@
 
 ## Context（背景）
 
-probe 拨入 gateway 时声称一个节点别名。今天这个声称只带着一件证据：一个用户级的共享秘密，取自 `ProbeConfig.credential_env` 指名的环境变量。当前状态有三个事实：
+effector 拨入 gateway 时声称一个节点别名。今天这个声称只带着一件证据：一个用户级的共享秘密，取自 `EffectorConfig.credential_env` 指名的环境变量。当前状态有三个事实：
 
-- **这个秘密不被校验。** gateway 的注册分支只取 `node_alias` 与 `carriers`，凭据被丢弃（aura `crates/engine/src/probes.rs`）。字段过了线却没人用；`engine/src/lib.rs` 里“namespace is derived from the user credential at registration”描述的是一种意图，不是行为。
-- **别名是声称，不是身份。** 注册按别名插入 `probes`；第二条连接只要声称同一别名，就会静默顶掉活着的连接。真节点在飞的调用全断，此后路由到该别名的调用——操作的 inline 代码与参数——改投给持有该别名者，而它的应答随后作为工具结果进入控制端。
+- **这个秘密不被校验。** gateway 的注册分支只取 `node_alias` 与 `carriers`，凭据被丢弃（aura `crates/engine/src/effectors.rs`）。字段过了线却没人用；`engine/src/lib.rs` 里“namespace is derived from the user credential at registration”描述的是一种意图，不是行为。
+- **别名是声称，不是身份。** 注册按别名插入 `effectors`；第二条连接只要声称同一别名，就会静默顶掉活着的连接。真节点在飞的调用全断，此后路由到该别名的调用——操作的 inline 代码与参数——改投给持有该别名者，而它的应答随后作为工具结果进入控制端。
 - **这份窃取的收益不在节点上。** 凭据从不下发：能力面里没有任何凭据字段，操作使用节点本地的材料，所以冒充者重跑同一个操作什么也得不到。冒充者的收益在**控制端**：它读到用户的操作流，它谎报结果，而它的 `ToolResult` 内容是作为输入被 LLM 消费的。要保护的资产是**拨入者的归属**，不是节点的秘密。
 
 因此真正要紧的威胁模型是：能到达 gateway 的必须是用户自己拥有的机器，而控制端必须说得出是哪一台——且不依赖一个跨该用户所有节点共享、可被重放、或存放在任何可被读出之处的秘密。
@@ -24,29 +24,29 @@ probe 拨入 gateway 时声称一个节点别名。今天这个声称只带着�
 
 私钥是节点自己的文件，权限 0600，由配置里的路径引用（`identity_file`）。密钥材料绝不出现在配置文件里，而 `credential_env`——一个放进环境的、用户级共享的秘密——被删除。
 
-关于格式出处的一句说明：借的是 WireGuard 的**编码**，不是它的算法（X25519 ECDH）。`wg pubkey` 不能用来推导这里的公钥；推导是 ed25519，随 probe 自带的 `keygen` 一起提供。
+关于格式出处的一句说明：借的是 WireGuard 的**编码**，不是它的算法（X25519 ECDH）。`wg pubkey` 不能用来推导这里的公钥；推导是 ed25519，随 effector 自带的 `keygen` 一起提供。
 
 ### 2. 密钥对由节点自己生成；控制端只拿到公钥
 
-生成不是一个要额外安装的工具：`probe keygen [--out <path>]` 生成密钥对、把私钥写成 0600、打印公钥；首次启动若没有身份文件，会自动做同一件事。操作员的流程一步没变——同一条 `curl` 提交刚打印出来的公钥；私钥根本不需要被搬运，因为它已经在它该在的地方。部署产物（容器、secret store、镜像）携带的是**公钥**，它不是敏感信息。
+生成不是一个要额外安装的工具：`effector keygen [--out <path>]` 生成密钥对、把私钥写成 0600、打印公钥；首次启动若没有身份文件，会自动做同一件事。操作员的流程一步没变——同一条 `curl` 提交刚打印出来的公钥；私钥根本不需要被搬运，因为它已经在它该在的地方。部署产物（容器、secret store、镜像）携带的是**公钥**，它不是敏感信息。
 
-*备选方案——由控制端铸钥并通过 HTTP 返回。* 因为机械性的理由否决，不是因为不信任：私钥会经过线上、落进操作员的终端回滚缓冲、shell 历史与 CI 日志，并留在铸钥服务记录过的任何地方，于是“能冒充该节点的地点集合”白白变大——而本地生成给出的是同一条单命令流程（`probe keygen`，然后 `curl` 那段公钥）。把生成留在节点上还保住了一个未来方向：不可导出密钥（TPM / Secure Enclave）只能在节点上生成，而服务端铸钥会把它永久封死。
+*备选方案——由控制端铸钥并通过 HTTP 返回。* 因为机械性的理由否决，不是因为不信任：私钥会经过线上、落进操作员的终端回滚缓冲、shell 历史与 CI 日志，并留在铸钥服务记录过的任何地方，于是“能冒充该节点的地点集合”白白变大——而本地生成给出的是同一条单命令流程（`effector keygen`，然后 `curl` 那段公钥）。把生成留在节点上还保住了一个未来方向：不可导出密钥（TPM / Secure Enclave）只能在节点上生成，而服务端铸钥会把它永久封死。
 
 有一条论证**不在此列**：控制端按构造就是信任权威（它选择操作、持有 agent、路由每一次调用），所以“它能冒充节点”不是威胁，它的动机也不是设计输入。这里在意的只是一个秘密出现在了没有任何收益的地点。
 
 ### 3. 握手：服务端 nonce + 签名，没有配对码
 
 ```
-gateway → probe   {"type":"challenge","nonce":"<32 bytes hex>"}
-probe   → gateway {"type":"register","node_alias":"home-pc","public_key":"<base64>",
+gateway → effector   {"type":"challenge","nonce":"<32 bytes hex>"}
+effector   → gateway {"type":"register","node_alias":"home-pc","public_key":"<base64>",
                    "signature":"<ed25519 over the nonce, hex>"}
-gateway → probe   {"type":"registered"} | {"type":"pending"} | {"type":"conflict"}
+gateway → effector   {"type":"registered"} | {"type":"pending"} | {"type":"conflict"}
 ```
 
-gateway 先说话（正如 SSH 的服务端先发 banner），节点证明持有，且无法重放此前的连接。在 `open` 模式（§7）下 probe 不带密钥材料注册，这段交互被跳过。三种应答：
+gateway 先说话（正如 SSH 的服务端先发 banner），节点证明持有，且无法重放此前的连接。在 `open` 模式（§7）下 effector 不带密钥材料注册，这段交互被跳过。三种应答：
 
 - `registered` —— 该别名下这把公钥已获批准，正常服务。
-- `pending` —— 这把公钥尚无裁决（别名是新的，或其公钥等待批准）。probe 记录“需要批准”并按退避重试。
+- `pending` —— 这把公钥尚无裁决（别名是新的，或其公钥等待批准）。effector 记录“需要批准”并按退避重试。
 - `conflict` —— 该别名下已批准的是一把**不同的**公钥。拒绝，并作为事件上报：已登记别名的公钥绝不被静默替换。这正是当前要被移除的行为。
 
 配对码考虑过并放弃：它唯一的作用是避免 trust-on-first-use，而有了按公钥批准、（日后）再挂到账号，它会变成通往同一条记录的第二条授权路径。
@@ -83,7 +83,7 @@ DELETE /nodes/{alias}                               → 吊销
 
 - **该字段没有默认值。** 与声明的 KV 前缀同一个结构理由：一个来者不拒的 gateway 是操作员必须**选择**、并且必须能从配置里读出来的状态，而不是由“值缺席”继承来的状态。
 - **`open` 模式的 gateway 在启动时声明自己的姿态**（注册不经认证），于是部署的信任模式体现在它自己的日志里，而不只写在配置文件里。
-- **probe 声明同一件事**：有身份文件就签名，没有就不带密钥注册。不带密钥的 probe 撞上 `required` 的 gateway，会被应答 `unauthenticated`——操作员看得见的错误，而不是静默降级。
+- **effector 声明同一件事**：有身份文件就签名，没有就不带密钥注册。不带密钥的 effector 撞上 `required` 的 gateway，会被应答 `unauthenticated`——操作员看得见的错误，而不是静默降级。
 
 完整的行为差异：
 
@@ -102,18 +102,18 @@ DELETE /nodes/{alias}                               → 吊销
 ## 诚实的语义代价
 
 - **批准指纹是一次比对。** 记录处于 `pending` 期间，任何能到达 gateway 且知道别名的冒充者也可以处于 pending。操作员必须把要批准的公钥与节点打印出来的那把做比对。不做比对地点一下列表项只是点击，不是决策——与未经验证的 SSH host key 是同一种失效模式。
-- **挑战防的是重放，不是冒充的服务端。** 在明文 `ws://` 上 probe 无法知道自己在和谁说话，所以在可信网络之外的部署要求 TLS + 已验证的服务端证书；当配置要求 TLS 时，probe 应当拒绝明文 `ws://`。今天的测试用 `ws://`，这正是它属于前提而不是细节的原因。
+- **挑战防的是重放，不是冒充的服务端。** 在明文 `ws://` 上 effector 无法知道自己在和谁说话，所以在可信网络之外的部署要求 TLS + 已验证的服务端证书；当配置要求 TLS 时，effector 应当拒绝明文 `ws://`。今天的测试用 `ws://`，这正是它属于前提而不是细节的原因。
 - **密钥防的是远程声称者，不是被攻陷的节点。** 持有这台机器的人就持有私钥，就能成为这个节点。缓解手段是部署形态（短命、可替换的节点），不是更强的握手。
 - **本裁决不主张的事。** 控制端不被当作对手：它是信任权威，节点约束不了它（§2）。把私钥留在控制端之外，为的是不制造泄漏面——存在那里的密钥，无论谁怀着什么意图，都可能从备份、dump 或日志里漏出去。
-- **结果始终是不可信输入。** 认证改变的是谁可以当节点，不是结果的成色：probe 执行的是 AI 生成的代码，所以它的输出对控制端而言是数据，永远不是指令。那条裁决独立于本条，也不会被本条满足。
+- **结果始终是不可信输入。** 认证改变的是谁可以当节点，不是结果的成色：effector 执行的是 AI 生成的代码，所以它的输出对控制端而言是数据，永远不是指令。那条裁决独立于本条，也不会被本条满足。
 
 ## Consequences（后果）
 
-- **probe-protocol**：`challenge` 成为一个帧；`register` 增加 `public_key` 与 `signature`；`pending` 与 `conflict` 成为应答；`credential` 消失。未获批准的节点会被应答，而不是被丢弃。
-- **probe**：`keygen`（以及首启生成）、配置里的 `identity_file`、`credential_env` 删除。
+- **effector-protocol**：`challenge` 成为一个帧；`register` 增加 `public_key` 与 `signature`；`pending` 与 `conflict` 成为应答；`credential` 消失。未获批准的节点会被应答，而不是被丢弃。
+- **effector**：`keygen`（以及首启生成）、配置里的 `identity_file`、`credential_env` 删除。
 - **aura gateway**：已批准公钥的节点登记表取代按别名插入；过渡的 HTTP 接口；静默替换路径移除。
 - **被取代的措辞**：`engine/src/lib.rs` 里“namespace is derived from the user credential at registration”。命名空间挂在账号上；密钥只证明机器——用户身份与机器身份是两根轴。
-- **两端一起动**（probe-protocol 是路径依赖），所以这是一次协同变更，不是兼容性扩展。
+- **两端一起动**（effector-protocol 是路径依赖），所以这是一次协同变更，不是兼容性扩展。
 
 **实施顺序**（写下来是为了不按错的顺序做）：
 

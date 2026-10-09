@@ -9,7 +9,7 @@
 
 ## 背景——那个提案是什么
 
-草稿把扩展面从 tier-1 远程**执行**（probe，`Body::RemoteProbe`，PLAN Phase 3）
+草稿把扩展面从 tier-1 远程**执行**（effector，`Body::RemoteProbe`，PLAN Phase 3）
 延伸到 tier-2 远程**参与**：摊位本身——定义、代码、存储——住在外部服务里，realm
 拨出连接到它的 WS 端点、在注册帧里带上端点地址、持有连接、ping 1–5s 探活、退避
 重连、用 CBOR 说 realm 自己的帧词汇表。心智模型：aura 变成一个 MQ broker，远程
@@ -68,7 +68,7 @@ realm 没从中得到可观测性（投递记录和 dead ring 只覆盖场的事
 凭证链），反而为一根语义上无法检视的连接背上了探活策略。远程摊位是一个穿着客户
 衣服的 broker。
 
-**realm 仍然提供给远程端的。** Tier-1 远程**执行**——probe（`Body::RemoteProbe`，
+**realm 仍然提供给远程端的。** Tier-1 远程**执行**——effector（`Body::RemoteProbe`，
 ADR-0027）——不受影响，且是唯一的远程形态：控制平面把内容寻址的代码送进执行节点，
 持有那根 WS 连接（节点密钥对，ADR-0015）。它成立，是因为控制平面是代码的作者；
 这层关系，对一根 realm 只是「拜访」的第三方服务而言，没有对应物。
@@ -104,11 +104,11 @@ ADR-0027）——不受影响，且是唯一的远程形态：控制平面把内
 
 - **prism `docs/PLAN.md` Phase 1.8：** 从草稿讨论记录下的 DESIGN CONSTRAINTS 块
   按本裁决改写——站得住的部分是 prism 自己的（会话平面、auth block、前缀戳、
-  Phase 1 流式那一半）；拨出/CBOR/远程摊位注册那一半删除。probe mount
-  （`/probe/<alias>`）和节点注册表属 tier-1，不受影响。
+  Phase 1 流式那一半）；拨出/CBOR/远程摊位注册那一半删除。effector mount
+  （`/effector/<alias>`）和节点注册表属 tier-1，不受影响。
 - **代码：** 无改动。`code_base_url` 保持节点级（ADR-0027 服务 tier-1）；远程摊位
-  的臂本来就不存在，无需删除。两处写着「remote booth」实指 probe 的注释/字符串已
-  改正为「remote probe」（`config/src/kdl.rs`、`realm/src/instance.rs`）。
+  的臂本来就不存在，无需删除。两处写着「remote booth」实指 effector 的注释/字符串已
+  改正为「remote effector」（`config/src/kdl.rs`、`realm/src/instance.rs`）。
 - **wasm 对外访问，当某个 wasmtime 摊位需要时：** 这是 carrier 能力的任务（给
   wasmtime carrier 接入 wasi-http host，按摊位类型），不是 realm 配置的任务。
   在有人需要之前保持开放。

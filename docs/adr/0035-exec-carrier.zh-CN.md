@@ -4,7 +4,7 @@
 
 **状态：** Accepted（2026-09-28）。设计裁决；实施未动，见后果。动机是
 gravity 的全 Rust 诉求（wasm 限制感觉多余）与 nushell PTY 载体的维护成本
-（四常驻载体里机件最脆的一个）。由用户提出："probe 增加类 CGI 模式——
+（四常驻载体里机件最脆的一个）。由用户提出："effector 增加类 CGI 模式——
 信息走管道，不走环境变量"。
 
 ## 背景
@@ -32,7 +32,7 @@ Interface——带帧、常驻）承载摊位模型；exec（裸一次性、【�
 
 ### 1. bgi：常驻桥（摊位形态）
 
-probe 每摊位实例 spawn 一个子进程并保持存活；帧经子进程的
+effector 每摊位实例 spawn 一个子进程并保持存活；帧经子进程的
 stdin/stdout 流动。它映射到既有 `ResidentSession` 接缝，无需新运行时形态：
 load = spawn + 握手，call = 请求帧入 / 应答帧出，驱逐 = 关 stdin + SIGKILL
 升级。监管复用既有 sandbox 策略（bwrap）：子进程仅有的 fd 是两根管道——
@@ -52,7 +52,7 @@ load = spawn + 握手，call = 请求帧入 / 应答帧出，驱逐 = 关 stdin 
 的（它的 `open` 在写方 EOF 时交付）。
 
 词汇跟随血统：**bgi**（§1）是带帧常驻形态——循环住在子进程里（作者
-自写，或 probe 发布的垫片；就是 fcgi 适配 cgi 那一步）。**exec** 是裸
+自写，或 effector 发布的垫片；就是 fcgi 适配 cgi 那一步）。**exec** 是裸
 cgi——父侧的逐调用 spawn 本身就是适配器，而一个每请求重新拉起进程的
 适配器带的就是 php-fpm 语义：按定义无状态，不是疏漏。写下这条以免有人
 把无状态当 bug 提：exec 摊位上的 iterate 是点名设计的错误值，没有 ctx
@@ -92,11 +92,11 @@ stdlib 没有 CBOR 编解码。exec 没有帧词汇——一进一出各一个�
 
 ### 4. 语言 = spawn 声明，不是载体
 
-载体只有一个；每语言的入口是 probe registry 里的 spawn 声明：`nu` =
-`["nu", "--no-config-file", "-c", ...]` 配 probe 自带的帧循环垫片；编译的
-Rust 摊位 = `["./booth"]`，binary 对着成文的帧契约自己实现循环（probe
+载体只有一个；每语言的入口是 effector registry 里的 spawn 声明：`nu` =
+`["nu", "--no-config-file", "-c", ...]` 配 effector 自带的帧循环垫片；编译的
+Rust 摊位 = `["./booth"]`，binary 对着成文的帧契约自己实现循环（effector
 不为此发布 guest crate；契约就是 ABI，如 `aura_alloc` 之于 wasm）。注册
-时的能力宣告不变——probe 的能力表加 spawn 条目，不是加一类新东西。
+时的能力宣告不变——effector 的能力表加 spawn 条目，不是加一类新东西。
 
 ### 5. BGI——Booth Gateway Interface：给包装层一个名字
 
@@ -131,8 +131,8 @@ aura_bgi.run()          # 外层循环；handler 永远看不见帧
 ```
 
 Rust 摊位实现 trait（或 `main` 里调垫片循环）；bash 用 `read -r line`
-分支。probe 不为此发布 guest crate、不设 guest SDK——线路就是契约
-（§4 的规则），每个 BGI 包装层要么是发布的垫片（probe 资产，如 nushell
+分支。effector 不为此发布 guest crate、不设 guest SDK——线路就是契约
+（§4 的规则），每个 BGI 包装层要么是发布的垫片（effector 资产，如 nushell
 适配器），要么就是作者自己三行循环。名字存在的意义：让这些工件有同一个
 东西可称作"……的适配器"。
 
@@ -150,7 +150,7 @@ bgi 承载 `ctx_store_emit` 臂（`HostOp` 的 `store_emit` 变体——与进�
 会把测试打红，并重开同一轮收尾本该关闭的双维护之门。该顺序现已满足，
 退役随之落地。每语言永远只有一种执行形态：nu 的形态是 `exec`（裸一次
 性）与 `bgi`（双 fifo 适配器）——`nushell` 语言字符串与其 PTY feature
-从载体、Cargo feature 树（probe-runtime、aura-realm、aura-engine）和线路
+从载体、Cargo feature 树（effector-runtime、aura-realm、aura-engine）和线路
 词汇里一并移除。
 
 ### 7. 信任层级不变：exec 是受信姿态，wasm 保住不可信层级
@@ -192,7 +192,7 @@ exec 载体不削弱任何东西，因为它不替换任何沙箱：bwrap jail �
 
 ## 后果
 
-- **probe：** bgi + exec 载体模块（spawn、帧循环、垫片 registry）；bwrap
+- **effector：** bgi + exec 载体模块（spawn、帧循环、垫片 registry）；bwrap
   策略复用；nushell PTY 机件随 §6 闸门退役（`nushell` 语言字符串、PTY 模块
   与其 Cargo feature 已移除——nu 的形态是 `exec` 与 `bgi`/双 fifo）。
 - **aura：** 帧协议复用既有操作词汇（ToolCall/HostOp）；`HostOp` 加
@@ -203,7 +203,7 @@ exec 载体不削弱任何东西，因为它不替换任何沙箱：bwrap jail �
 - **gravity：** 全 Rust 摊位面 = bgi binary；SKILLs = exec（裸一次性）。
   provider 摊位（python，ADR-0034 §6）不受影响——它的生成器模式留在宿主
   跨 FFI 缝驱动的地方，那道缝谁也躲不掉。
-- **okm：** 无——帧契约住 probe-protocol。
+- **okm：** 无——帧契约住 effector-protocol。
 - **PLAN：** exec 载体新 phase；nushell PTY 删除是该 phase 的最后一项
   （闸门 §6），绝不单独成事。
 
@@ -212,5 +212,5 @@ exec 载体不削弱任何东西，因为它不替换任何沙箱：bwrap jail �
 ADR-0034（bgi 帧所承载的信封与 host-op 词汇）、ADR-0031（对外行为归摊位
 自己的代码——exec binary 是这段代码的最强形态）、ADR-0027（内容寻址
 交付——exec 取回临时路径后跑一次）、ADR-0015/0016（节点信任与驻留计时
-对 bgi 实例不变）、probe 归属裁决（probe 执行交付的代码；spawn 就是
+对 bgi 实例不变）、effector 归属裁决（effector 执行交付的代码；spawn 就是
 执行）。

@@ -6,9 +6,9 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
 
 - [x] Phase 0 — Workspace skeleton: `crates/{engine,booth,realm,storage,config,cli}`; single-binary start, no external deps (no Docker / etcd / DB). Echo Booth: define → invoke → return.
 - [x] Phase 1 — Booth runtime: Rust host + Tokio MPSC pipeline; per-Booth context (in-memory modify, on-disk sleep) — ctx surface per ADR-0011 (state/metadata/invoke only; emit/on, contracts, hooks stay off ctx); partition key routing; on_sleep/on_wake scale-to-zero (state → Fjall).
-- [x] Phase 2 — Embedded languages: implemented by importing the probe runtime's carriers (steel/python/wasmtime/nushell, feature-forwarded) instead of an in-tree Polyglot Bridge — one carrier implementation serves the remote actuator and embedded booths. `BoothType::script(language, source, entry)`; script bodies run via spawn_blocking.
+- [x] Phase 2 — Embedded languages: implemented by importing the effector runtime's carriers (steel/python/wasmtime/nushell, feature-forwarded) instead of an in-tree Polyglot Bridge — one carrier implementation serves the remote effector and embedded booths. `BoothType::script(language, source, entry)`; script bodies run via spawn_blocking.
 - [x] Phase 2.5 — Script-booth ctx bridge (CLOSED 2026-09-25: all four carriers bridge now — the nushell PTY file bridge landed, see 遗留节同题条目; ctx_state_* were later retired by ADR-0026 §3 — the bridge carries ctx_invoke / ctx_store_emit / ctx_interface_schema)
-  - [x] Host functions exposed into carrier scripts: probe-runtime gains `HostBridge`/`HostFn` (`ExecRequest.host`); carriers marshal one JSON arg in / native value out
+  - [x] Host functions exposed into carrier scripts: effector-runtime gains `HostBridge`/`HostFn` (`ExecRequest.host`); carriers marshal one JSON arg in / native value out
     - steel: builtins via `register_fn`, native hash/number marshal
     - python: `PyCFunction::new_closure` closures
     - nushell: subprocess cannot call back — bridge absent, carrier errors if demanded; TTL via interface_schema introspection works (one spawn)
@@ -20,40 +20,40 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - part_id: FNV-1a hash retained (partition values are user-data scale — a registry would grow unbounded); 0 RESERVED for the singleton partition (part_id_of; hash collision maps to 1)
     - not landed (deferred until a real one-to-many consumer appears): index-scan-based fan-out where key VALUES enter index entries (PLAN:19's original sketch) — the current MqData primary key IS the access method for per-event/per-partition scans; cursor-per-subscriber already covers one-to-many delivery
     - **[2026-10-02 update]** the two lines above describe the 2026-09-23 shape; both were superseded and LANDED in Phase 4.18: EventRoute is now ns 25 keyed `[event_id][booth_id]` with a `by_booth` index (ADR-0038 §2), and `part_id` is no longer an FNV-1a hash — the PartitionName dictionary (ns 21) issues it (ADR-0039 §1). Authoritative table: `docs/design/event-flow.md` §7.
-- [x] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)** (CLOSED 2026-09-25 — acceptance items all test-locked: shared in-VM globals + VM drop on evict = echo.rs::idle_eviction_drops_the_resident_session; state survives eviction = state_survives_scale_to_zero; probe disconnect flips presence + in-flight fails as error value = remote_probe.rs::remote_probe_roundtrip extended with the abort/unregister/not-connected assertion)
+- [x] **Phase 2.6 — Resident VM per script instance (PRIORITY, closes the memory-state gap)** (CLOSED 2026-09-25 — acceptance items all test-locked: shared in-VM globals + VM drop on evict = echo.rs::idle_eviction_drops_the_resident_session; state survives eviction = state_survives_scale_to_zero; effector disconnect flips presence + in-flight fails as error value = remote_effector.rs::remote_effector_roundtrip extended with the abort/unregister/not-connected assertion)
   - Problem: spawn-per-job — every message re-loads source, builds a fresh VM, runs the entry, drops it
     - script globals never survive between messages
     - idle_ttl eviction loses nothing → per-type TTL / retention-window semantics meaningless for script booths
   - DONE (2026-09-16): one-shot execution REMOVED — all carriers resident
-    - probe `carrier/session.rs`: `ResidentSession` trait (load/call) + `Sessions` registry; per-instance slot locks (registry lock never held across a call — `ctx_invoke` re-entry safe)
+    - effector `carrier/session.rs`: `ResidentSession` trait (load/call) + `Sessions` registry; per-instance slot locks (registry lock never held across a call — `ctx_invoke` re-entry safe)
     - steel: engine cached per instance; python: module (interpreter namespace) cached per instance; nushell: resident PTY REPL (reedline CPR answering, file-based result protocol) — replaces the one-shot subprocess path
     - aura: `Realm` owns `Sessions`; `run_job` calls `with_session(instance_key)` — cold start loads, later calls reuse; sessions die with the realm (test isolation), hot replacement can evict selectively
     - eviction = drop the session; rebuild = re-instantiate + reload source (same as activation)
   - Remaining:
     - interim shim: REMOVED (2026-09-23) — event delivery addresses the handler by its concrete event name; no execute fallback
     - wasm: DONE (2026-09-23) — `Module` compiled once at session spawn + resident `Store`/`Instance` (`WasmSession`, see Phase 4.5 wasm carrier completion)
-  - Phase 3 wire (2026-09-16): ctx bridge over the wire landed — Frame::Host round trip, gateway resolves host calls via pending_remote (call_id → instance), state/invoke scoped to the remote booth instance (engine/src/host_wire.rs); E2E: probe script's ctx_state_set/get + ctx_invoke round-trip through the wire.
-  - Phase 3 wire (2026-09-16): `Body::RemoteProbe` — realm holds probe connections by node alias (`probes` + `pending_remote`); `run_job` sends Frame::Call over the wire and awaits the correlated reply; engine `probes.rs` gateway accepts probe dial-ins, registers by alias, correlates Result frames. E2E: real probe dials the gateway, invoke round-trips through the probe's resident session.
-  - Lifecycle ownership: AURA owns the policy, PROBE owns the mechanics
+  - Phase 3 wire (2026-09-16): ctx bridge over the wire landed — Frame::Host round trip, gateway resolves host calls via pending_remote (call_id → instance), state/invoke scoped to the remote booth instance (engine/src/host_wire.rs); E2E: effector script's ctx_state_set/get + ctx_invoke round-trip through the wire.
+  - Phase 3 wire (2026-09-16): `Body::RemoteProbe` — realm holds effector connections by node alias (`effectors` + `pending_remote`); `run_job` sends Frame::Call over the wire and awaits the correlated reply; engine `effectors.rs` gateway accepts effector dial-ins, registers by alias, correlates Result frames. E2E: real effector dials the gateway, invoke round-trips through the effector's resident session.
+  - Lifecycle ownership: AURA owns the policy, Effector owns the mechanics
     - aura decides WHEN a residency (and its VM) dies: realm-wide default TTL + per-type override + script-introspected value
     - eviction is instance-level (per-instance queue + residency set + partition serial semantics live in aura)
-    - probe NEVER self-expires an booth VM session (two owners of one lifecycle = drift)
-    - probe-side independent expiry applies only to probe-internal operations aura does not track
-  - Affinity + offline (remote probes)
-    - registry records the booth→probe binding: affinity is metadata, not a routing hop
+    - effector NEVER self-expires an booth VM session (two owners of one lifecycle = drift)
+    - effector-side independent expiry applies only to effector-internal operations aura does not track
+  - Affinity + offline (remote effectors)
+    - registry records the booth→effector binding: affinity is metadata, not a routing hop
     - requests follow the data (Phase 5 invariant); the registry answers "where is the residency now"
-    - probe offline: (a) connection drop flips registry presence; (b) in-flight invocations fail with the call model's normal error-value semantics; (c) residency declared lost, not silently kept — recovery = re-activation on next connection (VM rebuilt, working set re-fetched); (d) while offline, messages queue in the realm's per-instance queue (bounded) or fail per the caller's tier
-  - Probe parallelism: control-plane concern, not a probe threading model
+    - effector offline: (a) connection drop flips registry presence; (b) in-flight invocations fail with the call model's normal error-value semantics; (c) residency declared lost, not silently kept — recovery = re-activation on next connection (VM rebuilt, working set re-fetched); (d) while offline, messages queue in the realm's per-instance queue (bounded) or fail per the caller's tier
+  - Effector parallelism: control-plane concern, not a effector threading model
     - same-node-serial queue semantics stay the default (two ops writing one file is a policy violation, not a scheduling bug)
     - parallelism = control plane expresses it as separate partitions/instances or explicit operation-declared concurrency; conflict responsibility at the caller/plane level
-  - Acceptance: two consecutive invocations of a python/steel script booth share in-VM global state (counter in globals, not ctx_state); state still survives eviction via ctx_state; evicted instance's VM is dropped; probe disconnect flips registry presence and in-flight calls fail as error values
+  - Acceptance: two consecutive invocations of a python/steel script booth share in-VM global state (counter in globals, not ctx_state); state still survives eviction via ctx_state; evicted instance's VM is dropped; effector disconnect flips registry presence and in-flight calls fail as error values
 - [x] Phase 3 — Realm model: event namespace landed
   - emit routing: exact + wildcard-prefix (dotted names, `order.created`; wildcard requires the dot)
   - partition key extracted from event data; singleton `__singleton__` for wildcards
   - emits whitelist enforced at the Realm boundary (undeclared emit = error value; system/None bypasses — the whitelist constrains booths, not the host)
   - bounded dead-event ring for unmatched events
   - follow-ups: RouteMode composition primitives (on_join/on_batch/on_debounce); interface_schema dynamic (script-declared) form arrives with the Phase 2.5 ctx bridge
-- [x] Phase 3.5 — Unified call model (CallSlot): `ctx.invoke()` with oneshot + `pending_calls` + `reply_to` is the single call mode for HTTP / realm Booth / remote Probe targets
+- [x] Phase 3.5 — Unified call model (CallSlot): `ctx.invoke()` with oneshot + `pending_calls` + `reply_to` is the single call mode for HTTP / realm Booth / remote Effector targets
   - Two-tier waiting split at the entry by static tool declaration (never mid-wait)
     - hot: task parks on the oneshot (memory-only, no thread held, no persistence)
     - cold: wait never enters park — transcript persisted, task ends, suspension recorded as a session event; re-entry from transcript on result (completed calls never replayed)
@@ -64,7 +64,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - PrefixStore wraps the shared engine per okm's nesting model: `[2B BE len(ns)][ns]` prepended to every key the inner store produces (raw ops get/set/del/scan prefix after inner key_for)
   - no textual separators; inner format unknown to the wrapper → cross-namespace state/events/targets not expressible
   - surfaces: `register_in` / `call_in` / `emit_in`; namespaces lazy + observable
-  - probe registration credential = user credential → namespace derived at registration; tool target resolution = user namespace + node alias + operation
+  - effector registration credential = user credential → namespace derived at registration; tool target resolution = user namespace + node alias + operation
   - loose inbound message cap (anomaly guard only — large artifacts never enter the control plane)
 - [~] Phase 4 — Root config + two-instance storage
   - [x] Root config `aura.kdl` (KDL via knus, krystallizer ADR-0007 pattern: no secrets in file, env-var names only): `node` / `data` / `meta` top-level nodes, `TryFrom<RootConfig> for EngineConfig` with unknown-engine rejection; slate engine shape (S3 endpoint block) parses now
@@ -77,7 +77,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - k10r/gravity-class Rust services ship as `.wasm` artifacts uploaded at runtime (`set(lang="wasm", bytes)`)
     - compiling them into the host binary would fork the platform per app (every new service = repackage; Agent apps adding features = rebuild aura), collapsing the platform into a framework
   - Work items
-    - [x] wasm carrier completion (LANDED 2026-09-23): `WasmSession` (probe-runtime `carrier/wasmtime.rs`) — resident session, module compiled at spawn; CBOR over linear memory (host writes args via the guest's `aura_alloc`, calls `handler(ptr, len) -> i64`, unpacks `(ptr:u32)<<32|len:u32`); handlers = function exports named after their events; `interface_schema` explicit export wins else export-list derivation; ctx-bridge host imports under `aura_host` namespace, uniform `(i32, i32) -> i64` packed ABI, undeclared import = instantiation failure (capability refusal); source = WAT text or base64 `.wasm`; `ResidentSession` gained `as_any` for carrier-specific introspection. Tests: probe `tests/wasm_session.rs` (WAT fixtures, 7 tests)
+    - [x] wasm carrier completion (LANDED 2026-09-23): `WasmSession` (effector-runtime `carrier/wasmtime.rs`) — resident session, module compiled at spawn; CBOR over linear memory (host writes args via the guest's `aura_alloc`, calls `handler(ptr, len) -> i64`, unpacks `(ptr:u32)<<32|len:u32`); handlers = function exports named after their events; `interface_schema` explicit export wins else export-list derivation; ctx-bridge host imports under `aura_host` namespace, uniform `(i32, i32) -> i64` packed ABI, undeclared import = instantiation failure (capability refusal); source = WAT text or base64 `.wasm`; `ResidentSession` gained `as_any` for carrier-specific introspection. Tests: effector `tests/wasm_session.rs` (WAT fixtures, 7 tests)
     - [x] metadata declaration unified on the type: `BoothType.receives` (ReceiveDecl: event + key_field + wildcard) with `.on(event, key_field)` / `.on_wildcard(pattern)` builders; introspection writes onto the type at register; `register_type` assembles routes as a side effect — one declaration surface per type (emits: none, per ADR-0012). Hot-swap = replacement semantics LANDED 2026-09-25 (see 遗留节 热替换条目)
     - [x] remove the Rust-closure booth form (`BoothType::simple`) from the public API — deleted; cli demo + all engine tests migrated to script booths (steel; nushell for the slow handler). Body::Rust remains in the enum with no public constructor (framework-internal future use)
       - rewrite cli echo demo + engine tests onto script booths (wasm/steel/python) as the acceptance path
@@ -134,14 +134,14 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     - [x] step 2b (persistent queues) — broadcast swapped for okm tables per the ruling: `realm/src/mq.rs` declares EventName/BoothName registries (open-ended names → numeric ids, resolved through the `by_name` text index) + MqData `[event_id][part_id][seq]` / MqCursor `[event_id][part_id][booth_id]` tables (`#[kv_ns]`, Table API over a StateStore→VirtualStorage bridge); payload is CBOR (new okm `FieldType::Bytes` — variable-length TLV raw bytes, added to okm RowEncode); emit persists passively (dead ring only for route-less events), consumer loop = backlog scan → run → cursor advance, re-activation replays. Follow-ups landed: min-watermark retention compaction (watermark denominator = route registry, evicted instances still count — their backlog replays; deregistered types fall out; runs on the emit path; 2026-09-23 the denominator now reads the PERSISTED EventRoute registry, not the in-memory router); logical-time keys + MqHead O(1) append + skip-to-now via the head row (2026-09-23, see Phase 2.5 Remaining). Remaining (LANDED 2026-09-27): reduce-based backlog depth — see the close-out item below.
     - [x] step 3 — steel collector: carrier binds an `on` builtin before the run (`(on "event" "key" handler)` records the declaration, returns the handler); `carrier::introspect(language, source)` dispatches — steel/python assemble the merged implicit+explicit schema, languages without collectors (nushell) fall through to the generic entry call on a hand-written `interface_schema`; wasm `#[on]` convention stays with Phase 4 link payloads (PLAN 4.5c wasm row)
     - [x] step 4 — DROPPED (ADR-0012): static emit collection + registration validation rejected — the lint catches only a subset the dead ring already reports better, warm-up/placement on an unguaranteed graph wastes runtime resources, and collected emits re-duplicate the emit call site (the same drift the whitelist had); may_emit whitelist check removed from the emit path
-    - [x] step 5 — docs: booth-api.md bilingual rewritten to multi-entry model (lifecycle + event-queue semantics + @on examples per language) — landed; realm.md session-queue section + wiki §6.2/§mailbox updated (wiki aura-architecture §5 bullet + §6.2 lifecycle, stateless-agent-architecture probe adapter wording); 2026-09-23 realm.md emit walkthrough rewritten to the persistent-queue shape (concrete-name queue identity, wildcard concrete-name expansion via events_matching, MqHead logical time, min-watermark compaction on the emit path; broadcast-era code sketch removed)
+    - [x] step 5 — docs: booth-api.md bilingual rewritten to multi-entry model (lifecycle + event-queue semantics + @on examples per language) — landed; realm.md session-queue section + wiki §6.2/§mailbox updated (wiki aura-architecture §5 bullet + §6.2 lifecycle, stateless-agent-architecture effector adapter wording); 2026-09-23 realm.md emit walkthrough rewritten to the persistent-queue shape (concrete-name queue identity, wildcard concrete-name expansion via events_matching, MqHead logical time, min-watermark compaction on the emit path; broadcast-era code sketch removed)
   - Close-out (2026-09-27, the two ruling items the code lacked):
     - [x] reduce-based backlog depth — `MqData` carries `#[ok_reduce(Count { group(event_id, part_id) })]` (okm ADR-0023 preset × ADR-0024 key-field group): append folds +1, watermark compaction's delete unfolds −1 on the write path; `mq::depth(event, part)` = one point read, never a scan (the zero-scan operational surface realm.md's retention paragraph promised).
-    - [x] skip-to-head wired to consumers — `advance` is monotonic by contract (a lower seq never rewinds: without it a skip re-surfaced the backlog on the next drain pass); `mq::rewind_cursor` is the test-only exception; the relief valve reaches scripts as host fns `ctx_queue_depth(event)` / `ctx_skip_to_head(event)` (renamed with the mq function; probe's steel carrier stub list updated in the same batch) (ctx bridge, bound to the instance; the queue resolves through the PERSISTED route registry — `mq::bound_partition`, exact id or wildcard-prefix, same rule as the consumer loop; an unbound event is an error value, never a silent no-op; no bypass guard). e2e: `engine/tests/queue_relief.rs` (handler read == store read; skip moves the cursor; post-skip events still flow); unit: `realm/tests/mq_okm.rs` depth fold/unfold + skip durability.
-  - Docs status: realm.md §on-decorator matches the ruling; booth-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture probe-adapter wording updated to event-queue semantics (2026-09-15)
+    - [x] skip-to-head wired to consumers — `advance` is monotonic by contract (a lower seq never rewinds: without it a skip re-surfaced the backlog on the next drain pass); `mq::rewind_cursor` is the test-only exception; the relief valve reaches scripts as host fns `ctx_queue_depth(event)` / `ctx_skip_to_head(event)` (renamed with the mq function; effector's steel carrier stub list updated in the same batch) (ctx bridge, bound to the instance; the queue resolves through the PERSISTED route registry — `mq::bound_partition`, exact id or wildcard-prefix, same rule as the consumer loop; an unbound event is an error value, never a silent no-op; no bypass guard). e2e: `engine/tests/queue_relief.rs` (handler read == store read; skip moves the cursor; post-skip events still flow); unit: `realm/tests/mq_okm.rs` depth fold/unfold + skip durability.
+  - Docs status: realm.md §on-decorator matches the ruling; booth-api.md bilingual rewritten (multi-entry lifecycle + event-queue semantics + @on/merge examples per language); wiki aura-architecture §5/§6.2/§6.3 and stateless-agent-architecture effector-adapter wording updated to event-queue semantics (2026-09-15)
 
 - [~] Phase 4.8 — Timers (ADR-0016, docs/adr/0016-timers-timer-wheel-cron.md en+zh; ADR-0011 amended — blocking/self-scheduling stays rejected, delivery scheduling passes the criterion): timer wheel scanned by the evictor tick; due entries deliver as ordinary `__on_timer` queue jobs (同目标到期合并一次唤醒); delivery counts as activity, re-arm explicit (投递不隐式自我重排); memory tier (dies with eviction) + durable tier (StateStore reserved namespace, restored via on_wake); declarative `lifecycle.cron` in `interface_schema` (注册时内省翻译为持久定时器，运行时从不解释 cron 表达式，错过策略 = skip-and-jump-to-next) + imperative `ctx.timer.register/cancel`; ctx-bridge host fns move to dot-namespaced introspectable groups (`ctx.store.*`, `ctx.timer.*`); gravity 按 channel 一实例（ADR-0016 ruling）。
-  - RECONCILED WITH CODE (2026-09-27 audit; the [x] had recorded the ruling, not the landing): LANDED — reclaim tier end-to-end (DelayQueue driver + command channel; idle-TTL eviction measured from job COMPLETION, per-type `idle_ttl` override; watchdog = max_exec budget, unconditional cancel at completion; `cancel_target` on eviction; empty-queue parking fix; locked by `tests/timer_reclaim.rs`). DELIVERY MACHINERY EXISTS, ZERO CALLERS — `register_deliver`/`Entry::Deliver`/`deliver_timer`→`__on_timer` path is complete but nothing registers a deliver entry. REMAINING: (1) `ctx.timer.register/cancel` host fns (probe's steel stub table carries the names; aura never registers them — scripts cannot reach the wheel); (2) declarative `lifecycle.cron` (no cron surface in code; register-time introspection translation unbuilt); (3) durable tier (entries die with eviction; the 50-min compression wake + cron cross-eviction survival needs the restore path timer.rs's header already flags); (4) coalescing due deliver entries per target into one wake; (5) dot-namespaced host-fn groups. Work items here are wiring + the two entry surfaces, not new machinery — the wheel semantics (explicit re-arm, no implicit self-schedule) hold as built.
+  - RECONCILED WITH CODE (2026-09-27 audit; the [x] had recorded the ruling, not the landing): LANDED — reclaim tier end-to-end (DelayQueue driver + command channel; idle-TTL eviction measured from job COMPLETION, per-type `idle_ttl` override; watchdog = max_exec budget, unconditional cancel at completion; `cancel_target` on eviction; empty-queue parking fix; locked by `tests/timer_reclaim.rs`). DELIVERY MACHINERY EXISTS, ZERO CALLERS — `register_deliver`/`Entry::Deliver`/`deliver_timer`→`__on_timer` path is complete but nothing registers a deliver entry. REMAINING: (1) `ctx.timer.register/cancel` host fns (effector's steel stub table carries the names; aura never registers them — scripts cannot reach the wheel); (2) declarative `lifecycle.cron` (no cron surface in code; register-time introspection translation unbuilt); (3) durable tier (entries die with eviction; the 50-min compression wake + cron cross-eviction survival needs the restore path timer.rs's header already flags); (4) coalescing due deliver entries per target into one wake; (5) dot-namespaced host-fn groups. Work items here are wiring + the two entry surfaces, not new machinery — the wheel semantics (explicit re-arm, no implicit self-schedule) hold as built.
 - [~] **Phase 4.9 — Type-scoped booth storage (PRIORITY, ADR-0026, docs/adr/0026-type-scoped-booth-storage.md en+zh)**
   - Ruling: storage isolation moves from the instance level to the TYPE level; the instance key keeps answering "who serially processes this message" and stops deciding storage layout. Terminology: routing-side `partition key` renames to **instance key** (aligns with `InstanceId`/`instance_key` in the state registry — one concept, one name; "partition" was the storage fact this ADR supersedes). Cross-node sharding vocabulary (Phase 5 shard map) keeps `shard` — node placement, not instance identity
     - each booth TYPE occupies one real okm ns (bounded declared vocabulary — satisfies the closed-vocabulary ns ruling; events/partitions stay registry+hash); low ns block reserved for aura (mq 30–35, meta/state 40–41), booth types allocate from a fixed base; allocation = `register_type` side effect via the type registry (the existing type_id assigner); ids never reused
@@ -158,34 +158,34 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - Work items
     - [x] terminology rename: routing-side `partition key` → `instance key` — code LANDED earlier (c800a3b: Route.instance_key_field, ReceiveDecl key fields, router/emit naming); design docs' live passages swept 2026-09-25 (partitioning en+zh, realm, modeling en+zh, booth-api en+zh, ADR-0025 identity sentence); historical PLAN phase entries stay unedited
     - [~] op set narrowing: protocol types landed (`aura-booth/src/store_emit.rs` — StoreOp/StoreOpKind, JSON wire, Collection-semantic layer); put/get/delete_document + put/get/delete FIELDS (dynamic-segment bridge: okm-dynamic gains put_fields/get_fields/delete_fields mirroring the typed Collection — byte-identical entries incl. the shared field-name dictionary, locked by a cross-mode test; okm-dynamic Value carries Obj/Array so composite field values ride the dynamic segment natively, schema-declared fixed-width paths reject them upstream) + SCAN (schema-declared AccessMethod) + REDUCE GET (count/high_water/lowwater presets) EXECUTE through okm-dynamic DynamicCollection (`realm/src/store_exec.rs`); host-language reduce logic objects register through bindings, not schema data. No bypass guard: the developer has full control, primitive misuse is self-sabotage
-    - [x] ctx bridge host fns + `ctx.interface_schema` read (LANDED 2026-09-24, pulled ahead of the per-language schema item): `Ctx` carries a store-emit handle + the persisted schema copy (injected by `ctx_for` as DATA — the emit handle clones the plan and the mq handle, no realm deref at emit time, no blocking_lock in spawn_blocking); `register_type` resolves the plan once from the type registry + the persisted interface_schema (failure = no plan = no ctx.store surface, error values never panics); host fns `ctx_store_emit` (StoreOp serde form) + `ctx_interface_schema` (persisted copy) registered in the bridge; engine.register persists the introspected schema with the definition.steel e2e: declare `storage.collections` → put/get round trip → schema read back (store_emit_roundtrip_and_interface_schema_read). Cross-repo prerequisites landed: okm 0c2a354 (nTLV composites everywhere — Obj-in-Array encode/decode threaded the name resolver; previously an Obj inside an Array encoded empty and decoded None, silently dropping the persisted interface_schema) + probe 2397149 (steel introspection registers ctx-fn stubs scoped to the throwaway engine — steel resolves free identifiers at define-compile, so any ctx-using script failed to load during introspection; stubs never shadow the real host fns in resident sessions)
+    - [x] ctx bridge host fns + `ctx.interface_schema` read (LANDED 2026-09-24, pulled ahead of the per-language schema item): `Ctx` carries a store-emit handle + the persisted schema copy (injected by `ctx_for` as DATA — the emit handle clones the plan and the mq handle, no realm deref at emit time, no blocking_lock in spawn_blocking); `register_type` resolves the plan once from the type registry + the persisted interface_schema (failure = no plan = no ctx.store surface, error values never panics); host fns `ctx_store_emit` (StoreOp serde form) + `ctx_interface_schema` (persisted copy) registered in the bridge; engine.register persists the introspected schema with the definition.steel e2e: declare `storage.collections` → put/get round trip → schema read back (store_emit_roundtrip_and_interface_schema_read). Cross-repo prerequisites landed: okm 0c2a354 (nTLV composites everywhere — Obj-in-Array encode/decode threaded the name resolver; previously an Obj inside an Array encoded empty and decoded None, silently dropping the persisted interface_schema) + effector 2397149 (steel introspection registers ctx-fn stubs scoped to the throwaway engine — steel resolves free identifiers at define-compile, so any ctx-using script failed to load during introspection; stubs never shadow the real host fns in resident sessions)
     - [x] registry→ns allocation: `TypeName.ns` assigned at first registration (`BOOTH_NS_BASE=100` + id, never reused); `meta::ns_of` resolve; unit test locks stability/distinctness (b0013b7)
-    - [x] InstanceState retirement (LANDED 2026-09-24, probe bbefac8 + aura 7828031): `realm/src/state.rs` deleted whole (StateDocumentStore/InstanceState registry, by_key index, watermarks); `StateStore` trait + `SharedStore` + `Ctx.state` die in aura-booth (storage addressing leaves Ctx — ctx carries self_id + invoke + store-emit handle + interface_schema only); `PrefixStore` dies with the trait (4.10: if it revives it wraps MqStore); `ctx_state_get/set/delete` host fns + engine host_wire `HostOp::State` arms deleted (probe side: protocol variants + remote.rs bridge arms). No backward-compat sugar — the ruling: retirement is justified by the MODEL (point document superseded by the collection surface), and "external users already exist" is as invalid as "no external users yet" as an argument either way; correctness of the model is the only input. `register_in` fixed in the same pass: it bypassed register()'s introspection+persist path, so namespaced types could never get a ctx.store plan (invisible while ctx_state_* needed no schema). Tests migrated onto the collection surface (events.rs pattern: declared collection + RMW + assert through an invoke read-back); `script_state_survives_eviction` deleted as an exact duplicate of the rewritten `state_survives_scale_to_zero`; remote_probe keeps invoke-only (execution nodes hold no state; ctx_store_emit needs a plan = 4.5b)
-    - [x] per-language schema declaration (LANDED 2026-09-24, okm 80327a1..a64a9e0 + probe d5a8b54 + aura 3873240): the python DSL lives in okm (bindings/okm-python okm_schema.py — @KeyEncode/@DocumentEncode classes mirror the Rust derive, type annotations drive the layout; @ok_ref/@ok_ns/@ok_layout/@ok_index metadata; assembler emits the exact CollectionSchema serde, cross-checked byte-equal against CollectionSchema::of); okm-python publishes it as OKM_SCHEMA_PY (pyo3 extension feature-gated so rlib consumers embed the module without linking the extension); probe's python carrier execs the DSL into booth scripts and merges assemble_module's storage block into interface_schema (decorator storage wins over explicit; empty block omitted so explicit-only declarations survive merge_schema's or_insert); no @ok_ns = booth-side auto allocation (aura injects the registry-allocated ns into the plan — the declaration never carries it); index slots follow SOURCE declaration order (stamp list is bottom-up reversed, assemble reverses it); variable-width fields locate at most once and only LAST in an index fields/includes list; steel/nushell hand-written literal form already exercised by the aura tests; aura e2e: decorator-declared collection → ctx_store_emit RMW → persisted BoothDef schema (py_schema.rs). wasm (okm compiles INTO the module, static derives, no dynamic schema form) split to its own item
-    - [x] wasm schema path (LANDED 2026-09-25, probe actor-guest crate + aura raw emit arm): okm compiles INTO the module — `actor-guest` provides `EmitStore` (VirtualStorage whose every primitive is one `aura_host.emit` host round trip carrying okm-wire OpFrame/OpResponse bytes; no new wire format) + `collection_entry::<K,R>()` serializing the compiled CollectionSchema into the interface_schema storage block at upload; `counter_actor` example is the rustc-compiled fixture. Carrier: `WasmSession` gains the `emit` RAW-BYTE host arm (request/reply skip the CBOR value marshal; JSON number-array carries the bytes losslessly) and `carrier::introspect`'s wasm branch satisfies the import with a STUB emit (steel register_ctx_stubs precedent — the schema export is pure, the plan doesn't exist at introspection). aura: `MqStore::ns_raw(inner, ns)` (2-byte type-ns prefix raw handle) + `host_bridge_for` gains `wasm_raw` — the emit arm executes OpFrames against the type's RAW ns engine plane (no Collection-op layer; the trusted static-mode writer IS the module, no-bypass-guard ruling). e2e: register → introspect persists compiled schema → in-module Collection RMW through the bridge → document survives eviction (aura wasm_guest_storage.rs); probe wasm_guest_storage.rs runs the same bytes against TestStore
+    - [x] InstanceState retirement (LANDED 2026-09-24, effector bbefac8 + aura 7828031): `realm/src/state.rs` deleted whole (StateDocumentStore/InstanceState registry, by_key index, watermarks); `StateStore` trait + `SharedStore` + `Ctx.state` die in aura-booth (storage addressing leaves Ctx — ctx carries self_id + invoke + store-emit handle + interface_schema only); `PrefixStore` dies with the trait (4.10: if it revives it wraps MqStore); `ctx_state_get/set/delete` host fns + engine host_wire `HostOp::State` arms deleted (effector side: protocol variants + remote.rs bridge arms). No backward-compat sugar — the ruling: retirement is justified by the MODEL (point document superseded by the collection surface), and "external users already exist" is as invalid as "no external users yet" as an argument either way; correctness of the model is the only input. `register_in` fixed in the same pass: it bypassed register()'s introspection+persist path, so namespaced types could never get a ctx.store plan (invisible while ctx_state_* needed no schema). Tests migrated onto the collection surface (events.rs pattern: declared collection + RMW + assert through an invoke read-back); `script_state_survives_eviction` deleted as an exact duplicate of the rewritten `state_survives_scale_to_zero`; remote_effector keeps invoke-only (execution nodes hold no state; ctx_store_emit needs a plan = 4.5b)
+    - [x] per-language schema declaration (LANDED 2026-09-24, okm 80327a1..a64a9e0 + effector d5a8b54 + aura 3873240): the python DSL lives in okm (bindings/okm-python okm_schema.py — @KeyEncode/@DocumentEncode classes mirror the Rust derive, type annotations drive the layout; @ok_ref/@ok_ns/@ok_layout/@ok_index metadata; assembler emits the exact CollectionSchema serde, cross-checked byte-equal against CollectionSchema::of); okm-python publishes it as OKM_SCHEMA_PY (pyo3 extension feature-gated so rlib consumers embed the module without linking the extension); effector's python carrier execs the DSL into booth scripts and merges assemble_module's storage block into interface_schema (decorator storage wins over explicit; empty block omitted so explicit-only declarations survive merge_schema's or_insert); no @ok_ns = booth-side auto allocation (aura injects the registry-allocated ns into the plan — the declaration never carries it); index slots follow SOURCE declaration order (stamp list is bottom-up reversed, assemble reverses it); variable-width fields locate at most once and only LAST in an index fields/includes list; steel/nushell hand-written literal form already exercised by the aura tests; aura e2e: decorator-declared collection → ctx_store_emit RMW → persisted BoothDef schema (py_schema.rs). wasm (okm compiles INTO the module, static derives, no dynamic schema form) split to its own item
+    - [x] wasm schema path (LANDED 2026-09-25, effector actor-guest crate + aura raw emit arm): okm compiles INTO the module — `actor-guest` provides `EmitStore` (VirtualStorage whose every primitive is one `aura_host.emit` host round trip carrying okm-wire OpFrame/OpResponse bytes; no new wire format) + `collection_entry::<K,R>()` serializing the compiled CollectionSchema into the interface_schema storage block at upload; `counter_actor` example is the rustc-compiled fixture. Carrier: `WasmSession` gains the `emit` RAW-BYTE host arm (request/reply skip the CBOR value marshal; JSON number-array carries the bytes losslessly) and `carrier::introspect`'s wasm branch satisfies the import with a STUB emit (steel register_ctx_stubs precedent — the schema export is pure, the plan doesn't exist at introspection). aura: `MqStore::ns_raw(inner, ns)` (2-byte type-ns prefix raw handle) + `host_bridge_for` gains `wasm_raw` — the emit arm executes OpFrames against the type's RAW ns engine plane (no Collection-op layer; the trusted static-mode writer IS the module, no-bypass-guard ruling). e2e: register → introspect persists compiled schema → in-module Collection RMW through the bridge → document survives eviction (aura wasm_guest_storage.rs); effector wasm_guest_storage.rs runs the same bytes against TestStore
     - [x] `ctx.interface_schema` read of the persisted copy (LANDED with the ctx-bridge item 2026-09-24, see that entry — echo.rs `store_emit_roundtrip_and_interface_schema_read` locks it)
     - [x] docs: storage.md/partitioning.md rewrite LANDED 2026-09-24 (018ff00 — instance-document passages superseded across booth-api/storage/partitioning/realm/modeling en+zh); prism-facing `ev` naming LANDED in prism's repo (ADR-0017 §4 rewritten to one-field-both-directions, action word retired — prism f5ec3d8; exercised live by the prism echo plane c08de44) (wiki aura-architecture.md synced 2026-09-25 — per-field state keys / meta okm instance / partition-key wording swept to the collection surface)
-- [x] **Phase 4.10 — Probe affinity + realm demotion (PRIORITY after 4.9; companion to ADR-0026; the axis ADR-0028 renamed namespace → realm)** (CLOSED 2026-09-25 — the ADR-0015 dependency resolved by attribution, not by building a second trust plane in aura)
-  - Ruling: the probe is an booth's EXECUTION portion — it follows the booth, not the user. The tenant assumption (users exist) leaked into the base layer and is removed
-    - probe binding is booth-TYPE affinity (the 2.6 registry already records booth→probe bindings; affinity is metadata, not a routing hop): an booth type names its execution capacity; the probe never asks "which user"
+- [x] **Phase 4.10 — Effector affinity + realm demotion (PRIORITY after 4.9; companion to ADR-0026; the axis ADR-0028 renamed namespace → realm)** (CLOSED 2026-09-25 — the ADR-0015 dependency resolved by attribution, not by building a second trust plane in aura)
+  - Ruling: the effector is an booth's EXECUTION portion — it follows the booth, not the user. The tenant assumption (users exist) leaked into the base layer and is removed
+    - effector binding is booth-TYPE affinity (the 2.6 registry already records booth→effector bindings; affinity is metadata, not a routing hop): an booth type names its execution capacity; the effector never asks "which user"
     - node trust is deployment-level and rides ADR-0015 (ed25519 node identity): "may this machine execute" is separate from "whose user is this" — the 3.6 user-credential derivation pointed the wrong way
     - user separation is the APPLICATION's concern: gravity distinguishes users through its own mechanism (user-organized types/instances, or sender metadata in the payload per the ADR-0017 amendment — identity rides payload metadata, never Ctx). The framework neither provides nor presupposes a user dimension
-    - no-user applications are first-class: an intranet distributed-compute deployment puts one probe per node, registers affinity, and the booth side shards tasks — no user concept appears
-  - Realm demotion (amends Phase 3.6): the prefix-isolation mechanism survives as an APPLICATION-AVAILABLE realm primitive (construction-time prefix isolation — the structural guarantee is the value), but its binding dimension is the application's choice — gravity may bind user, a compute project binds nothing; "probe registration credential = user credential → realm derived" is superseded
+    - no-user applications are first-class: an intranet distributed-compute deployment puts one effector per node, registers affinity, and the booth side shards tasks — no user concept appears
+  - Realm demotion (amends Phase 3.6): the prefix-isolation mechanism survives as an APPLICATION-AVAILABLE realm primitive (construction-time prefix isolation — the structural guarantee is the value), but its binding dimension is the application's choice — gravity may bind user, a compute project binds nothing; "effector registration credential = user credential → realm derived" is superseded
   - Consistency with ADR-0026: after type-scoped nss, multi-tenant user isolation (when an application wants it) is the application organizing types/keys — the framework's isolation units are exactly two: type ns (storage) and instance serialization (routing); user is not among them
   - Work items
-    - [x] probe registry: type-affinity records ARE the binding surface (verified — `Body::RemoteProbe { node_alias, .. }` rides the BoothType, the type definition IS the binding record; no new table needed); the user-credential→namespace path at registration does not exist in code (the gateway register arm discards credentials, `register_in` takes an explicit realm string) — the only credential-derivation trace was a stale lib.rs doc comment, rewritten
-    - [x] `register_in`/`call_in`/`emit_in` surfaces re-documented: doc comments rewritten (realm = explicit application decision, binding dimension the app's choice; realm_set module header + engine field comment aligned); partitioning.md §3 key-layout realm passage + en twin, storage.md federation line, ADR-0026 §1 en+zh line updated to the demoted/landed shape; ADR-0013 got an errata note (decision archive, body untouched); wiki stateless-agent probe-adapter paragraphs swept to affinity + node-identity trust
+    - [x] effector registry: type-affinity records ARE the binding surface (verified — `Body::RemoteProbe { node_alias, .. }` rides the BoothType, the type definition IS the binding record; no new table needed); the user-credential→namespace path at registration does not exist in code (the gateway register arm discards credentials, `register_in` takes an explicit realm string) — the only credential-derivation trace was a stale lib.rs doc comment, rewritten
+    - [x] `register_in`/`call_in`/`emit_in` surfaces re-documented: doc comments rewritten (realm = explicit application decision, binding dimension the app's choice; realm_set module header + engine field comment aligned); partitioning.md §3 key-layout realm passage + en twin, storage.md federation line, ADR-0026 §1 en+zh line updated to the demoted/landed shape; ADR-0013 got an errata note (decision archive, body untouched); wiki stateless-agent effector-adapter paragraphs swept to affinity + node-identity trust
     - [x] ADR-0015 dependency RESOLVED BY ATTRIBUTION (2026-09-25): the trust story's aura residue (replacement discipline + startup disclosure) is LANDED (see 遗留节 ADR-0015 条目); the handshake/registry/endpoints ride the prism gateway (prism PLAN Phase 1.8) — registration discards credentials by design until that mounts, and this phase's rulings do not wait on it
-    - [x] docs: partitioning.md realm passages + wiki probe-adapter wording swept; 0026 §1 line updated to the demoted shape (LANDED 2026-09-25, e7c1939 + follow-up)
+    - [x] docs: partitioning.md realm passages + wiki effector-adapter wording swept; 0026 §1 line updated to the demoted shape (LANDED 2026-09-25, e7c1939 + follow-up)
 
 - [x] **Phase 4.11 — Content-addressed code delivery (ADR-0027, docs/adr/0027-content-addressed-code-delivery.md en+zh)**
-  - Ruling: one payload shape — `CodePayload` enum deleted, `ToolCall.code: CodeRef { url, sha256 }`; `version` dropped (hash URL is its own invalidation policy), sha256 asserted by the frame (never parsed from the URL). `CodeBlob` (ns 42) lives in meta.rs beside BoothDef — pure content rows (key = 32B hash, value = bytes; no name/version/FK); BoothDef.source → code_sha256 (the content hash IS the version identity — no second counter). Probe caches by hash (discardable hot layer, same tier as the resident session); serving endpoint `GET /code/{sha256}` = prism's static surface (immutable, no auth by default — the hash is the capability; confidentiality = deployment choice, never a new code ACL)
-  - Work items (LANDED 2026-09-25 — probe + aura coordinated, protocol is a path dep)
-    - [x] probe-protocol: CodePayload enum deleted; `ToolCall.code: CodeRef { url, sha256 }` (version dropped; hash asserted by the frame). probe remote.rs: `CodeCache` per-hash fetch cache (hits==1 across repeat calls locked by remote.rs::code_ref_fetch_verify_cache_and_mismatch_rejection); in-process paths unchanged
+  - Ruling: one payload shape — `CodePayload` enum deleted, `ToolCall.code: CodeRef { url, sha256 }`; `version` dropped (hash URL is its own invalidation policy), sha256 asserted by the frame (never parsed from the URL). `CodeBlob` (ns 42) lives in meta.rs beside BoothDef — pure content rows (key = 32B hash, value = bytes; no name/version/FK); BoothDef.source → code_sha256 (the content hash IS the version identity — no second counter). Effector caches by hash (discardable hot layer, same tier as the resident session); serving endpoint `GET /code/{sha256}` = prism's static surface (immutable, no auth by default — the hash is the capability; confidentiality = deployment choice, never a new code ACL)
+  - Work items (LANDED 2026-09-25 — effector + aura coordinated, protocol is a path dep)
+    - [x] effector-protocol: CodePayload enum deleted; `ToolCall.code: CodeRef { url, sha256 }` (version dropped; hash asserted by the frame). effector remote.rs: `CodeCache` per-hash fetch cache (hits==1 across repeat calls locked by remote.rs::code_ref_fetch_verify_cache_and_mismatch_rejection); in-process paths unchanged
     - [x] aura: CodeBlob (ns 42, meta.rs — pure content rows, Bytes payload field) + BoothDef.code_sha256 (key-discipline fixed [u8;32]); persist() writes blob BEFORE publishing the definition pointer; boot reload hydrates source by hash and ERRORS on a missing blob (definition without content = corruption, not empty program). RemoteProbe types: put_blob at register (no definition row — 4.5b scope is script booths; the blob is their bytes' only home). `PersistedBooth` seam unchanged (source at the seam, hash at the row)
     - [x] config: `code_base_url` in the `node {}` KDL block (Option — absent = remote delivery answers an error VALUE; RealmSet carries the prefix into every lazily created realm; engine assembly is the one injection site)
-    - [x] tests: remote_probe e2e boots with a test-local HTTP source; remote_code_travels_as_reference asserts blob-at-register + reference round-trip; both remote e2es exercise the real fetch path (locked wire shape = production shape)
+    - [x] tests: remote_effector e2e boots with a test-local HTTP source; remote_code_travels_as_reference asserts blob-at-register + reference round-trip; both remote e2es exercise the real fetch path (locked wire shape = production shape)
     - [x] prism PLAN: Phase 1.9 — `GET /code/{sha256}` export entry (no auth default; signed URL + cache-key normalization as the deployment option)
     - dependency note: remote types are unusable in production until a source serves the blobs (prism endpoint or private static deployment); Inline retirement means there is no fallback arm — recorded in ADR-0027 Honest semantic cost
 
@@ -231,7 +231,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     no-silent-drops rule; the `__default__` fallback retires with it).
 
 - [x] **Phase 4.14 — exec carrier: out-of-process booths (ADR-0035, docs/adr/0035-exec-carrier.md en+zh; LANDED 2026-09-29 — modes A+B + nu fifo adapter + PTY retirement)**
-  - **LANDED (probe 7476209, 504bfd1 + same-day rename):** two shapes —
+  - **LANDED (effector 7476209, 504bfd1 + same-day rename):** two shapes —
     **bgi (framed resident)**: spawn per booth instance, newline-delimited
     JSON frames over stdin/stdout (the shipped shape; CBOR framing is the
     planned payload optimization, §3), maps onto ResidentSession
@@ -261,7 +261,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     to ship this phase. BGI wraps the §3 line protocol, never a second one;
     no guest crate / guest SDK — the contract IS the ABI (aura_alloc precedent).
   - **nushell ruling (user, 2026-09-28): bare exec first, bgi waits on a
-    fifo adapter.** Probe-verified: nu cannot block-read non-TTY stdin and
+    fifo adapter.** Effector-verified: nu cannot block-read non-TTY stdin and
     `open` delivers at writer-EOF, so stdin-direct A is impossible; the
     user's mkfifo + `loop { open pipe | lines | each }` shape streams
     per-writer-session batches correctly (full round trip incl. the inline
@@ -271,7 +271,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - **LANDED (gate 1, 2026-09-28): the `HostOp::StoreEmit` wire arm.**
     One okm Collection instruction travels as DATA
     (`{"op":"store_emit","instruction":{…}}` — the payload field is
-    `instruction`, not `op`: the discriminator collides). The probe never
+    `instruction`, not `op`: the discriminator collides). The effector never
     parses it (the schema lives with the type registration — the withdrawn
     KV executor's lesson, applied); the control plane resolves the type's
     plan + mq handle under the realm lock, CLONED out (the ctx_for
@@ -279,10 +279,10 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     the named error (ADR-0026's remote-boundary ruling, now an enforced
     message not an absent arm). bgi needed no carrier change (its
     `exchange()` answers any named host fn from the realm's table).
-    Locked by three tests: probe-protocol contract (wire shape), aura
+    Locked by three tests: effector-protocol contract (wire shape), aura
     exec_booth `bgi_booth_store_emit_roundtrip` (child → pipes → realm
     store → back, plan resolved from the fixture's hand-written schema
-    literal), plus the stale `state_*` rows corrected in probe USAGE en+zh
+    literal), plus the stale `state_*` rows corrected in effector USAGE en+zh
     (ADR-0026 retirement catch-up). The bgi fixture declares a `counters`
     storage collection for this.
   - **LANDED (gates 2+3, 2026-09-29): the nu bGI fifo adapter + PTY
@@ -299,13 +299,13 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     `bgi_nu.nu` documents the three measured pitfalls (single-fifo
     two-reader race = deadlock; `else` must sit on its branch's `}`
     line; `each` eats `$env` writes — the batch loop is `for`). Gates:
-    probe `nu_bgi_*` (round trip + residency + ctx seam over rep +
+    effector `nu_bgi_*` (round trip + residency + ctx seam over rep +
     iterate envelope + eviction reaps/cleans), aura
     `bgi_nu_booth_store_emit_roundtrip` (upload-introspection resolves
     the plan through the fifo seam; two store instructions round-trip;
     $env persists per instance). PTY retired in the same pass:
     NushellResident / nushell_session / bridge.nu / the `nushell`
-    language arm + Cargo features (probe-runtime, aura-realm,
+    language arm + Cargo features (effector-runtime, aura-realm,
     aura-engine), tests migrated (callslot slow handler → bgi `slow`;
     echo's nu booth/idle-ttl → bgi_nu fixture; store-emit PTY lock →
     exec_booth's nu roundtrip; the envelope-pull lock → steel — the
@@ -326,11 +326,11 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     envelopes at the carrier; python generators project
     `StopIteration.value`; stream association derives from `done`, not from
     the positional stream_id heuristic (0036 §4).
-  - Touch points: probe (`ResidentSession::call` folded into the stream
+  - Touch points: effector (`ResidentSession::call` folded into the stream
     seam, envelope_pull terminal-value validation), aura (`JobKind::Invoke`
     removed, `Realm::call` becomes Start+unwrap sugar, `Envelope.value`,
     `StreamCursor::value()`), the six iterate.rs tests re-shaped.
-    probe-protocol wire format unchanged (the envelope is schema).
+    effector-protocol wire format unchanged (the envelope is schema).
   - **Sequenced AFTER Phase 4.14 lands** — the exec carrier implements
     against the unified envelope from its first frame; it must not chase a
     moving protocol. The store_emit arm is orthogonal to the merge.
@@ -340,9 +340,9 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
 - [x] **Phase 4.16 — Booth storage access: typed host channel + in-process bindings (ADR-0037, docs/adr/0037-typed-storage-plane.md en+zh; CLOSED 2026-09-30 — 4.16a python binding face, 4.16b steel Collection face, 4.16c typed host frames + declared dual-encoding)**
   - **4.16a LANDED (python in-process binding face, 2026-09-30)**: okm's
     `Collection::with_store` (host-injected byte-face engine, okm
-    bindings commit 58cf72b) → probe `HostBridge.storage` slot (byte-level
+    bindings commit 58cf72b) → effector `HostBridge.storage` slot (byte-level
     `StorageEngineFns` four-closure face + the type's raw entries,
-    rev-independent so probe/aura hold DIFFERENT okm builds) → python
+    rev-independent so effector/aura hold DIFFERENT okm builds) → python
     carrier `load()` builds one `Collection` per declared entry over the
     host's realm engine and `module.add`s it under the collection name
     (the script writes `Counters.put(...)` — zero translation). aura's
@@ -373,8 +373,8 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     (the ctx-stub precedent — reopening the silent schema-drop trap).
     Stub arms (collection fns + codec fns, exact arities) live ONLY in
     the introspect engine — same-name `register_fn` stacking would
-    shadow the real fns in resident sessions. probe's steel carrier
-    consumes the same `HostBridge.storage` slot (probe 7ae9f5b):
+    shadow the real fns in resident sessions. effector's steel carrier
+    consumes the same `HostBridge.storage` slot (effector 7ae9f5b):
     `ClosureEngine` adapts the four byte closures, `SteelSession::new`
     returns Result (a failed inject = a declaration error, the session
     must not start). Also fixed okm-steel's standing breakage:
@@ -391,7 +391,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     reverse; eviction rebuilds the per-VM registry over surviving rows).
   - **4.16c LANDED (typed host frames + declared dual-encoding,
     2026-09-30; user ruling replaced the whole-channel-CBOR plan with
-    dual-protocol by declaration)**: probe's `exchange()` decodes
+    dual-protocol by declaration)**: effector's `exchange()` decodes
     `{"host": {"type": invoke|iterate|store|interface_schema}}` into a
     typed enum (serde-tagged, `IterVerb` for the stream verb) mapped onto
     the bridge table — a bad discriminator/verb fails at decode and
@@ -399,7 +399,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     ENTRY retirement landed (the instruction itself still travels as
     DATA — schema-blind rule). The codec is DECLARED per booth:
     `BoothType::encoded(ChannelEncoding)` (aura-booth's own enum — the
-    crate stays probe-free; serde values `json`/`cbor` = probe-protocol's
+    crate stays effector-free; serde values `json`/`cbor` = effector-protocol's
     `ChannelEncoding` pair, mapped realm-side), persisted through
     `PersistedBooth.encoding` (`#[serde(default)]`) and `BoothDef` as a
     hot-tail append (`#[ok_layout(version = 2)]`, u64 0=json/1=cbor —
@@ -421,7 +421,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     same field (one document in/out, codec declared; request shape
     unchanged). bgi_loop/one_shot fixtures branch on `BGI_ENCODING`
     (ciborium already in actor-guest deps); bgi_nu.nu keeps JSON and
-    reads/writes typed host frames. Locks: probe `exec_carrier.rs`
+    reads/writes typed host frames. Locks: effector `exec_carrier.rs`
     (`bgi_cbor_round_trip` + residency, `bgi_cbor_host_call_crosses_the_seam`,
     `bgi_untyped_host_frame_fails_at_decode` — the retired shape
     answers an error value and the bridge fn NEVER runs, `exec_cbor_round_trip`,
@@ -440,7 +440,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     set FROZEN (no new ops ride it), retires with CBOR. The bgi shim (4.14
     gate 2) does NOT bind the storage face — the channel is typed frames,
     nu reads them.
-  - Touch points: probe (python + steel carriers register the Collection
+  - Touch points: effector (python + steel carriers register the Collection
     bindings — LANDED; `exchange()` frame typing — pending), okm
     (`okm-steel` Collection face — LANDED via `okm-entry`), aura
     (`ctx_store_emit` JSON entry retires with CBOR; `store_exec` survives
@@ -466,7 +466,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     `bound_partition`/`routes_of_*`/compact resolver chain and the test call sites
     that drive the mq surface with `"cart/alice"` strings
     (`mq_okm.rs`/`events.rs`/`queue_relief.rs`); ns-layout + ADR-0026 §1 table
-    names (both languages); probe USAGE (both languages, the 4.16c leftover).
+    names (both languages); effector USAGE (both languages, the 4.16c leftover).
   - **Declaration semantics (§3)**: per-event resolve, absence = singleton, the
     three shapes (singleton / payload field / index scan) discriminated at the row
     structure layer, references stored by NAME. The EventRoute row shape carries
@@ -511,7 +511,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     structural marker; the hash family deleted; key widths tightened as specified;
     all `#[ok_ns]` renumbered (mq 20–25, meta 30–32). Kept for later: the in-memory
     hot face for the resolver (not built — the resolve is one dict read per append /
-    cursor op, measured fine); probe USAGE frame-shape sync (4.16c leftover, probe
+    cursor op, measured fine); effector USAGE frame-shape sync (4.16c leftover, effector
     repo, untouched this session). The low-block wipe is an OPERATIONAL act for an
     existing deployment (this repo's tests build fresh stores).
 
@@ -546,15 +546,15 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - [ ] turn-executor type wiring (Gravity hosting, Phase 6) declares its long TTL
   - [ ] same-session consecutive tool calls fill via in-memory oneshot (hot loop: zero persistence per call); session persisted + executor released at turn end or retention expiry; a new same-session turn within the window reuses the resident executor (skips session fetch)
   - Stateless semantics intact — state externalization (executor holds no session state) is what "stateless" means; the resident is a discardable hot cache, rebuildable from the event stream. Persistence delta: call_id only.
-  - Probe Booth type hosting: booth_type = Probe, partition_key = node_id; the connection plane adapts outbound WS frames to Realm queue semantics (frame down = event delivery, frame up = reply_to return via `resolve_call`) — adapter, not a bypass.
+  - Effector Booth type hosting: booth_type = Effector, partition_key = node_id; the connection plane adapts outbound WS frames to Realm queue semantics (frame down = event delivery, frame up = reply_to return via `resolve_call`) — adapter, not a bypass.
 - [ ] Phase 6.6 — Storage Booth (decision recorded here; never filed as a numbered ADR — "ADR-0010" previously referenced here now denotes the timer ADR, docs/adr/0016): host `#[kv_storage]` executor instances
   - one declared instance per application (ns = app_id/tenant_id prefix)
   - surface is exactly one method: frame in (op + bytes) → scan bytes out; arrival path (outbound WS / realm events / in-process direct call) is the caller's business, invisible to the executor
   - the receiver holds no OKM semantics: prepend declared prefix, execute, fill back
   - structural isolation: handles are prefix-bound at construction; namespace escape is not expressible
   - [x] Value representation (ADR-0018, 2026-09-20 — accepted; LANDED 2026-09-22): `StoreAsVirtual` (the base64-in-JSON adapter) deleted; the mq tables and the booth state documents bind to ONE okm engine (`MqStore` = okm `FjallStore` in production, okm `TestStore` in tests — no aura-side storage abstraction, no JSON container); booth state is one document per instance (`realm/src/state.rs`: registry pattern — pkey `InstanceStateKey {type_id, instance_id}`, type via the shared BoothName registry, (type_id, key) → id via the `by_key` text index (variable-length key terminal, ADR-0005) with the next id from a MAX reduce over `type_id` — no scan, ids never reused (unfold = keep); the raw key rides the declared `instance_key` field; the hand-written MaxInstanceId logic is the seed use case for okm ADR-0023's preset combinators — `MaxKeep<F>` will replace it when okm lands them); JSON ↔ `DynamicValue` conversion lives ONCE in `realm/src/value.rs` (the only seam). Clean break: existing mq/state bytes are discarded, no migration. Namespace isolation = prefix-bound `MqStore::namespaced` handles. Meta plane (ADR-0025 Plan A, 2026-09-22): booth definitions are `BoothDef` rows in the DATA plane's okm instance (`realm/src/meta.rs`, ns 41, beside mq/state) — the separate meta instance, `meta_engine`/`meta_dir` config and `Engine.meta_store` field are GONE (one engine, one directory). Identity = registry pattern inside the plane (`TypeName` by_name index + MAX watermark reduce; ids never reused); Options as sentinel encodings (entry empty / ttl 0 / schema empty). The introspected schema rides as verbatim JSON text — an interface artifact (the LLM/script-side contract), not a storage encoding. `aura-storage` crate DELETED (no consumers left). Plan B (REJECTED 2026-09-23, revised): the stateless-executor framing contradicted aura's compute-storage-integrated identity — an instance owns its local storage permanently; the single okm instance is terminal, not transitional (see docs/adr/0025). Dead mq/state keys on existing deployments are simply abandoned (clean break).
-  - **WITHDRAWN (2026-09-20)**: the probe-side placement of the receiver was removed — `Frame::Kv` / `KvFrame` / `Frame::KvRefused` are gone from probe-protocol, and with them `Realm::kv_pending`, `Realm::kv_round_trip` / `kv_round_trip_within`, `KV_ROUND_TRIP_TIMEOUT`, the gateway's two KV arms and the `kv_round_trip.rs` test. The probe holds no storage: hosting an engine on an execution node adds a directory to place, size and back up plus an engine lifecycle, while every operation is delivered per call and holds nothing between calls. The key prefix is likewise not an execution-node concern — the control plane derives it from the sender's identity and business logic (Gravity's data = its own ns, then the partition id, then the event id, resolved by lookup). ADR-0010 puts the receiver on the Aura node itself; a remote execution node was a second placement of the same role. The script-side persistence requirement is served by the ctx bridge (`host_wire.rs` → the realm store), the project's founding shape — and the probe is deliberately given no data-plane credentials (it runs untrusted code in a container), so an engine there contradicts the stance rather than only adding operations work.
-- [ ] Phase 7 — Probe embedding: container execution base (heavy-isolation end of the Wasmtime lineage) as an in-realm base component; probe repo deploys as remote actuator via outbound registration.
+  - **WITHDRAWN (2026-09-20)**: the effector-side placement of the receiver was removed — `Frame::Kv` / `KvFrame` / `Frame::KvRefused` are gone from effector-protocol, and with them `Realm::kv_pending`, `Realm::kv_round_trip` / `kv_round_trip_within`, `KV_ROUND_TRIP_TIMEOUT`, the gateway's two KV arms and the `kv_round_trip.rs` test. The effector holds no storage: hosting an engine on an execution node adds a directory to place, size and back up plus an engine lifecycle, while every operation is delivered per call and holds nothing between calls. The key prefix is likewise not an execution-node concern — the control plane derives it from the sender's identity and business logic (Gravity's data = its own ns, then the partition id, then the event id, resolved by lookup). ADR-0010 puts the receiver on the Aura node itself; a remote execution node was a second placement of the same role. The script-side persistence requirement is served by the ctx bridge (`host_wire.rs` → the realm store), the project's founding shape — and the effector is deliberately given no data-plane credentials (it runs untrusted code in a container), so an engine there contradicts the stance rather than only adding operations work.
+- [ ] Phase 7 — Effector embedding: container execution base (heavy-isolation end of the Wasmtime lineage) as an in-realm base component; effector repo deploys as remote effector via outbound registration.
 - [ ] Phase 8 — Prism hosting: WS gateway as Aura-resident component (client connections pin here, not on Gravity); turn delivery = realm events. Prism repo owns the protocol, this repo owns the connection plane. Protocol/identity/codec design recorded in prism's ADR-0017 (`~/world/prism/docs/adr/0017-prism-connection-plane.md`).
 
 Deferred gates:
@@ -568,7 +568,7 @@ Deferred gates:
   EventRoute 行形状）：
   - **实例身份**：`InstanceId.key` 变为 `aura_booth::InstanceKey { Singleton, Named }`；
     哨兵 `mq::SINGLETON` 退役；`instance_of` 字符串往返删除，切片 variant 直通投递目标；
-    会话键/ctx 渲染 = `Display`（单例 = 空串）；probe wire 字符串经 `InstanceKey::parse`
+    会话键/ctx 渲染 = `Display`（单例 = 空串）；effector wire 字符串经 `InstanceKey::parse`
     进 variant（空串 = Singleton）。
   - **路由终态**：`RouteResolution { Singleton, Field, Scan }`；EventRoute 行
     `resolution: u8` 判别 + collection/index/probe_field **名字列**（存名不存号）；
@@ -601,9 +601,9 @@ Deferred gates:
   （aura_booth 侧，与 mq 面的切片枚举 `mq::InstanceKey` 刻意同构但类型独立）；哨兵字符串
   从框架整体退役；字面别名构造性不可达（ADR-0039 给切片 id 0 的待遇上移一平面）。
 - **裁决前的事实核对（全部调用点）**：`instance_of`、消费循环绑定规则、
-  `bound_instance_key`、probe 会话键格式、ctx 泄压阀回传；**状态面核实不受影响**
+  `bound_instance_key`、effector 会话键格式、ctx 泄压阀回传；**状态面核实不受影响**
   （`store_exec` 用脚本提供的 key 对类型 ns 键控文档，实例键从不进状态键——无存储迁移）；
-  probe 不依赖哨兵字面量（grep 核实），会话键格式是唯一可观察缝（`Singleton` 渲染为
+  effector 不依赖哨兵字面量（grep 核实），会话键格式是唯一可观察缝（`Singleton` 渲染为
   `{type}/` 空键段；脚本继续看到字符串键，单例渲染为空串）。
 - **文档**：ADR-0042 双语新增；ADR-0038 残余段按日期记录规矩加「已由 ADR-0042 关闭」指针。
 - **实施**：随 Phase 4.13 落地（EventRoute 行形状 + resolve 终态 + 本枚举改造一批）。
@@ -644,7 +644,7 @@ Deferred gates:
   返还 group 段而非解出的 key）；并修正相邻那句 stale 的「slot 续接索引计数器」。
 - **验证**：`cargo check --workspace --all-targets` 干净；`cargo test --workspace
   --no-fail-fast` 除既有失败 `exec_booth::bgi_booth_ctx_invoke_to_sibling` 外全绿。
-  基线取证：`git worktree add`——**必须放在 `~/world` 下**（`Cargo.toml` 里 `../probe`
+  基线取证：`git worktree add`——**必须放在 `~/world` 下**（`Cargo.toml` 里 `../effector`
   是相对 path 依赖，放进 scratch 会解析失败）；或沿用 2026-10-02b 那次的
   `git archive HEAD` + 软链法。
 - **提交**：aura `74221de`、okm `559d031`。`docs/HANDOFF.md`/`.zh-CN.md` 在本轮开始前
@@ -683,11 +683,11 @@ Deferred gates:
   保证；把墙钟读数与 +1 混在一个数里（旧 `max`）只会冒充时间戳：同毫秒会算出相等主键
   （覆盖 = 丢数据），回拨会落到已消费游标之下（静默丢弃）。脚本面 host fn 名
   `ctx_skip_to_now` → `ctx_skip_to_head`（**两边一起改名**：aura ctx bridge 的 host fn 名与
-  probe `runtime/src/carrier/steel.rs` 的 introspection stub 列表；脚本面契约变更，已确认）。
+  effector `runtime/src/carrier/steel.rs` 的 introspection stub 列表；脚本面契约变更，已确认）。
 - **验证**：`cargo check`（realm/config/engine）通过；`cargo clippy` 三包新代码零警告
   （修掉两条自引入：mq.rs 文档列表缩进、events.rs 冗余 `let _ =`）。测试：workspace 各
   套件全绿，**唯一失败 `exec_booth::bgi_booth_ctx_invoke_to_sibling` 经取证为预先存在**
-  ——用 `git archive HEAD`（只读，未动工作树）导出 HEAD 内容到 scratch、软链 `probe`/`okm`
+  ——用 `git archive HEAD`（只读，未动工作树）导出 HEAD 内容到 scratch、软链 `effector`/`okm`
   后在同一测试复现同样失败（左侧 `Null`），与本次改动无关。
 - **文档同步（双语）**：ADR-0038/0039/0040 状态行由「已裁未实施」改为「已落地
   （2026-10-02，提交待指令）」并写入落地形态、连带与残余；`event-flow.md`/`-en.md`
@@ -696,9 +696,9 @@ Deferred gates:
   8.1 待决（前置 = 动态 schema）、8.5 开放」）。
 - **残余（记录在 ADR-0038 与 event-flow §8.3）**：实例键空间仍用 `"__singleton__"`
   哨兵字符串——payload 里字面等于它的 key 仍会别名到单例**实例**（与已修掉的分区别名
-  不是同一个 bug）；让实例身份结构化会牵动整个 call model 与 probe 缝上的 `InstanceId`，
+  不是同一个 bug）；让实例身份结构化会牵动整个 call model 与 effector 缝上的 `InstanceId`，
   留给独立裁决。4.18 的 in-memory resolve 热面**未建**（每次 append/游标一次字典读，
-  实测无需）；probe 仓 USAGE 帧形同步（4.16c 遗留）本次未动。
+  实测无需）；effector 仓 USAGE 帧形同步（4.16c 遗留）本次未动。
 - **提交**：`2d1fafb`（2026-10-02b 批次）；后续 ADR-0041 批次见 2026-10-08 会话记录。
 
 ## 会话记录（2026-10-02，事件面终态裁决 + event-flow 重写为推导式）
@@ -755,10 +755,10 @@ Deferred gates:
   kdl），入口判据（任何语言 stdlib 可达）是硬墙。改为每摊位声明一种
   编码（json|cbor），终身一 codec、不按帧协商；第三种编码仍关在
   Windmill 判据后。声明面：aura-booth 自有 `ChannelEncoding`（crate
-  保持 probe-free，serde 值与 probe-protocol 同名对，realm `map_encoding`
+  保持 effector-free，serde 值与 effector-protocol 同名对，realm `map_encoding`
   映射）+ `BoothType::encoded()`；`script()` 三参不变、默认 Json，
   50+ 既有调用点零破坏。远程路径编码随 `ToolCall.encoding`
-  （`#[serde(default)]`）到节点；probe 下行 `with_session_encoded`。
+  （`#[serde(default)]`）到节点；effector 下行 `with_session_encoded`。
 - **类型帧**：`exchange()` 把 `{"host":{"type":…}}` 反序列化进
   serde 标签枚举（invoke / iterate+`IterVerb` / store / interface_schema）
   再映射回桥表——判别符/动词错 = 解码失败 = 错误值回 child，自由
@@ -777,7 +777,7 @@ Deferred gates:
   v1 行重读为 0=json（其实际行为），字段插中间会移动 `code_sha256`
   偏移的路线否决。`introspect_schema` 按声明编码起抛却子进程
   （`introspect_encoded`）——CBOR 摊位的 schema 帧往返也骑 CBOR。
-- **验收矩阵**：probe workspace 全绿（新锁 5 条：CBOR 往返+持驻、CBOR
+- **验收矩阵**：effector workspace 全绿（新锁 5 条：CBOR 往返+持驻、CBOR
   ctx 缝、未类型帧=解码错误且桥 fn 不执行、exec CBOR、nu+Cbor=错误）；
   aura workspace 全绿（新锁 `bgi_cbor_booth_store_emit_roundtrip`：上传
   introspection + 类型 store 帧 + realm plan 全走 CBOR）；两仓 clippy
@@ -789,7 +789,7 @@ Deferred gates:
   态）；ADR-0035 §3 双语（帧词汇类型化、编码声明化）；PLAN 4.16 标
   CLOSED。夹具 bgi_loop/one_shot 按 env 分双编码、宿主帧类型化；
   bgi_nu.nu 保持 JSON 读类型帧。
-- **提交**：aura `d87bd18`（4.16c typed 帧缝 e2e）；probe 侧同批提交号见 probe 仓。
+- **提交**：aura `d87bd18`（4.16c typed 帧缝 e2e）；effector 侧同批提交号见 effector 仓。
 
 ## 会话记录（2026-09-30b，4.16b 落地：steel 绑定面注入 + slatedb 驱动线程）
 
@@ -822,18 +822,18 @@ Deferred gates:
   后 recv 自然 Err 退出，手写信号需要 racy 的 strong_count 判断才有意
   义，是冗余。锁：`driver_thread_test.rs`（tokio context 内全操作 +
   100 行反向抽干）。
-- **载体接线**：probe steel 载体消费同一 `HostBridge.storage` 槽——
+- **载体接线**：effector steel 载体消费同一 `HostBridge.storage` 槽——
   `ClosureEngine` 适配四字节闭包到 okm-steel 的 Engine trait，
   `SteelSession::new` 改返回 Result（注入失败=声明错误，会话不得启动，
   对齐 python 载体的 load 签名）；okm 锁统一 bump 407cbe26（branch=main
   与 plain-URL 两种 source 拼写解析到同一 rev，非分裂锁）。验收矩阵：
   okm-core/dynamic 全绿（含新锁）、okm-steel 6 锁、okm-python 3 锁、
-  probe 13 运行、aura engine 全特性 17 binary（含 `steel_injection`：
+  effector 13 运行、aura engine 全特性 17 binary（含 `steel_injection`：
   绑定写↔emit 读双向互证 + evict 后注册表在幸存行上重建）全绿，clippy
   零警告。
 - **提交**：okm 92b2551（驱动线程 fix + 锁）→ 36143da（okm-entry 共享
   crate + python 改骑）→ 407cbe2（okm-steel 方法面 + Obj/Array 缺臂修
-  复 + 锁）；probe 7ae9f5b（steel 载体接线 + okm 依赖 bump）；aura
+  复 + 锁）；effector 7ae9f5b（steel 载体接线 + okm 依赖 bump）；aura
   3f61522（`steel_injection.rs` e2e 锁）。ADR-0037 双语状态/§1/诚实成
   本/后果改落地态（4.16c 留名），随本文档批提交。
 
@@ -841,9 +841,9 @@ Deferred gates:
 
 - **接线形状（两仓原子批 + okm 前置批）**：Collection 方法面（python 对
   作者零翻译）→ okm-dynamic plan 纯函数 → 字节 ops → 注入的字节面引擎。
-  跨仓 rev 问题（probe 与 aura 各指不同 okm rev）在字节面上自然消解——
+  跨仓 rev 问题（effector 与 aura 各指不同 okm rev）在字节面上自然消解——
   缝上只走 `Vec<u8>`/`&[u8]`，无 okm 类型。布局事实源留 okm-dynamic，
-  binding 不复刻（B 方案兑现）。probe 的 `StorageSlot` 是纯数据（ns +
+  binding 不复刻（B 方案兑现）。effector 的 `StorageSlot` 是纯数据（ns +
   原始条目 JSON + 四闭包），python `load()` 内直接 `with_store` 结果
   `module.add`——**没有中转层**：曾试 `Vec<(String, Collection)>` 经
   `Box<dyn Any + Send>` 跨缝回传再 downcast，`*mut PyObject`（pyclass
@@ -867,7 +867,7 @@ Deferred gates:
   是结构事实：槽只建 plan 声明的 collections，ns 构造期绑定，DSL 规则
   （ns 不进条目）。
 - **闸门**：aura `--workspace --features python` 全绿（含新
-  `py_injection.rs` 两条：互读/重建 + schema 装配锁）；probe workspace
+  `py_injection.rs` 两条：互读/重建 + schema 装配锁）；effector workspace
   （steel,python,wasmtime）全绿；clippy 新代码零警告（`StorageEngineFns`
   四闭包提为 PutFn/GetFn/DelFn/ScanRangeFn 别名消 type_complexity）；
   两仓 Cargo.lock bump okm → ce08c24。ADR-0037 双语状态行 + 后果节改为
@@ -875,7 +875,7 @@ Deferred gates:
 
 ## 会话记录（2026-09-29b，Phase 4.15 落地：统一信封）
 
-- **协议塌缩（两仓原子批）**：probe `CallKind::Invoke` 删除（IterateStart
+- **协议塌缩（两仓原子批）**：effector `CallKind::Invoke` 删除（IterateStart
   成 default——wire 形状不变，帧词汇表瘦身）、aura `JobKind::Invoke` 删除
   （`{Start,Next,Dispose}`，`Job.stream` 必填）；dispatch 全部走 stream
   缝（aura run_job 的 script 臂 fold 进 `s.iterate`，remote.rs 同理）。
@@ -889,9 +889,9 @@ Deferred gates:
   envelope_pull 统一校验（跨字段规则强制执行；Start 裸回复包 terminal、
   Next 缺 done=错误不是静默终止；子侧 `{"error":…}` 约定透传外层错误值）；
   bgi 过 validate_envelope（夹具 dispatch 按 `(kind,event)` 双 kind 骑
-  同臂——`call` 留作载体内部原语：内省+probe 直驱测试）；exec OneShot 的
+  同臂——`call` 留作载体内部原语：内省+effector 直驱测试）；exec OneShot 的
   Start=跑一次+包 stdout terminal（脚本协议零改），Next/Dispose 保持
-  具名错误——statelessness 锁移到尾随拉取（probe exec_carrier + aura
+  具名错误——statelessness 锁移到尾随拉取（effector exec_carrier + aura
   exec_booth 两测同形态 reshape）。
 - **关联从 done 导出（§4）**：`StreamCursor::next` 不再按 stream_id 字段
   位置认 Start——非 terminal 首帧缺 id=协议错误；terminal 首帧不合并 id
@@ -905,30 +905,30 @@ Deferred gates:
   booth 的 Start 走 bare-call 形态——不注入不剥离，Next/Dispose 才要求
   对象 args）。
 - **闸门**：iterate.rs 六测 reshape（rust_body 锁"Start=terminal invoke+
-  注册撤销、尾随 Next=not live"；steel_envelope 断言原样存活）；probe
+  注册撤销、尾随 Next=not live"；steel_envelope 断言原样存活）；effector
   workspace（steel,python,wasmtime）全绿；aura engine+realm
   （steel,python,wasmtime,fjall）全绿；clippy 两仓零新增（aura 存量=
   echo.rs 6 条，本批 instance.rs 曾引入 1 条 match-single-pattern 已改
-  if-let 消除；probe 零警告）。ADR-0034 erratum 双语已在位（上一批落）。
+  if-let 消除；effector 零警告）。ADR-0034 erratum 双语已在位（上一批落）。
 
 ## 会话记录（2026-09-29，闸门 2+3 落地：nu bgi 双 fifo + PTY 退役）
 
 - **分派表裁决（用户，2026-09-29）**：事件帧进单入口、入口内部按事件名派发——有运行时查表的语言用原生机制（python/steel 装饰器收集进 dict、host 按名 getattr——load 期收集即注册表，派发零额外开销、零字符串化；wasm 导出表寻址），没有的（nushell，bgi/exec 通用形态）作者手写 `main` + match 字面名（nu 无 eval、`source` 拒动态路径，实测 not_a_constant——手写不是妥协，是这类语言的契约形态）。`@on` 若走 bgi 需 py 实现的另一套收集逻辑（装饰器住脚本侧），未实施——嵌入式 python 已覆盖。bgi 保留显式循环、其它形态不带——循环的存在理由=免逐调用 spawn（跨请求状态是顺带，不靠它）。
-- **闸门 2（probe）**：`BgiKind::{Pipes, Fifo}`——spawn spec 头选通道（`["nu","<author.nu>"]` → 双 fifo），线协议一套不多造。请求 `req`（逐帧写后即关=批次 EOF 唤醒）、ctx 应答 `rep`、结果 stdout。父侧零生成（无 shim——main 即入口，nu 用脚本参数自动调用）。夹具 `bgi_nu.nu` 头注记三个实测坑：**单 fifo 双读者竞态=实测死锁**（外层循环与内联应答读抢帧，早期单 fifo 探针通过纯属唤醒顺序运气）、`else` 须与分支 `}` 同行、`each` 闭包吞 `$env` 写（批次循环必须 `for`）。nu 侧 `print` 逐条 flush 实测成立（500ms 间隔两行各到）。
-- **闸门 3（两仓）**：PTY 整删——probe NushellResident/nushell_session/bridge.nu/nu_session+nu_bridge 测试/`nushell` feature/语言臂；aura feature 链（realm、engine）与 wire 词汇。迁移路线（每把 PTY 锁移等价活锁，无裸删）：callslot slow handler→bgi 夹具新 `slow` 臂（500ms 真睡眠，feature-free）；echo nu booth/idle-ttl→bgi_nu 夹具（新 `sum` 臂 + `lifecycle idle_ttl`）；echo PTY store 锁→指向 exec_booth 的 nu 往返锁；envelope_pull 锁→steel（唯一 ride 该路的嵌入式载体——顺带补上它此前的零锁定）；python iterate 测试的 `all(python,nushell)` 门无历史依据→`python`。新锁：probe `nu_bgi_*` 四条 + aura `bgi_nu_booth_store_emit_roundtrip`（注册期 schema 帧过缝解析 plan、双 store 指令往返、$env 逐实例跨调用）。ADR-0035 双语 §6/诚实成本 nu 条/Consequences 就地改写为落地态。Phase 4.14 勾 [x]。
+- **闸门 2（effector）**：`BgiKind::{Pipes, Fifo}`——spawn spec 头选通道（`["nu","<author.nu>"]` → 双 fifo），线协议一套不多造。请求 `req`（逐帧写后即关=批次 EOF 唤醒）、ctx 应答 `rep`、结果 stdout。父侧零生成（无 shim——main 即入口，nu 用脚本参数自动调用）。夹具 `bgi_nu.nu` 头注记三个实测坑：**单 fifo 双读者竞态=实测死锁**（外层循环与内联应答读抢帧，早期单 fifo 探针通过纯属唤醒顺序运气）、`else` 须与分支 `}` 同行、`each` 闭包吞 `$env` 写（批次循环必须 `for`）。nu 侧 `print` 逐条 flush 实测成立（500ms 间隔两行各到）。
+- **闸门 3（两仓）**：PTY 整删——effector NushellResident/nushell_session/bridge.nu/nu_session+nu_bridge 测试/`nushell` feature/语言臂；aura feature 链（realm、engine）与 wire 词汇。迁移路线（每把 PTY 锁移等价活锁，无裸删）：callslot slow handler→bgi 夹具新 `slow` 臂（500ms 真睡眠，feature-free）；echo nu booth/idle-ttl→bgi_nu 夹具（新 `sum` 臂 + `lifecycle idle_ttl`）；echo PTY store 锁→指向 exec_booth 的 nu 往返锁；envelope_pull 锁→steel（唯一 ride 该路的嵌入式载体——顺带补上它此前的零锁定）；python iterate 测试的 `all(python,nushell)` 门无历史依据→`python`。新锁：effector `nu_bgi_*` 四条 + aura `bgi_nu_booth_store_emit_roundtrip`（注册期 schema 帧过缝解析 plan、双 store 指令往返、$env 逐实例跨调用）。ADR-0035 双语 §6/诚实成本 nu 条/Consequences 就地改写为落地态。Phase 4.14 勾 [x]。
 - **教训入档**：steel 布尔字面量 `#f/#t`（写 `false` 是 FreeIdentifier 解析错，首跑抓到）；PTY 每轮"命令行文本"式 handler 寻址退役后，"inline 脚本文本"对 nu 不再存在——源=文件/argv，bash/Rust-bin 同构，一语言一形态兑现。
 
 ## 会话记录（2026-09-28c，闸门 1 落地 + ADR-0037 裁决）
 
 - **闸门 1 已提交（本条同批）**：`HostOp::StoreEmit` 线臂——一条 okm
   Collection 指令作为 DATA 过线（载荷字段名 `instruction`，不叫 `op`：
-  与内部 tag 判别符碰撞）；probe 端透传不解析（schema 住类型注册处），
+  与内部 tag 判别符碰撞）；effector 端透传不解析（schema 住类型注册处），
   aura 端 `resolve_host_call` 锁下取 plan+mq 克隆执行（ctx_for 纪律），
   无 plan=点名错误（0026"远程 ctx_store_emit 需 resolved plan"从缺席臂
   变成有信息的错误值）。bgi 载体零改动（`exchange()` 查表即答）。三测
-  试锁定：probe-protocol 线形状契约、aura exec_booth
+  试锁定：effector-protocol 线形状契约、aura exec_booth
   `bgi_booth_store_emit_roundtrip`（child→管道→realm store→回程，夹具
-  手写 storage literal 解析出 plan）、remote_probe 过期注释更新。
+  手写 storage literal 解析出 plan）、remote_effector 过期注释更新。
   USAGE 双语的 `state_*` 残留行随 0026 退役一并修正（勘误非扩面）。
 - **ADR-0037 裁决（typed 存储面 + 进程内绑定）**：用户的 okm 绑定事实
   戳破 0026 §3 的实现措辞——python/steel 进程内**直接绑 DynamicCollection**
@@ -947,7 +947,7 @@ Deferred gates:
 ## 会话记录（2026-09-28b，iterate 落地 + ADR-0035/0036 裁决）
 
 - **已提交**：aura 70b61a5（iterate 代码+测试）、36c2d35（0034 修订 docs）、
-  probe e85c933（iterate carrier+协议）；probe 7476209 + aura 504bfd1
+  effector e85c933（iterate carrier+协议）；effector 7476209 + aura 504bfd1
   （exec/bgi 载体首刀，含 GIL 修复与 stream bookkeeping 上提修复）；
   aura 15fa114（pull(n) 措辞降级）。
 - **裁决链**：用户推翻 0034"wasm 仅消费侧"（不能 HTTP ≠ 不能生成器）→
@@ -955,7 +955,7 @@ Deferred gates:
   `done` 恒布尔、终止轮 `{done:true,value?}`；ctx 动词保留两个；
   关联从 done 导出废位置性启发式）→ PLAN Phase 4.15（排 4.14 后）。
   exec 载体 → **ADR-0035**；同日 fcgi-vs-cgi 分析把"两模式一套帧"更正为
-  **两形态**：bgi（带帧常驻，循环住子进程——作者自写或 probe 垫片）/
+  **两形态**：bgi（带帧常驻，循环住子进程——作者自写或 effector 垫片）/
   exec（裸 cgi 一次性，【无协议】：一进一出各一个 JSON，stateless by
   definition——php-fpm 血统点名，iterate 是点名错误值）。BGI 名字采纳。
 - **nushell 实证（探针，勿重新发明）**：非 TTY stdin 不能阻塞读（`input`
@@ -978,10 +978,10 @@ Deferred gates:
 - ADR-0031 经复核与初始设定冲突，整篇改写为**「远程摊位：为什么不采用」**（同一编号，
   不新开 ADR）：对外访问是摊位代码的事，不是 realm 基础设施——逻辑归摊位、访问配置
   非全局，摊位内部自选客户端（脚本体 HTTP 库；wasm 经 wasi-http host，属 carrier
-  能力任务非 realm 配置）。tier-1 远程执行（probe + ADR-0027 内容寻址）不受影响，
+  能力任务非 realm 配置）。tier-1 远程执行（effector + ADR-0027 内容寻址）不受影响，
   是唯一的远程形态；浏览器会话归 prism 会话平面（会话≠摊位）。草稿的两个观察
   （actor 模型不要求确定性、调用模型目标无关）作为「什么幸存」留档。代码零改动，
-  仅两处措辞修正（kdl.rs 注释、instance.rs probe 臂错误串 "remote booth"→"remote probe"）。
+  仅两处措辞修正（kdl.rs 注释、instance.rs effector 臂错误串 "remote booth"→"remote effector"）。
 - prism docs/PLAN.md Phase 1.8 的 DESIGN CONSTRAINTS 块按该裁决改写：拨出/CBOR/远程
   摊位注册删除；站得住的部分（Node 保持 transport-only、auth block + 前缀戳、Phase 1
   流式 = fluxen 接收面）本就是 prism 自有能力，不依赖远程摊位概念。
@@ -994,7 +994,7 @@ Deferred gates:
 ## 会话记录（2026-09-26，booth 改名 + 消费者饥饿修复）
 
 - ADR-0032：参与者 actor → booth（中文 摊位）全链路改名落地（aura 代码/文档 +
-  probe/prism/gravity/okm/wiki 同批对齐；策略 A 无兼容别名——meta 持久行清空重注册）。
+  effector/prism/gravity/okm/wiki 同批对齐；策略 A 无兼容别名——meta 持久行清空重注册）。
 - **真 bug 修复**：instance.rs 消费者任务旧形如 `for subs { loop }`——多队列实例
   只排第一条队列，其余饥饿（clippy::never_loop 是表象，非误报）。重写为单循环扫
   全部队列；回归锁 `multi_route_instance_drains_every_queue`（旧码 RED：count 1，
@@ -1011,7 +1011,7 @@ Deferred gates:
 
 ## 会话记录（2026-09-23，自 HANDOFF 简报合并）
 
-起点 `ffb9a5c`（timer wheel 批次收尾），终点 aura `8a92122` / probe `9da8ed8`，
+起点 `ffb9a5c`（timer wheel 批次收尾），终点 aura `8a92122` / effector `9da8ed8`，
 全量测试通过（`cargo test -p aura-engine --features "fjall,nushell,steel"` 36 个 +
 `aura-realm --features fjall`）。已知失败清单：**空**（fjall_state 真 bug 已修、
 callslot deadline 属 feature 组合误判——见下）。
@@ -1033,7 +1033,7 @@ callslot deadline 属 feature 组合误判——见下）。
       事实源 + ops 面 + 水位分母；内存 EventRouter 保留为 emit 匹配热路径。
 - [x] meta schema 动态段化（a0b0c03）：`BoothDef` 删 `schema: String`，schema 以
       `DynamicValue::Obj` 走 dynamic segment；存储层不再有任何 JSON 文本。
-- [x] shim 移除（aura 68877c2 + probe 9da8ed8）：四层 entry 全删；handler 只按
+- [x] shim 移除（aura 68877c2 + effector 9da8ed8）：四层 entry 全删；handler 只按
       事件名寻址；25 处测试/CLI 迁移。
 - [x] wildcard 队列身份修复（c249ac2）：emit 一律以具体事件名落队列；通配订阅经
       `events_matching` 展开具体名、逐名 cursor。规则：队列身份与 handler 名永远
@@ -1065,7 +1065,7 @@ callslot deadline 属 feature 组合误判——见下）。
       消费、中途 break 的 dispose 断言（registry 排空）、未知 stream 失败值
       + 幂等 dispose、流中途 raise 的 error 值断言、nushell 信封往返、Rust
       body 的 iterate 错误值（Rust 生产方=记录残余：closure body 无常驻
-      状态可持迭代器）。probe-protocol：ToolCall 加 kind/stream（远程生产
+      状态可持迭代器）。effector-protocol：ToolCall 加 kind/stream（远程生产
       腿）、HostOp 加 iterate/next/dispose（远程消费腿）。
       **残余**：① `pull(n)` 批量旋钮（ADR-0034 措辞已同日降级为
       "planned"——Windmill 判据，快生产者把跳数变成真实成本时再建）；
@@ -1083,7 +1083,7 @@ callslot deadline 属 feature 组合误判——见下）。
 - [ ] events_matching 增量化（可选小优化）：通配订阅每轮 50ms 全量重扫；可缓存
       上轮展开 + EventName registry 水位，registry 不变即跳过。通配订阅多/词汇大
       时才值得（Windmill 判据）。
-- [x] probe 侧 nushell 的 ctx 桥（LANDED 2026-09-25）：bridge.nu 把每个 host fn 物化为
+- [x] effector 侧 nushell 的 ctx 桥（LANDED 2026-09-25）：bridge.nu 把每个 host fn 物化为
       `ctx-<dash-name>` 自定义命令（nu 禁点号），nu 侧写 req-*.json 轮询 resp-*.json，
       Rust `call` 的 poll 循环 sweep 会话目录应答（HostBridge 同步口）。回归锁：结果
       文件出现时 REPL 仍在重绘提示符，立即返回会让下一桥回合的 source 吞进半截提示符
@@ -1095,13 +1095,13 @@ callslot deadline 属 feature 组合误判——见下）。
       调用方有挂起/恢复契约——gravity 的 transcript 持久化 + 脚本侧约定 resume
       handler（如 `__call_resolved`）。今天无任何 cold tier 消费者，现在建
       pending marker + 事件重进入 = 给不存在的消费者铺管道，且 gravity 落地时
-      形态会变（终态前提纪律）。实施时 probe 不改：marker 是数据非新协议帧。
+      形态会变（终态前提纪律）。实施时 effector 不改：marker 是数据非新协议帧。
 - [ ] ADR-0015 三步实施：归属已按 2026-09-25 修订拆分（见 ADR-0015 Update 节）——
       ①的 aura 残余（顶替必须可见 + 启动如实披露）已落地（replacement 事件点名
       alias 与新旧 peer、PresenceGuard 身份核对，alias_takeover.rs 锁）；identity
       模式开关、密钥对握手、节点登记表、四端点、并入账号——全部住 **prism**
       （prism PLAN Phase 1.8），aura 不重复建设（同一决定两个家 = 第二真相源）。
-      `credential_env` 删除随 prism 握手线落地时执行（probe 仓，同一协调提交）。
+      `credential_env` 删除随 prism 握手线落地时执行（effector 仓，同一协调提交）。
       身份归属修订（2026-09-22）：认证数据住 **prism**，aura 只在投递载荷里收到
       sender 元数据（Ctx 不变）——与 ADR-0017 §3/§5/§7 修订一起在 prism 侧执行
       （aura 侧无远程挂载改造——ADR-0025 的 Plan B 已否决，2026-09-23）。

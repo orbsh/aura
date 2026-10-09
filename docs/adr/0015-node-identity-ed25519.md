@@ -6,15 +6,15 @@
 
 ## Context
 
-A probe dials the gateway and claims a node alias. Today that claim carries one piece of
+A effector dials the gateway and claims a node alias. Today that claim carries one piece of
 evidence: a user-level shared secret read from the environment variable named by
-`ProbeConfig.credential_env`. Three facts about the current state:
+`EffectorConfig.credential_env`. Three facts about the current state:
 
 - **The secret is not checked.** The gateway's register arm takes `node_alias` and `carriers`
-  and discards the credential (aura `crates/engine/src/probes.rs`). The field is carried and
+  and discards the credential (aura `crates/engine/src/effectors.rs`). The field is carried and
   unused; `engine/src/lib.rs`'s "namespace is derived from the user credential at
   registration" describes an intent, not a behaviour.
-- **The alias is a claim, not an identity.** Registration inserts into `probes` by alias;
+- **The alias is a claim, not an identity.** Registration inserts into `effectors` by alias;
   a second connection claiming the same alias silently replaces the live one. The real node's
   in-flight calls die and subsequent calls — the operation's inline code and arguments — are
   routed to whoever holds the alias, whose answers then enter the control plane as tool
@@ -50,11 +50,11 @@ user-wide secret in the environment — is deleted.
 
 Note on the format's provenance: the *encoding* is borrowed from WireGuard, not its algorithm
 (X25519 ECDH). `wg pubkey` must not be used to derive this public key; derivation is ed25519
-and ships as the probe's own `keygen`.
+and ships as the effector's own `keygen`.
 
 ### 2. The node generates the keypair; the control plane only ever receives the public key
 
-Generation is not an extra tool to install: `probe keygen [--out <path>]` mints the pair, writes
+Generation is not an extra tool to install: `effector keygen [--out <path>]` mints the pair, writes
 the private key 0600 and prints the public key, and a first start with no identity file does the
 same thing automatically. The operator's workflow is unchanged — one `curl` submitting the printed
 public key; the private key never has to be transported, because it is already where it belongs.
@@ -65,7 +65,7 @@ sensitive.
 for mechanical reasons, not for distrust: the private key would transit the wire, land in the
 operator's terminal scrollback, shell history and CI logs, and remain in whatever the minting
 service recorded, so the set of places that can impersonate the node grows for no benefit — local
-generation gives the same one-command workflow (`probe keygen`, then `curl` the public key). Keeping
+generation gives the same one-command workflow (`effector keygen`, then `curl` the public key). Keeping
 generation on the node also keeps one future direction open: a non-exportable key (TPM / Secure
 Enclave) can only ever be generated there, and server-side minting forecloses it permanently.
 
@@ -77,19 +77,19 @@ in places that gain nothing from holding it.
 ### 3. Handshake: server nonce, signature, no pairing code
 
 ```
-gateway → probe   {"type":"challenge","nonce":"<32 bytes hex>"}
-probe   → gateway {"type":"register","node_alias":"home-pc","public_key":"<base64>",
+gateway → effector   {"type":"challenge","nonce":"<32 bytes hex>"}
+effector   → gateway {"type":"register","node_alias":"home-pc","public_key":"<base64>",
                    "signature":"<ed25519 over the nonce, hex>"}
-gateway → probe   {"type":"registered"} | {"type":"pending"} | {"type":"conflict"}
+gateway → effector   {"type":"registered"} | {"type":"pending"} | {"type":"conflict"}
 ```
 
 The gateway speaks first (as SSH's server sends its banner first), the node proves possession,
-and no replay of a previous connection is possible. In `open` mode (§7) the probe registers
+and no replay of a previous connection is possible. In `open` mode (§7) the effector registers
 without key material and this exchange is skipped. Three answers:
 
 - `registered` — the key is approved for that alias; serve normally.
 - `pending` — no decision for this key yet (the alias is new, or its key is awaiting
-  approval). The probe logs that it needs approval and retries with backoff.
+  approval). The effector logs that it needs approval and retries with backoff.
 - `conflict` — a *different* key is approved for this alias. Refused, and surfaced as an
   event: an alias's enrolled key is never silently replaced. This is the current behaviour
   being removed.
@@ -147,8 +147,8 @@ So the mode is a deployment-form declaration, not an assumption:
   config, not a state inherited from an absent value.
 - **A gateway in `open` mode states its posture at startup** (registrations are unauthenticated),
   so a deployment's trust mode is visible in its own logs rather than only in its config file.
-- **The probe declares the same thing**: with an identity file it signs, without one it registers
-  keyless. A keyless probe against a `required` gateway is answered `unauthenticated` — an error
+- **The effector declares the same thing**: with an identity file it signs, without one it registers
+  keyless. A keyless effector against a `required` gateway is answered `unauthenticated` — an error
   the operator sees, never a silent downgrade.
 
 The complete behaviour difference:
@@ -184,9 +184,9 @@ of config that is legible in review.
   public key they are approving against the one the node printed. Approving a list entry
   without comparing is a click, not a decision — the same failure mode as an unverified SSH
   host key.
-- **The challenge prevents replay, not an impostor server.** Over plain `ws://` the probe
+- **The challenge prevents replay, not an impostor server.** Over plain `ws://` the effector
   cannot tell who it is talking to, so a deployment outside a trusted network requires TLS
-  with a verified server certificate; the probe should refuse plain `ws://` when configured to
+  with a verified server certificate; the effector should refuse plain `ws://` when configured to
   require TLS. Today's tests use `ws://`, which is why this is a precondition rather than a
   detail.
 - **The key protects against remote claimants, not a compromised node.** Whoever holds the
@@ -197,22 +197,22 @@ of config that is legible in review.
   plane is about not creating leak surfaces — a key stored there can escape through a backup, a
   dump or a log regardless of anyone's intent.
 - **Results stay untrusted input.** Authentication changes who may be a node, not what a
-  result is worth: the probe executes AI-generated code, so its output is data for the control
+  result is worth: the effector executes AI-generated code, so its output is data for the control
   plane, never instructions. That ruling is separate from this one and is not satisfied by it.
 
 ## Consequences
 
-- **probe-protocol**: `challenge` becomes a frame; `register` gains `public_key` and
+- **effector-protocol**: `challenge` becomes a frame; `register` gains `public_key` and
   `signature`; `pending` and `conflict` become answers; `credential` disappears. An
   unapproved node is answered, never dropped.
-- **probe**: `keygen` (and first-start generation), `identity_file` in the config,
+- **effector**: `keygen` (and first-start generation), `identity_file` in the config,
   `credential_env` deleted.
 - **aura gateway**: a node registry of approved keys replaces alias-inserts; the interim HTTP
   surface; the silent replacement path is removed.
 - **Superseded wording**: `engine/src/lib.rs`'s "namespace is derived from the user credential
   at registration". The namespace hangs off the account; the key only proves the machine —
   user identity and machine identity are separate axes.
-- **Both ends move together** (probe-protocol is a path dependency), so this lands as one
+- **Both ends move together** (effector-protocol is a path dependency), so this lands as one
   coordinated change, not a compatible extension.
 
 **Implementation order** (stated so it is not done in the wrong order):

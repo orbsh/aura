@@ -1,16 +1,16 @@
-//! Phase 3 end-to-end: a real probe dials the engine's probe gateway; the
-//! realm routes an invoke through the wire; the probe's resident session
+//! Phase 3 end-to-end: a real effector dials the engine's effector gateway; the
+//! realm routes an invoke through the wire; the effector's resident session
 //! executes; the result round-trips.
 
 use aura_booth::{BoothType, InstanceId, InstanceKey, Body};
-use aura_engine::{Engine, probes};
+use aura_engine::{Engine, effectors};
 use std::time::Duration;
 
 #[tokio::test]
-async fn remote_probe_roundtrip() {
+async fn remote_effector_roundtrip() {
     // ADR-0027: the frame carries a content reference — boot with a code
     // source serving the handler bytes under their hash (the fetch +
-    // verify + mismatch + cache matrix is locked probe-side in
+    // verify + mismatch + cache matrix is locked effector-side in
     // remote.rs::code_ref_fetch_verify_cache_and_mismatch_rejection).
     const SRC: &str = r#"
 (define (double args)
@@ -29,13 +29,13 @@ async fn remote_probe_roundtrip() {
     // Gateway on an ephemeral port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    // serve_probes takes the addr; hand it the bound listener's port by
+    // serve_effectors takes the addr; hand it the bound listener's port by
     // spawning with the addr it already bound — reuse accept via a thin
     // wrapper: pass "127.0.0.1:0" would rebind; instead serve on our
     // pre-bound listener via the exported helper (accept over the listener).
-    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), listener));
+    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), listener));
 
-    // Register a remote probe booth type pointing at the node the probe
+    // Register a remote effector booth type pointing at the node the effector
     // will claim.
     engine.register(BoothType {
         name: "remote-counter".into(),
@@ -53,7 +53,7 @@ async fn remote_probe_roundtrip() {
     })
     .await.unwrap();
 
-    // Local target for ctx_invoke from the probe script.
+    // Local target for ctx_invoke from the effector script.
     engine.register(
         BoothType::script(
             "echo",
@@ -63,14 +63,14 @@ async fn remote_probe_roundtrip() {
     )
     .await.unwrap();
 
-    // Probe side: dial in (runs until the test ends).
-    let config = probe_config_shim(port);
+    // Effector side: dial in (runs until the test ends).
+    let config = effector_config_shim(port);
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
-    let probe = tokio::spawn(probe_runtime::remote::run(config));
+    let effector = tokio::spawn(effector_runtime::remote::run(config));
 
     // Wait for registration, then invoke through the wire.
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -103,14 +103,14 @@ async fn remote_probe_roundtrip() {
     // and the call path fails fast with the normal error-value semantics
     // (residency declared lost, never silently kept). abort → reader sees
     // EOF → the gateway removes the alias.
-    probe.abort();
+    effector.abort();
     for _ in 0..50 {
-        if !engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+        if !engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let gone = !engine.realm.try_lock().unwrap().probes.contains_key("test-node");
+    let gone = !engine.realm.try_lock().unwrap().effectors.contains_key("test-node");
     assert!(gone, "dropped connection unregisters the node alias");
     let err = engine
         .invoke(
@@ -127,7 +127,7 @@ async fn remote_probe_roundtrip() {
 }
 
 /// Serve `src` bytes at any path over plain HTTP for as many requests as
-/// the test makes (the probe fetches by hash; a per-test source is the
+/// the test makes (the effector fetches by hash; a per-test source is the
 /// simplest stand-in for the future prism /code export).
 fn serve_code_source(src: &str) -> u16 {
     use std::io::{Read as _, Write as _};
@@ -151,14 +151,14 @@ fn serve_code_source(src: &str) -> u16 {
     port
 }
 
-fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {
-    probe_config::ProbeConfig {
+fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
+    effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{port}"),
-        // The deployed remote-actuator form is the wrapped one; this test
+        // The deployed remote-effector form is the wrapped one; this test
         // exercises the call path, not the sandbox (steel runs in-process).
         sandbox: true,
         credential_env: "PROBE_E2E_CREDENTIAL".into(),
-        capabilities: probe_config::CapabilitySurface {
+        capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
             ..Default::default()
@@ -168,9 +168,9 @@ fn probe_config_shim(port: u16) -> probe_config::ProbeConfig {
 
 // ADR-0027: remote code travels by content reference. The blob lives in
 // the meta store under its sha256 (written at register); the frame
-// carries url + hash; the probe fetches from the configured base,
+// carries url + hash; the effector fetches from the configured base,
 // verifies against the frame's hash, and executes. Mismatch or missing
-// source = error value (locked probe-side in remote.rs tests).
+// source = error value (locked effector-side in remote.rs tests).
 #[tokio::test]
 async fn remote_code_travels_as_reference() {
     // Static code source: serve the registered booth's bytes.
@@ -190,8 +190,8 @@ async fn remote_code_travels_as_reference() {
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), gw));
-    let probe = tokio::spawn(probe_runtime::remote::run(probe_config_shim(port)));
+    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    let effector = tokio::spawn(effector_runtime::remote::run(effector_config_shim(port)));
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
 
     // Register through the REAL path (register_inner persists the blob —
@@ -221,7 +221,7 @@ async fn remote_code_travels_as_reference() {
     }
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -234,13 +234,13 @@ async fn remote_code_travels_as_reference() {
         )
         .await
         .expect("reference delivery");
-    assert_eq!(out["doubled"], 42, "probe fetched + verified via {hex}");
-    probe.abort();
+    assert_eq!(out["doubled"], 42, "effector fetched + verified via {hex}");
+    effector.abort();
 }
 
-// ---- ADR-0034: the iterate verbs cross the remote probe wire ----
+// ---- ADR-0034: the iterate verbs cross the remote effector wire ----
 
-/// Producer lives on the PROBE (remote python booth, generator handler);
+/// Producer lives on the Effector (remote python booth, generator handler);
 /// the local consumer pulls through Realm::iterate — each pull is one
 /// ToolCall frame (kind=iterate_next) and the envelope rides home as the
 /// ToolResult. This is the remote producer leg.
@@ -262,11 +262,11 @@ def tokens(args):
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), gw));
-    let mut config = probe_config_shim(port);
+    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    let mut config = effector_config_shim(port);
     config.capabilities.carriers = vec!["python".into()];
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
-    let probe = tokio::spawn(probe_runtime::remote::run(config));
+    let effector = tokio::spawn(effector_runtime::remote::run(config));
 
     engine
         .register(BoothType {
@@ -287,7 +287,7 @@ def tokens(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -325,10 +325,10 @@ def tokens(args):
     assert_eq!(got, vec!["x", "y", "z"], "generator across the wire, item by item");
     assert_eq!(engine.realm.lock().await.streams.len(), 0, "done drains the registry");
 
-    probe.abort();
+    effector.abort();
 }
 
-/// Consumer lives on the PROBE (remote python booth running the loaded
+/// Consumer lives on the Effector (remote python booth running the loaded
 /// ctx_iterate wrapper); the producer is a LOCAL booth. The host fns
 /// ctx_iter_start/next/dispose cross back over Frame::Host — the remote
 /// consumer leg.
@@ -350,7 +350,7 @@ def consume(args):
     return {"got": got}
 "#;
     // Serve the CONS bytes (the registered remote source) — the local
-    // producer needs no fetch; the probe's CodeRef addresses CONS alone.
+    // producer needs no fetch; the effector's CodeRef addresses CONS alone.
     let http_port = serve_code_source(CONS);
     let engine = Engine::start(&aura_config::EngineConfig {
         code_base_url: Some(format!("http://127.0.0.1:{http_port}")),
@@ -361,11 +361,11 @@ def consume(args):
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(probes::serve_probes_listener(engine.realm.clone(), gw));
-    let mut config = probe_config_shim(port);
+    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    let mut config = effector_config_shim(port);
     config.capabilities.carriers = vec!["python".into()];
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
-    let probe = tokio::spawn(probe_runtime::remote::run(config));
+    let effector = tokio::spawn(effector_runtime::remote::run(config));
 
     engine.register(BoothType::script("local-prod", "python", PROD)).await.unwrap();
     engine
@@ -387,7 +387,7 @@ def consume(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().probes.contains_key("test-node") {
+        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -410,5 +410,5 @@ def consume(args):
         0,
         "dispose crossed Frame::Host and drained the local registry"
     );
-    probe.abort();
+    effector.abort();
 }

@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0036-one-envelope.md) (primary) · [中文](0036-one-envelope.zh-CN.md)
 
-**Status:** Accepted (2026-09-28); LANDED (Phase 4.15, 2026-09-29 — probe
+**Status:** Accepted (2026-09-28); LANDED (Phase 4.15, 2026-09-29 — effector
 96c56df / aura d21397c). Supersedes the protocol-level verb separation in
 ADR-0034 (the ctx surface keeps two verbs; the wire carries one envelope).
 Raised by the user's symmetry: done is always a boolean field, the terminal
@@ -96,7 +96,7 @@ forget) stays: envelope produced, discarded by the drop.
 ## Honest semantic cost
 
 - **Rework of code landed the same day.** The envelope rule touches the
-  probe `ResidentSession` seam (`call` folded into `iterate`), python's
+  effector `ResidentSession` seam (`call` folded into `iterate`), python's
   generator projection (`.value` now read), the shared `envelope_pull`
   validation, aura's Job/`JobKind` (invoke kind disappears), `Realm::call`
   (becomes Start+unwrap sugar), and the six `iterate.rs` acceptance tests
@@ -117,7 +117,7 @@ forget) stays: envelope produced, discarded by the drop.
 
 ## Consequences
 
-- **probe:** `ResidentSession::call` folds into the stream seam; python
+- **effector:** `ResidentSession::call` folds into the stream seam; python
   captures `StopIteration.value`; `envelope_pull` gains terminal-value
   validation; nushell/wasm/steel handler docs updated (`{done:true, value}`
   legal at terminal).
@@ -126,7 +126,7 @@ forget) stays: envelope produced, discarded by the drop.
   gains `value`; `StreamCursor::value()`; ctx invoke/iterate signatures
   unchanged. ADR-0034 errata appended (its §1 table and "three verbs"
   line are superseded in form, not in decision).
-- **okm/probe-protocol:** no wire-format change (the envelope is schema
+- **okm/effector-protocol:** no wire-format change (the envelope is schema
   riding existing frames, exactly as ADR-0034 priced it).
 - **gravity/Phase 4.14:** the exec carrier (ADR-0035) is implemented
   against the unified envelope from its first frame — no transitional

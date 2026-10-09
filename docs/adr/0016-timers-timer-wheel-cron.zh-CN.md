@@ -100,7 +100,7 @@ Host 可控）；其 Update 注记把旧的拒绝收窄到阻塞/自调度形态
 `ctx_state_*` 名字，改为点号命名空间组——`ctx.store.get/set/delete`、
 `ctx.timer.register/cancel`——注入的组集合可自省发现（carrier
 枚举它暴露的 `ctx.*` 组；schema 可声明实例实际携带哪些组）。新的
-注入能力（metadata、probe target）以组的形式加入，不再是扁平名
+注入能力（metadata、effector target）以组的形式加入，不再是扁平名
 堆积。
 
 ### 4. 什么不变

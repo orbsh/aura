@@ -77,7 +77,7 @@ meta 面的类型 id 上（`mq::booth_id_of` → `meta::resolve_booth_id`），�
   (2) 目标随 payload → 零存储解析，而这是**完全没有 collections 的类型唯一可用的
   规则**；(3) 按索引扫描解析 → 有存储的类型（Phase 4.13）。保留 (2) 不是对 (3) 的
   优化，它让无状态类型可表达。
-- 路由行存 collection/index/probe 的**名字**；解析住在 schema 主人一侧。存 slot/ns 号
+- 路由行存 collection/index/effector 的**名字**；解析住在 schema 主人一侧。存 slot/ns 号
   等于把位置当身份，schema 一改就静默改指向。
 - **连带：** Phase 4.13 的未决问题（「逐事件命名 vs 类型默认 + 逐事件覆盖」）由本条
   关闭。

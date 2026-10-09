@@ -561,7 +561,7 @@ async fn scan_route_fans_out_to_the_hit_rows() {
 
     // Index field: Str — the okm-dynamic variable-width trailing segment
     // (aligned with the derive's rule: raw UTF-8, no frame, the pkey tail
-    // cuts it). The email is an exact string probe; a digest would
+    // cuts it). The email is an exact string effector; a digest would
     // reintroduce the aliasing class ADR-0038/0042 retired.
     const SCRIPT: &str = r#"(define (schema) (hash "storage" (hash "collections" (hash "subscribers" (hash
   "schema" (hash "key_len" 8
@@ -616,8 +616,8 @@ async fn scan_route_fans_out_to_the_hit_rows() {
             .unwrap();
     }
 
-    // One emit, probe a@x → TWO targets (rows 1, 2); row 3 is untouched.
-    // The probe = the exact email string of a@x: matches rows 1, 2 only.
+    // One emit, effector a@x → TWO targets (rows 1, 2); row 3 is untouched.
+    // The effector = the exact email string of a@x: matches rows 1, 2 only.
     Realm::emit(&engine.realm, None, "newsletter", serde_json::json!({
         "event": "newsletter", "email": "a@x"
     }))

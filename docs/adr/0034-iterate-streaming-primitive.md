@@ -156,7 +156,7 @@ socket-per-turn work, which gravity-as-wasm cannot do natively (§6).
   host-gated capabilities.
 - **gravity:** provider booth as python booth type (transport adapter);
   Phase 1 LLM layer consumes via iterate.
-- **okm/probe:** frame vocabulary gains the call kinds (probe-protocol —
+- **okm/effector:** frame vocabulary gains the call kinds (effector-protocol —
   remote producers/consumers ride the same envelope).
 - **Supersedes:** the wasi-http carrier task (aura PLAN 遗留节, filed
   2026-09-28) — withdrawn; wasm outbound access = consume sibling booths.

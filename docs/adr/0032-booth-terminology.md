@@ -3,7 +3,7 @@
 > **Languages:** [English](0032-booth-terminology.md) (primary) · [中文](0032-booth-terminology.zh-CN.md)
 
 **Status:** Accepted (2026-09-26) — naming ruling; code rename + docs sweep land
-with this ADR; cross-repo alignment (probe/prism/gravity/okm/wiki) lands in
+with this ADR; cross-repo alignment (effector/prism/gravity/okm/wiki) lands in
 the same batch.
 
 ## Context
@@ -38,7 +38,7 @@ and browser sessions, where "actor" additionally clashes with the
 reader previously saw as "actor" — local or remote, Rust-registered or
 browser-driven — is a booth: it declares its interface (the stall's
 goods), receives routed events, answers invocations, holds its own
-state. The tier vocabulary pairs with probe: **probe = remote
+state. The tier vocabulary pairs with effector: **effector = remote
 execution** (capacity that runs control-plane code, dial-in; unchanged
 name, unchanged ADRs), **booth = remote/local participation** (brings
 its own code and storage).
@@ -58,8 +58,8 @@ its own code and storage).
    Akka/Erlang/Orleans/Actix/tellus discussion, "the actor model",
    ActorRef, Virtual Actor, Rivet Actors — those name other systems'
    ideas, and realm.md §5.8/§5.9's comparison sections depend on them
-   staying put. Probe-side artifact names (`actor-guest`,
-   `counter_actor` in ~/world/probe) are not ours to rename here.
+   staying put. Effector-side artifact names (`actor-guest`,
+   `counter_actor` in ~/world/effector) are not ours to rename here.
 4. **"actor" stays legal in prose about the external paradigm** (the
    actor model never demanded determinism — reads as a reference to the
    outside idea; realm.md §5.1's calibration paragraph keeps the
@@ -67,7 +67,7 @@ its own code and storage).
    participant.
 
 Alternatives considered: `worker` (overoccupied by the thread-pool sense;
-would blur probe's execution-capacity idea), `consumer` (MQ-true for
+would blur effector's execution-capacity idea), `consumer` (MQ-true for
 delivery but drops serial-state semantics and implies pull-only),
 `nexus` (occupies the hub slot realm already holds),
 `beacon`/`transponder` (vivid imagery, but direction-specific images
@@ -80,7 +80,7 @@ work in the docs, it is not decoration.
 ## Consequences
 
 - **This sweep:** aura code + aura docs; cross-repo alignment landed in
-  the same session — probe (comments/docs; wire had no `actor_type`
+  the same session — effector (comments/docs; wire had no `actor_type`
   field), prism (`actors.rs` → `booths.rs`, `echo_actors` →
   `echo_booths`, path dep), gravity (PLAN/README wording), okm docs,
   wiki (摊位 as the zh term; external-paradigm pages untouched).

@@ -67,10 +67,10 @@ Cross-partition queries (aggregate every user's cart in a department; which chan
 
 ## Residency: whether to stay warm, in three ledgers
 
-Sleeping never loses data (state is durable, events stay in the queue); residency saves the **next activation's cost**: re-spawning the VM/probe, reloading the script, rebuilding in-memory state. `idle_ttl` is declared per booth type (`with_idle_ttl` builder, or the lifecycle section of `interface_schema`); not resident is the default — decide by comparing activation cost against the usage pattern:
+Sleeping never loses data (state is durable, events stay in the queue); residency saves the **next activation's cost**: re-spawning the VM/effector, reloading the script, rebuilding in-memory state. `idle_ttl` is declared per booth type (`with_idle_ttl` builder, or the lifecycle section of `interface_schema`); not resident is the default — decide by comparing activation cost against the usage pattern:
 
 - **State-mutation flows (add to cart, change password) → no residency**: when the next operation appears is unpredictable; residency is pure waste. State is durable; activation rebuilds it.
-- **Stateless high-fanout queries (product listings) → depends on sharing**: when every query returns non-repeating content with nothing to cache, all that remains to save is the probe/VM start cost. If the listing is per-user, one user's refresh rate never beats the start cost → no residency. If the listing is shared by all users (the instance is a singleton or a handful of partitioned instances) and requests keep arriving → short residency (e.g. a 10s idle_ttl) — the effect is exactly a traditional cache, except the warm instance **is** the cache; no second caching facility.
+- **Stateless high-fanout queries (product listings) → depends on sharing**: when every query returns non-repeating content with nothing to cache, all that remains to save is the effector/VM start cost. If the listing is per-user, one user's refresh rate never beats the start cost → no residency. If the listing is shared by all users (the instance is a singleton or a handful of partitioned instances) and requests keep arriving → short residency (e.g. a 10s idle_ttl) — the effect is exactly a traditional cache, except the warm instance **is** the cache; no second caching facility.
 - **Long-lived sessions (gravity conversations, chat channels) → long residency**: real-time streaming applications; an active channel's messages nearly never stop, and within the residency window the activation cost is zero. When LLM call costs dwarf instance residency costs, residency is the obvious choice — exactly the turn-executor shape (Phase 6.5): long per-type TTL, same-session consecutive calls ride the in-memory oneshot, released at turn end or window expiry.
 
 The criterion in one sentence: **stay resident when the money saved (activation cost × expected arrivals within the window) exceeds the money spent (memory × window duration)** — per-type TTL is the mechanism that turns this judgment into a single declaration.
@@ -108,7 +108,7 @@ Decision criteria, in priority order:
 
 One-line criterion: **direct fjall writes are the default; session memory is an upgrade for "frame budget exceeded AND a replay/checkpoint plan exists", never the starting point.**
 
-The three-tier game-server mapping (prism connections / aura logic / probe execution) and the frame-driven vs message-driven gap: see PLAN Phase 8 and partitioning.md §5.
+The three-tier game-server mapping (prism connections / aura logic / effector execution) and the frame-driven vs message-driven gap: see PLAN Phase 8 and partitioning.md §5.
 
 ## Outbound delivery: where the field's boundary sits
 

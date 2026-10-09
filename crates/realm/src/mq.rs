@@ -202,7 +202,7 @@ pub struct EventRoute {
     pub collection: String,
     /// `resolution = 2`: the index name. `resolution < 2`: empty.
     pub index: String,
-    /// `resolution = 2`: the payload field supplying the scan probe.
+    /// `resolution = 2`: the payload field supplying the scan effector.
     /// `resolution < 2`: empty.
     pub probe_field: String,
     /// 0 = exact, 1 = wildcard (okm FieldType has no Bool — u8 sentinel).

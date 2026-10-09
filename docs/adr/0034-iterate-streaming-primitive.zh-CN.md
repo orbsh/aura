@@ -127,7 +127,7 @@ circuit breaking、依赖 transcript 的重试——一切需要本轮上下文�
   边界清单加 iterate/dispose——实例绑定、Host 管控的能力。
 - **gravity：** provider 摊位 = python 摊位类型（传输适配器）；Phase 1
   LLM 层经 iterate 消费。
-- **okm/probe：** 帧词汇表加这两种调用（probe-protocol——远程生产/消费方
+- **okm/effector：** 帧词汇表加这两种调用（effector-protocol——远程生产/消费方
   骑同一信封）。
 - **取代：** wasi-http carrier 任务（aura PLAN 遗留节，2026-09-28 立项）
   ——撤销；wasm 对外访问 = 消费兄弟摊位。

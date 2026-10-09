@@ -3,7 +3,7 @@
 > **语言：** [English](0036-one-envelope.md)（主文档） · [中文](0036-one-envelope.zh-CN.md)
 
 **状态：** Accepted（2026-09-28）；已落地（Phase 4.15，2026-09-29——
-probe 96c56df / aura d21397c）。取代 ADR-0034 中【协议层】的动词分离
+effector 96c56df / aura d21397c）。取代 ADR-0034 中【协议层】的动词分离
 （ctx 表面保留两个动词；线路只走一套信封）。由用户的对称性提出：
 done 恒为布尔字段，终止的 done 可以带值——
 invoke 就是第一轮就 done 且带值的那个。
@@ -79,7 +79,7 @@ plain return（非生成器 python、Rust closure、远程一次性脚本）包�
 
 ## 诚实的语义代价
 
-- **当日落地代码的返工。** 信封规则触及 probe 的 `ResidentSession` 接缝
+- **当日落地代码的返工。** 信封规则触及 effector 的 `ResidentSession` 接缝
   （`call` 并入流接缝）、python 的生成器投影（开始读 `.value`）、共享
   `envelope_pull` 校验、aura 的 Job/`JobKind`（invoke kind 消失）、
   `Realm::call`（变成 Start+解包糖）、以及六个 `iterate.rs` 验收测试
@@ -97,14 +97,14 @@ plain return（非生成器 python、Rust closure、远程一次性脚本）包�
 
 ## 后果
 
-- **probe：** `ResidentSession::call` 折进流接缝；python 捕获
+- **effector：** `ResidentSession::call` 折进流接缝；python 捕获
   `StopIteration.value`；`envelope_pull` 加终止-值校验；nushell/wasm/steel
   的 handler 文档更新（终止轮 `{done:true, value}` 合法）。
 - **aura：** `JobKind::Invoke` 删除（所有作业都是流操作）；`Realm::call`
   变为 Start+终止解包的糖；`Envelope` 加 `value`；`StreamCursor::value()`；
   ctx invoke/iterate 签名不变。ADR-0034 追加 erratum（其 §1 表与"三个
   动词"句在【形式】上被取代，决策不变）。
-- **okm/probe-protocol：** 无线路格式变化（信封是骑既有帧的 schema，
+- **okm/effector-protocol：** 无线路格式变化（信封是骑既有帧的 schema，
   恰如 ADR-0034 定价的那样）。
 - **gravity/Phase 4.14：** exec 载体（ADR-0035）从第一帧起就对着统一信封
   实现——不留过渡形状；`store_emit` 臂与之正交，不受影响。

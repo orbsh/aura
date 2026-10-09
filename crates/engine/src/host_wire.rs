@@ -1,5 +1,5 @@
-//! Gateway: resolve the probe's host-function calls against the realm.
-//! appends to probes.rs — the reader loop gains a Frame::Host(Call) arm.
+//! Gateway: resolve the effector's host-function calls against the realm.
+//! appends to effectors.rs — the reader loop gains a Frame::Host(Call) arm.
 
 use aura_booth::InstanceId;
 use aura_booth::call::CallSlot;
@@ -7,13 +7,13 @@ use aura_realm::SharedRealm;
 
 /// Execute one host op against the realm, scoped to the instance the
 /// enclosing remote call was routed to. Returns the JSON result (or error
-/// string — the probe surfaces it as a script error).
+/// string — the effector surfaces it as a script error).
 pub async fn resolve_host_call(
     realm: &SharedRealm,
     instance: &InstanceId,
-    op: &probe_protocol::HostOp,
+    op: &effector_protocol::HostOp,
 ) -> Result<serde_json::Value, String> {
-    use probe_protocol::HostOp;
+    use effector_protocol::HostOp;
     match op {
         HostOp::Invoke { target_type, target_key, handler, args } => {
             let target = InstanceId {
@@ -22,10 +22,10 @@ pub async fn resolve_host_call(
                 key: aura_booth::InstanceKey::parse(target_key),
             };
             // Unified call model: wait hot (script ctx_invoke semantics —
-            // the probe blocks until the reply, same as in-process).
+            // the effector blocks until the reply, same as in-process).
             let slot = aura_realm::Realm::call(
                 realm,
-                Some(&format!("probe/{}", instance.booth_type)),
+                Some(&format!("effector/{}", instance.booth_type)),
                 target,
                 handler,
                 args.clone(),
@@ -47,7 +47,7 @@ pub async fn resolve_host_call(
         // drives a stream through the realm — start routes by the target
         // in the op; Next/Dispose route by the stream id alone (the
         // realm's registry names the producer). Each call parks the
-        // probe's host thread on one hot pull, exactly like Invoke.
+        // effector's host thread on one hot pull, exactly like Invoke.
         HostOp::Iterate { target_type, target_key, handler, args } => {
             let iterate_op = aura_booth::IterateOp::Start {
                 target: InstanceId {
@@ -66,7 +66,7 @@ pub async fn resolve_host_call(
             wait_iterate(realm, aura_booth::IterateOp::Dispose { stream_id: stream_id.clone() }).await
         }
         // Phase 4.14 gate 1 (ADR-0026 §3 over the wire): one okm
-        // Collection instruction travels as DATA — the probe side never
+        // Collection instruction travels as DATA — the effector side never
         // parses it, the schema lives here with the type registration.
         // The plan + store handle are resolved under the realm lock and
         // CLONED out (the ctx_for discipline: execution never

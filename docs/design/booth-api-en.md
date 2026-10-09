@@ -113,12 +113,12 @@ following — each takes one JSON argument and returns a JSON value:
 | `@on` multi-entry | ✅ decorator | `on` fn | one handler for now (direct calls declare the handler name) | export convention |
 | Best for | business logic | AI-generated ops | pipeline/CLI shape | heavily-isolated 3rd-party code |
 
-**`interface_schema` is transparent to the execution path**: the probe
+**`interface_schema` is transparent to the execution path**: the effector
 execution carrier only does "load source → call entry → serialize
 result" and never touches `interface_schema`. Declaration collection
 (python `@on` injection, steel `on` builtin) is language-shape; the
 assembly and merge semantics live in the one `carrier::introspect` call
-that aura makes at upload and persists. The same script handed to probe
+that aura makes at upload and persists. The same script handed to effector
 execution has an `interface_schema` nobody calls; handed to aura upload,
 it becomes the type definition's metadata source.
 
@@ -302,12 +302,12 @@ pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
 
 ---
 
-## Relationship to probe (restated)
+## Relationship to effector (restated)
 
-probe = **the operation execution plane**: `ToolCall` in → `execute()` →
+effector = **the operation execution plane**: `ToolCall` in → `execute()` →
 `ToolResult` out. It knows nothing about Booths, events, or the semantics
 of `interface_schema` — all of these are **aura's field-layer concepts**.
-The same python file: as a probe operation only `execute` is called; as an
+The same python file: as a effector operation only `execute` is called; as an
 aura Booth the introspection runs first and every `@on` handler becomes
 one of the instance's message entries. One file, two hosts, transparent
 contracts.

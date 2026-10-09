@@ -100,7 +100,7 @@ parent → child   {"host_reply": {"ok": <typed>}}
 闸门 1 落地的 JSON 指令文档（`HostOp::StoreEmit`、
 `host_bridge_for("ctx_store_emit")`）是声明过的过渡形态；§2 落地退役了
 它的**入口**——bgi 缝上 `op: "ctx_store_emit"` 自由字符串查表已消失，
-由类型化 `store` 帧取代（指令本身仍按**数据**搬运——probe 保持
+由类型化 `store` 帧取代（指令本身仍按**数据**搬运——effector 保持
 schema-blind；退役的是入口，不是文档）。远程 WS 的 `HostOp::StoreEmit`
 变体本就是类型化帧（serde 判别枚举），那里没有退役对象。§1 落地后
 python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧。
@@ -110,10 +110,10 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
 - **同日返工**：闸门 1（`HostOp::StoreEmit` JSON 臂 + 桥 fn）落地不到
   一天即被声明为过渡形态。接受——合同（§3 一句话）的歧义被用户的
   okm 绑定事实戳破，修合同的成本低于让过渡形态长成永久形态。
-- **probe 的依赖面扩大**：python 绑定注册 = probe-runtime 的 python
-  feature 需要 `okm-python`（或其逻辑内联到 probe 的 python 载体）。
-  不违"probe 不依赖 aura crate"铁律（okm 独立于 aura），但 okm 成为
-  probe 的传递依赖——注册表 + 类型化帧协议 + 直接绑定三者都在把 probe
+- **effector 的依赖面扩大**：python 绑定注册 = effector-runtime 的 python
+  feature 需要 `okm-python`（或其逻辑内联到 effector 的 python 载体）。
+  不违"effector 不依赖 aura crate"铁律（okm 独立于 aura），但 okm 成为
+  effector 的传递依赖——注册表 + 类型化帧协议 + 直接绑定三者都在把 effector
   从"协议搬运工"推向"运行时"，这条线要一直盯着。
 - **steel 绑定的缺口已闭合，且闭合里含一个真实裁决**：补 `okm-steel` 的
   Collection 方法面（4.16b，okm 仓的一刀）兑现了上面预告的形状裁决——
@@ -140,8 +140,8 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   `block_on`，在已进入 tokio context 的线程上必 panic（spawn_blocking
   保留 context——realm 恰好在其中驱动注入）；门面改为专用驱动线程（okm
   92b2551，锁：`okm-core/tests/driver_thread_test.rs`）。
-- **probe**（4.16a 已落地）：`HostBridge` 带 `storage` 槽——宿主引擎藏在
-  四个字节闭包后面（`StorageEngineFns`：缝上无 okm 类型，probe 与 aura
+- **effector**（4.16a 已落地）：`HostBridge` 带 `storage` 槽——宿主引擎藏在
+  四个字节闭包后面（`StorageEngineFns`：缝上无 okm 类型，effector 与 aura
   各用不同 okm rev 编译互不干扰）+ plan 的原始条目；python 载体 load 步
   逐条目建 `Collection` 并 `module.add` 到集合名下（引擎句柄不跨缝回传
   ——pyclass 带 `*mut PyObject`，非 Send）；steel 载体消费同一槽（4.16b）：
@@ -162,7 +162,7 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   `host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役（4.16c；
   期间 op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
   全部幸存——载荷的到达形状现在是类型化 `store` 帧。声明面（4.16c）：
-  aura-booth 带自有的 `ChannelEncoding`（crate 保持 probe-free）、
+  aura-booth 带自有的 `ChannelEncoding`（crate 保持 effector-free）、
   `BoothType::encoded` 选择编码、`PersistedBooth`/`BoothDef` 以热段尾部
   追加字段持久化（旧行重读为 json——其实际行为），`introspect_schema`
   按声明编码起抛却子进程。

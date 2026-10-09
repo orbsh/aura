@@ -104,8 +104,8 @@ impl Realm {
         // denominator uses), so the closure needs no realm deref and no
         // subscription list — only the store handle + this instance's id.
         store: &crate::mq::MqStore,
-    ) -> std::collections::BTreeMap<String, probe_runtime::carrier::HostFn> {
-        use probe_runtime::carrier::HostFn;
+    ) -> std::collections::BTreeMap<String, effector_runtime::carrier::HostFn> {
+        use effector_runtime::carrier::HostFn;
 
         let dispatch = ctx.invoke_handle();
         let handle = tokio::runtime::Handle::current();

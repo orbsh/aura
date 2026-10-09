@@ -8,8 +8,8 @@
 
 A remote call delivers its code as `CodePayload::Inline { bytes }` — the whole function
 source rides the control frame, every call, through the gateway (and, once Prism mounts
-`/probe/<alias>`, through Prism's extra hop). `CodePayload::Link { url, version,
-expected_sha256 }` exists in the protocol and the probe already fetches + verifies it
+`/effector/<alias>`, through Prism's extra hop). `CodePayload::Link { url, version,
+expected_sha256 }` exists in the protocol and the effector already fetches + verifies it
 (mismatch = error, never a silent accept), but aura constructs no Link anywhere: Link is
 a dead arm today, and Inline is the only live shape.
 
@@ -55,16 +55,16 @@ Re-registration with unchanged code dedups for free (same hash → same row); ch
 produces a new hash the new definition version points at. There is no second version
 counter, and none is wanted: the content hash IS the version identity.
 
-### 3. Delivery sends the reference; the probe fetches on demand and caches by hash
+### 3. Delivery sends the reference; the effector fetches on demand and caches by hash
 
 The remote dispatch arm builds `CodeRef { url, sha256 }` from the definition's hash and
-the deployment-declared prefix and sends the frame — nothing else. The probe resolves the
+the deployment-declared prefix and sends the frame — nothing else. The effector resolves the
 code exactly as it resolves Inline bytes today: cache hit on the sha256 → source; miss →
 GET the URL, verify against the asserted hash (mismatch = error, never silent), insert,
 proceed; the resolved source feeds the existing `with_session` cold-start load. The
 per-hash cache is a discardable hot layer: same legitimacy tier as the resident session
 itself — an execution node still holds nothing it would need to recover. (No loader seam
-is invented: the probe's resolve-then-load path already exists; only the resolver's input
+is invented: the effector's resolve-then-load path already exists; only the resolver's input
 shape changes.)
 
 The URL rides a deployment-declared prefix: `code_base_url` in the `node {}` config block
@@ -105,8 +105,8 @@ node may pull), it does not mint a second authorization home.
 
 ## Consequences
 
-- **probe-protocol**: `CodePayload` deleted; `ToolCall.code: CodeRef { url, sha256 }`.
-- **probe**: `fetch_link` becomes the only path (cache keyed by sha256; verification
+- **effector-protocol**: `CodePayload` deleted; `ToolCall.code: CodeRef { url, sha256 }`.
+- **effector**: `fetch_link` becomes the only path (cache keyed by sha256; verification
   unchanged); no other consumer changes.
 - **aura**: `meta.rs` gains `CodeBlob` (ns 32 after ADR-0040; 42 at the time) and `BoothDef.code_sha256`;
   `register_inner` writes hash + blob; the remote dispatch arm builds
@@ -115,6 +115,6 @@ node may pull), it does not mint a second authorization home.
   rehydrates bytes from the local blob by hash.
 - **prism PLAN**: `GET /code/{sha256}` static export entry (beside Phase 1.8); signed-URL
   + cache-key normalization recorded as the confidentiality option, not the default.
-- **Tests**: remote_probe e2e gains a test-local static source and drives the real
+- **Tests**: remote_effector e2e gains a test-local static source and drives the real
   fetch + hash-cache path (an upgrade: the wire shape it locks becomes the production
   shape).

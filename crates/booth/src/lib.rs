@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Booth body: a Rust closure, or a script executed by a probe carrier.
+/// Booth body: a Rust closure, or a script executed by a effector carrier.
 ///
-/// The script form imports the probe runtime instead of reimplementing
+/// The script form imports the effector runtime instead of reimplementing
 /// language execution: one set of carriers (steel/python/wasmtime embedded,
 /// bgi/exec out-of-process)
-/// serves both the remote actuator and embedded booths. Script booths are
+/// serves both the remote effector and embedded booths. Script booths are
 /// pure functions in this phase (args in, value out); the ctx bridge
 /// (state/invoke from inside scripts via host functions) is the remaining
 /// Phase 2 work.
@@ -30,14 +30,14 @@ pub enum Body {
         /// lines (the stdlib-reachable default every older booth rides);
         /// Cbor = one self-delimited CBOR document per frame. Embedded
         /// carriers (steel/python/wasm) carry no channel — inert there.
-        /// The realm maps this onto probe_runtime's codec enum; this
-        /// crate stays probe-free (the same wire VALUES: "json"/"cbor").
+        /// The realm maps this onto effector_runtime's codec enum; this
+        /// crate stays effector-free (the same wire VALUES: "json"/"cbor").
         encoding: ChannelEncoding,
     },
-    /// Remote probe booth (Phase 3): the body lives on a probe node that
-    /// dialed into THIS control plane. `node_alias` addresses the probe's
+    /// Remote effector booth (Phase 3): the body lives on a effector node that
+    /// dialed into THIS control plane. `node_alias` addresses the effector's
     /// outbound connection; `language` + `source` are delivered per call
-    /// (inline payload). The probe executes in its resident sessions.
+    /// (inline payload). The effector executes in its resident sessions.
     RemoteProbe {
         node_alias: String,
         language: String,
@@ -49,9 +49,9 @@ pub enum Body {
 }
 
 /// The declared frame codec of a process-carrier booth (ADR-0037 §2,
-/// dual-protocol). Serde values match the probe protocol's enum
+/// dual-protocol). Serde values match the effector protocol's enum
 /// ("json"/"cbor"); the realm maps this type onto the runtime's form —
-/// aura-booth stays probe-free.
+/// aura-booth stays effector-free.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelEncoding {
@@ -121,7 +121,7 @@ pub enum RouteResolution {
     /// one instance; zero scan — the cheap shape for keyed routes).
     Field(String),
     /// An access-method reference: scan the collection's index with the
-    /// probe taken from `probe_field` — each hit row's primary key IS a
+    /// effector taken from `probe_field` — each hit row's primary key IS a
     /// target instance key (naturally one-to-many). The collection's
     /// primary key must be a SINGLE key field (ruled at landing: the
     /// instance key is one String; a composite row key has no honest
@@ -138,7 +138,7 @@ pub type SleepHook =
     dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
 
 impl BoothType {
-    /// Define a script type executed by a probe carrier (JSON-lines
+    /// Define a script type executed by a effector carrier (JSON-lines
     /// codec — the default).
     pub fn script(
         name: impl Into<String>,
@@ -186,7 +186,7 @@ impl BoothType {
     }
 
     /// Declare a scan subscription (Phase 4.13): targets resolve by
-    /// scanning `index` over `collection` with the probe taken from the
+    /// scanning `index` over `collection` with the effector taken from the
     /// payload's `probe_field` — one hit row per target, fan-out natural.
     pub fn on_resolve(
         mut self,

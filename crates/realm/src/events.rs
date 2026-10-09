@@ -73,13 +73,13 @@ impl Realm {
                     }
                 }
                 RouteResolution::Scan { collection, index, probe_field } => {
-                    // The probe comes from the payload; missing = malformed
+                    // The effector comes from the payload; missing = malformed
                     // (the same class as a missing key field). The scan
                     // itself resolves against the OWNING TYPE's plan —
                     // zero hits is a legitimate empty fan-out (delivers
                     // nowhere, no dead entry: append per slice is a
                     // backlog write, and there is no slice to write).
-                    let Some(probe) = data.get(probe_field) else {
+                    let Some(effector) = data.get(probe_field) else {
                         let mut realm = self_arc.lock().await;
                         realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
                         continue;
@@ -93,7 +93,7 @@ impl Realm {
                         realm.dead_events.push(event, data.clone(), DeadReason::NoRoute);
                         continue;
                     };
-                    match store_exec::resolve_scan_targets(&self_arc.lock().await.mq, &plan, collection, index, probe) {
+                    match store_exec::resolve_scan_targets(&self_arc.lock().await.mq, &plan, collection, index, effector) {
                         Ok(rows) => rows.into_iter().map(InstanceKey::Named).collect(),
                         Err(e) => {
                             // A broken reference (undeclared collection/index)

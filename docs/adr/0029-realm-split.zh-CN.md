@@ -17,7 +17,7 @@
   `dispatch_call`、`resolve_call`、deadline 扫描）。
 - **Event + MQ 平面**：`mq`、`router`、`dead_events`（`emit`、队列压缩、
   cursor 消费胶水）。
-- **Remote-probe 平面**：`probes`、`pending_remote`、`code_base_url`
+- **Remote-effector 平面**：`effectors`、`pending_remote`、`code_base_url`
   （`RemotePending`、`ProbeConn`）。
 - **Ctx 桥**：`ctx_for`、`host_bridge_for`——为驻留会话组装每次调用的
   host 闭包的接缝。
@@ -54,7 +54,7 @@
      `call`、`dispatch_call`、`resolve_call`、`declare_call`、deadline 扫描。
    - `events.rs` — event + MQ 平面：`emit`、路由辅助、队列压缩、dead-event
      胶水。（`mq.rs` 本身保持不动——它是 store，不是 realm 胶水。）
-   - `remote.rs` — probe 平面：`ProbeConn`、`RemotePending`、`probes`、
+   - `remote.rs` — effector 平面：`ProbeConn`、`RemotePending`、`effectors`、
      `pending_remote`、`code_base_url`、remote 分发臂。
    - `ctx.rs` — ctx 桥：`ctx_for`、`host_bridge_for`、目前在 lib.rs 顶部的
      JSON 参数辅助函数。

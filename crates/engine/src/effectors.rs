@@ -1,22 +1,22 @@
-//! Probe connection gateway (Phase 3): accept the probes' OUTBOUND WS
+//! Effector connection gateway (Phase 3): accept the effectors' OUTBOUND WS
 //! connections (they dial us), register them by node alias, and correlate
 //! Result frames back to in-flight realm calls.
 
 use aura_realm::SharedRealm;
 use futures_util::{SinkExt, StreamExt};
-use probe_protocol::{Frame, HostFrame};
+use effector_protocol::{Frame, HostFrame};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Accept loop: one task per engine; each connection gets a writer task
-/// (realm.probes holds the sender) and a reader task (correlates results).
-pub async fn serve_probes(realm: SharedRealm, addr: &str) -> anyhow::Result<()> {
+/// (realm.effectors holds the sender) and a reader task (correlates results).
+pub async fn serve_effectors(realm: SharedRealm, addr: &str) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("probe gateway listening on {addr}");
-    serve_probes_listener(realm, listener).await
+    eprintln!("effector gateway listening on {addr}");
+    serve_effectors_listener(realm, listener).await
 }
 
 /// Variant taking a pre-bound listener (tests bind :0 to learn the port).
-pub async fn serve_probes_listener(
+pub async fn serve_effectors_listener(
     realm: SharedRealm,
     listener: tokio::net::TcpListener,
 ) -> anyhow::Result<()> {
@@ -26,7 +26,7 @@ pub async fn serve_probes_listener(
     // (connection plane); this line states the CURRENT posture where it
     // is visible (the log), not only in some config file.
     eprintln!(
-        "probe gateway: registrations are unauthenticated — the network is the boundary \
+        "effector gateway: registrations are unauthenticated — the network is the boundary \
          (node identity: ADR-0015, prism gateway plane)"
     );
     loop {
@@ -34,7 +34,7 @@ pub async fn serve_probes_listener(
         let realm = realm.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_connection(realm, stream, peer).await {
-                eprintln!("probe connection error: {e:#}");
+                eprintln!("effector connection error: {e:#}");
             }
         });
     }
@@ -62,17 +62,17 @@ async fn handle_connection(
     // Writer channel: realm calls push frames; this task owns the sink.
     // A clone stays with the reader so it can answer host calls.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
-    let entry = aura_realm::ProbeConn { sender: tx.clone(), peer };
+    let entry = aura_realm::ActuatorConn { sender: tx.clone(), peer };
     {
         let mut r = realm.lock().await;
-        if let Some(old) = r.probes.insert(node_alias.clone(), entry.clone()) {
+        if let Some(old) = r.effectors.insert(node_alias.clone(), entry.clone()) {
             // Alias replacement (in `open` posture a restarted container
             // must be able to reclaim its name from a stale registration).
             // Allowed — but never silent (ADR-0015 §7 replacement
             // discipline): the event names the alias and BOTH peers, so
             // an operator can always see where their calls actually go.
             eprintln!(
-                "probe gateway: alias '{node_alias}' REPLACED — old peer {} displaced by new peer {peer:?}",
+                "effector gateway: alias '{node_alias}' REPLACED — old peer {} displaced by new peer {peer:?}",
                 old.peer
             );
             // The old writer channel dies when its sender is dropped by
@@ -120,7 +120,7 @@ async fn handle_connection(
             Frame::Host(HostFrame::Call(call)) => {
                 // Ctx bridge over the wire: resolve against the instance
                 // the enclosing remote call was routed to (looked up from
-                // pending_remote by the call_id the probe carries), then
+                // pending_remote by the call_id the effector carries), then
                 // reply on this connection's writer.
                 let instance = {
                     let r = realm.lock().await;
@@ -132,13 +132,13 @@ async fn handle_connection(
                     }
                     None => Err("unknown call_id: the enclosing remote call is not in flight".into()),
                 };
-                tx.send(Frame::Host(HostFrame::Result(probe_protocol::HostResult {
+                tx.send(Frame::Host(HostFrame::Result(effector_protocol::HostResult {
                     host_call_id: call.host_call_id,
                     outcome,
                 })))
                 .ok();
             }
-            other => anyhow::bail!("unexpected frame from probe: {other:?}"),
+            other => anyhow::bail!("unexpected frame from effector: {other:?}"),
         }
     }
     // Connection gone (clean EOF): `_presence` drops with the function and
@@ -163,8 +163,8 @@ impl Drop for PresenceGuard {
         let channel = self.channel.clone();
         tokio::spawn(async move {
             let mut r = realm.lock().await;
-            if r.probes.get(&alias).is_some_and(|conn| conn.sender.same_channel(&channel)) {
-                r.probes.remove(&alias);
+            if r.effectors.get(&alias).is_some_and(|conn| conn.sender.same_channel(&channel)) {
+                r.effectors.remove(&alias);
             }
         });
     }

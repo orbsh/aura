@@ -24,7 +24,7 @@
 
 - 低位 ns 块保留给 aura 自身：mq 表（30–35）、meta/state（40–41）、未来框架平面。摊位类型从保留块之上的固定基址起分配。
 - 分配发生在 `register_type`，作为摊位注册表的副作用（即今天已分配 `booth_id` 的同一张注册表——本设计需要的动态摊位→ns 注册表已具雏形）；ns id 在节点生命周期内永不复用。
-- namespace 隔离（Phase 3.6 的机制，今日形态是前缀绑定的 `MqStore::namespaced` 句柄）是正交的，保留其**机制**：它前缀整个引擎，摊位类型的 ns 活在其下。绑定维度是应用的决定（降级裁决，PLAN Phase 4.10 已落地）——gravity 可绑用户，无用户应用可不绑；「probe 注册凭据 = 用户凭据 → 推导 namespace」被取代。
+- namespace 隔离（Phase 3.6 的机制，今日形态是前缀绑定的 `MqStore::namespaced` 句柄）是正交的，保留其**机制**：它前缀整个引擎，摊位类型的 ns 活在其下。绑定维度是应用的决定（降级裁决，PLAN Phase 4.10 已落地）——gravity 可绑用户，无用户应用可不绑；「effector 注册凭据 = 用户凭据 → 推导 namespace」被取代。
 
 ### 2. 实例是 ns 内的 document，不是隔离单位
 
@@ -70,7 +70,7 @@ collection 及其键/索引声明搭乘既有的 Phase 4.5b upload 生命周期�
 
 ## Consequences
 
-- 已落地（2026-09-24，probe bbefac8 + aura 7828031）：退役完成——`realm/src/state.rs`（`StateDocumentStore`/`InstanceState`）整体删除；aura-摊位的 `StateStore` trait、`SharedStore`、`Ctx.state` 移除；`ctx_state_get/set/delete` host fns 及其 wire 臂（`HostOp::State`）从 engine 与 probe-protocol 删除。`ctx.store` 恰好暴露 `ctx.store.emit(op)` + `ctx.interface_schema`，作用于声明的 collections。**不留向后兼容糖**：退役的理由是模型裁决（点 document 被 collection 接口面取代），不是迁移成本核算——"已有外部用户"与"还没有外部用户"一样，都不是保留旧接口面的论据；模型正确性是唯一输入。`register_in` 与 `register` 走同一条内省+持久化路径，namespaced 类型得以解析出 ctx.store plan。Remote-probe 摊位在 wire 上只保留 invoke（执行节点不持状态；`ctx_store_emit` 需要已解析的 plan = 4.5b）。Phase 4.9 余项：各语言 schema 声明、docs/wiki 清扫。
+- 已落地（2026-09-24，effector bbefac8 + aura 7828031）：退役完成——`realm/src/state.rs`（`StateDocumentStore`/`InstanceState`）整体删除；aura-摊位的 `StateStore` trait、`SharedStore`、`Ctx.state` 移除；`ctx_state_get/set/delete` host fns 及其 wire 臂（`HostOp::State`）从 engine 与 effector-protocol 删除。`ctx.store` 恰好暴露 `ctx.store.emit(op)` + `ctx.interface_schema`，作用于声明的 collections。**不留向后兼容糖**：退役的理由是模型裁决（点 document 被 collection 接口面取代），不是迁移成本核算——"已有外部用户"与"还没有外部用户"一样，都不是保留旧接口面的论据；模型正确性是唯一输入。`register_in` 与 `register` 走同一条内省+持久化路径，namespaced 类型得以解析出 ctx.store plan。Remote-effector 摊位在 wire 上只保留 invoke（执行节点不持状态；`ctx_store_emit` 需要已解析的 plan = 4.5b）。Phase 4.9 余项：各语言 schema 声明、docs/wiki 清扫。
 - 串行化、instance 路由、timer、mq 语义均不动——本裁决只移动存储隔离。
 - projection 摊位恰好保留在它一贯正当的位置：跨类型预计算。同类型聚合成为类型 ns 内的普通 scan。
 - prism 协议命名（`ev`、无方向）随 prism 侧连接平面工作落地（Phase 8）；aura 侧仅是文档。

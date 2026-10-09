@@ -14,11 +14,11 @@ use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 
 fn bin(name: &str) -> String {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/target/debug/examples/");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
     let full = format!("{path}{name}");
     assert!(
         std::path::Path::new(&full).exists(),
-        "{name} missing — build it in ~/world/probe: cargo build -p actor-guest --examples"
+        "{name} missing — build it in ~/world/effector: cargo build -p actor-guest --examples"
     );
     full
 }
@@ -280,7 +280,7 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+        "/../../../effector/crates/actor-guest/examples/bgi_nu.nu"
     );
     assert!(std::path::Path::new(fixture).exists(), "nu bgi fixture missing: {fixture}");
     engine

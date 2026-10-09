@@ -379,7 +379,7 @@ denominator is the **EventRoute registry**, not the raw cursor keys:
 - **depth**: one point read of MqData's live `Count` reduce (§2 step 11) — the
   skip-to-head decision input, never a scan.
 - **skip-to-head** (`mq::skip_to_head`; the script-facing host fn is the same name,
-  `ctx_skip_to_head` — probe's carrier allowlist was updated in step): jump the cursor to the partition write
+  `ctx_skip_to_head` — effector's carrier allowlist was updated in step): jump the cursor to the partition write
   head, discarding the stale backlog (the relief valve). The cursor's
   monotonicity (`advance` only moves forward) is what makes it durable;
   `rewind_cursor` is test-support only, never a production path.
@@ -500,7 +500,7 @@ declare (in receives):        resolve = {collection, index, probe_field}
 register (framework, once):   EventRoute rows carry the reference as NAME strings
                               (addressed by name — never a cross-plane id; rows
                               store facts, resolution lives with the schema owner)
-evaluate (framework, per emit): probe = payload[probe_field]
+evaluate (framework, per emit): effector = payload[probe_field]
                               → StorePlan.entries →(okm-entry::collection_from_entry)
                                 DynamicCollection over the type ns (the 4.16 face,
                                 already landed — the scan path is free)
@@ -558,10 +558,10 @@ End-to-end lock: `engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`.
 okm-derive) existing rule — a variable-width (Str) field may be an index
 field, at most one and last only, the segment carries raw UTF-8 with no
 frame, and the fixed-width pkey tail is cut from the entry's END;
-`encode_fields` (the probe encoding surface) accepts cold fields too.
-Aura's scan-route probes match String fields directly (the test
+`encode_fields` (the effector encoding surface) accepts cold fields too.
+Aura's scan-route effectors match String fields directly (the test
 `scan_route_fans_out_to_the_hit_rows` now uses a Str index + a string
-probe). The digest-index prohibition stands: any "digest index" would
+effector). The digest-index prohibition stands: any "digest index" would
 reopen the aliasing class ADR-0038/0042 just closed.
 
 ### 8.2 The EventRoute row shape (LANDED, Phase 4.13)
@@ -570,7 +570,7 @@ The `key_field: String` payload is replaced by the reference payload: a
 `resolution: u8` tag (0 singleton / 1 payload field / 2 scan) plus
 collection/index/probe_field name columns. **Ruled (ADR-0038 §3)**: a
 reference carries NO collection ns number — the row stores the
-collection/index/probe **names** (resolution lives with the schema owner),
+collection/index/effector **names** (resolution lives with the schema owner),
 while a stored slot/ns number would make position the identity and any
 schema edit would silently re-point the row. The three declaration shapes
 (singleton / payload resolution / index scan) are three mechanisms,

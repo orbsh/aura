@@ -11,7 +11,7 @@
 | 仓 | commit | 内容 |
 |---|---|---|
 | aura | `2d1fafb` | `feat(realm,engine,config,docs): land the event-plane terminal form (ADR-0038/0039/0040; Phases 4.17/4.18/4.19)` —— 34 个文件 |
-| probe | `b56faa3` | `refactor(runtime): rename the ctx_skip_to_now steel stub to ctx_skip_to_head` —— 1 个文件 |
+| effector | `b56faa3` | `refactor(runtime): rename the ctx_skip_to_now steel stub to ctx_skip_to_head` —— 1 个文件 |
 | aura | `74221de` | `feat(realm,docs): event-plane internal layout — instance-key vocabulary, issuer on MqData, one physical partition (ADR-0041)` |
 | aura | `e3e28b7` | `docs(design): event-flow clarity pass — dedupe §7, repair §1/§6.1, PLAN session record` |
 | aura | `b892792` / `0c11a8e` | `docs(adr,plan): cite the landing commits (A6)` + `docs(handoff): A6/A7 resolved`（`~/world/aura-base` 陈旧克隆删除，A7） |
@@ -43,7 +43,7 @@ instance key（`part_id` → `instance_key_id`、`PartitionName` → `InstanceKe
 
 **2026-10-08 晚些（ADR-0042）——A2 已裁决**：`InstanceId.key` 将随 Phase 4.13 变为枚举
 `aura_booth::InstanceKey { Singleton, Named(String) }`，哨兵 `__singleton__` 从框架退役
-（字面别名构造性不可达；状态面核实不受影响，无存储迁移；probe 唯一可观察缝 = 会话键格式）。
+（字面别名构造性不可达；状态面核实不受影响，无存储迁移；effector 唯一可观察缝 = 会话键格式）。
 A1 与 A2 现在是**同一次落地**——都改 EventRoute 行的解析契约。
 
 ## 已落地的内容（免得下一个人重新推导）
@@ -65,7 +65,7 @@ A1 与 A2 现在是**同一次落地**——都改 EventRoute 行的解析契约
   「emit 路径持 realm 锁（单写者）」，不靠时钟。
 - **改名**：`type_id` → `booth_id`、`by_type` → `by_booth`、`type_subscribes` →
   `booth_subscribes`、`type_id_of` → `booth_id_of`、`mq::skip_to_now` → `mq::skip_to_head`；
-  脚本面 host fn 一并改名（`ctx_skip_to_now` → `ctx_skip_to_head`），**aura 与 probe 的 steel
+  脚本面 host fn 一并改名（`ctx_skip_to_now` → `ctx_skip_to_head`），**aura 与 effector 的 steel
   stub 列表两边同改**。零调用者的转发 `mq::booth_name_of` 已删。
 
 ## AURA —— 待办
@@ -81,7 +81,7 @@ event-flow.md §8.1/§8.2。
 
 **A2. 已完成（2026-10-09，随 A1 同批落地，ADR-0042）。** `InstanceId.key` =
 `aura_booth::InstanceKey { Singleton, Named(String) }`；哨兵 `mq::SINGLETON` 退役；
-`instance_of` 字符串往返删除；会话键/ctx 渲染 = `Display`（单例 = 空串）；probe wire
+`instance_of` 字符串往返删除；会话键/ctx 渲染 = `Display`（单例 = 空串）；effector wire
 字符串经 `InstanceKey::parse` 进 variant（空串 = Singleton）。无存储迁移。
 
 **A3. 既有部署的运维动作（ADR-0040，ADR-0041 扩充）。** 既有库存必须**清除低位块**：新
@@ -91,7 +91,7 @@ meta 段（30–32）正落在旧事件面用过的号上，不清就会让新�
 去分区由**同一次清除**吸收——没有额外迁移步骤。新库没有可清除的东西——本仓测试每次构建
 全新的库。
 
-**A4. probe USAGE 双语帧形同步（4.16c 遗留）。** 本次未动：probe 的文档里没有引用被改名的
+**A4. effector USAGE 双语帧形同步（4.16c 遗留）。** 本次未动：effector 的文档里没有引用被改名的
 host fn，所以「USAGE 同步」的范围需要先定下来（它可能是 4.16c 落地的那批帧形的纯文档扫尾）。
 
 **A5. python 载体在本机无法验证（仍未变）。** `cargo test --features python` 在 link
@@ -119,7 +119,7 @@ but `aura-engine` does not have that feature
 ```
 
 PTY/nushell 已在 Phase 4.15 退役（ADR-0035 §6）——nu 现在骑 bgi 载体的 fifo 适配器，**不需要
-任何 feature gate**（已在 probe 确认：`runtime/src/carrier/exec.rs`）。三处要改：
+任何 feature gate**（已在 effector 确认：`runtime/src/carrier/exec.rs`）。三处要改：
 
 1. `crates/prism/Cargo.toml` —— 删掉 `nushell = ["aura-engine/nushell"]` 这一行，并从
    `default = [...]` 里去掉 `"nushell"`。
@@ -150,14 +150,14 @@ PTY/nushell 已在 Phase 4.15 退役（ADR-0035 §6）——nu 现在骑 bgi 载
 `InstanceId { key: "...".into() }` 字面量就会编译失败，要改成
 `InstanceKey::Named(...)`/`Singleton`（MqStore 类型名那批 ADR-0041 改名无构造面，
 预计不受影响）。第一次 `cargo check` 会给出答案。prism 里也没有任何脚本调用
-`ctx_queue_depth`/`ctx_skip_to_*`（对 `~/world` 的全仓 grep 显示 aura/probe 之外没有
+`ctx_queue_depth`/`ctx_skip_to_*`（对 `~/world` 的全仓 grep 显示 aura/effector 之外没有
 调用点），host-fn 集合未动。**另外：prism 编过前先确认 aura 的 okm git 依赖已拿到
 okm `5b355bf`（变宽索引字段）——okm 两个提交尚未推送时，aura 本仓的扫描路由测试需要
 临时 `[patch]` 指本地 okm（已验证可用，勿提交）。**
 
 ## 会反复咬人的跨仓规则
 
-- **host fn 契约住在两个文件里。** aura 的 ctx bridge（`crates/realm/src/ctx.rs`）与 probe 的
+- **host fn 契约住在两个文件里。** aura 的 ctx bridge（`crates/realm/src/ctx.rs`）与 effector 的
   steel introspection stub（`crates/runtime/src/carrier/steel.rs`）必须给出**同一集合**——那个
   stub 列表决定 steel 脚本能否在**加载期**解析 `ctx_*` 标识符。当前集合：`ctx_invoke`、
   `ctx_store_emit`、`ctx_interface_schema`、`ctx_queue_depth`、`ctx_skip_to_head`、
@@ -166,7 +166,7 @@ okm `5b355bf`（变宽索引字段）——okm 两个提交尚未推送时，aur
   30–32、摊位数据 ns 从 100 起；旧的 `30–35`/`40–42` 整段永久作废。
 - **今天只有 prism 依赖 aura。** gravity 目前只有文档（它的 Phase 0 不需要 aura 依赖；
   Milestone B 的 Phase 4「Booth binding」才是开始使用契约的地方）；k10r/krystallizer、mudra、
-  fluxora、klaw 都没有 aura/probe 依赖（只用 okm），不受影响。
+  fluxora、klaw 都没有 aura/effector 依赖（只用 okm），不受影响。
 
 ## 验证配方
 
@@ -185,14 +185,14 @@ cargo test -p aura-engine --test events scan_route   # 扫描路由 e2e（4.13 �
 cd ~/world/okm
 cargo test -p okm-core -p okm-dynamic --features test-engines,parquet   # 187 过 0 挂
 
-# probe —— stub 列表自己的测试，加上 exec/bgi 载体。
-cd ~/world/probe
-cargo test -p probe-runtime --test steel_introspect
+# effector —— stub 列表自己的测试，加上 exec/bgi 载体。
+cd ~/world/effector
+cargo test -p effector-runtime --test steel_introspect
 
 # prism —— P1 做完之后；因 A5 排除 python。
 cd ~/world/prism
 cargo check -p prism --no-default-features --features steel,wasmtime,fjall
 
-# 改名的 host fn 的跨仓端到端证明（aura 脚本 -> probe steel stub -> aura 宿主桥）：今天通过。
+# 改名的 host fn 的跨仓端到端证明（aura 脚本 -> effector steel stub -> aura 宿主桥）：今天通过。
 cd ~/world/aura && cargo test -p aura-engine --test queue_relief
 ```

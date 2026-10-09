@@ -14,9 +14,9 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
-probe-protocol = { path = "../../../probe/crates/protocol" }
-probe-config = { path = "../../../probe/crates/config" }
-probe-runtime = { path = "../../../probe/crates/runtime" }
+effector-protocol = { path = "../../../effector/crates/protocol" }
+effector-config = { path = "../../../effector/crates/config" }
+effector-runtime = { path = "../../../effector/crates/runtime" }
 tempfile = "3"
 base64 = "0.22"
 

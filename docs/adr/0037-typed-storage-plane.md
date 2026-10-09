@@ -124,7 +124,7 @@ The JSON instruction document that gate 1 landed (`HostOp::StoreEmit`,
 the `host_bridge_for("ctx_store_emit")` fn) was the declared transitional
 shape; §2's landing retired its ENTRY — on the bgi seam the free
 `op: "ctx_store_emit"` string lookup is gone, replaced by the typed
-`store` frame (the instruction itself still travels as DATA — the probe
+`store` frame (the instruction itself still travels as DATA — the effector
 stays schema-blind; the typed envelope retires the ENTRY, not the
 document). The remote WS's `HostOp::StoreEmit` variant was already a typed
 frame (serde-discriminated enum), so nothing retires there. After §1,
@@ -137,12 +137,12 @@ typed.
   is declared transitional within a day of landing. Accepted — the contract
   ambiguity in §3 was punctured by the user's binding facts, and fixing the
   contract costs less than letting the transitional shape calcify.
-- **The probe's dependency surface grows**: registering the python binding =
-  probe-runtime's python feature needs `okm-python` (or its logic inlined
-  into probe's python carrier). Not a breach of "probe never depends on
+- **The effector's dependency surface grows**: registering the python binding =
+  effector-runtime's python feature needs `okm-python` (or its logic inlined
+  into effector's python carrier). Not a breach of "effector never depends on
   Aura crates" (okm is independent of aura), but okm becomes a transitive
-  probe dependency — the registry + typed frame protocol + direct bindings
-  are all pushing the probe from "protocol mover" toward "runtime"; watch
+  effector dependency — the registry + typed frame protocol + direct bindings
+  are all pushing the effector from "protocol mover" toward "runtime"; watch
   that line continuously.
 - **The steel binding's gap closed with a real decision inside it**:
   filling `okm-steel`'s Collection face (4.16b, an okm-repo cut) forced
@@ -178,9 +178,9 @@ typed.
   realm drives injections exactly there); the facade now rides a
   dedicated driver thread (okm 92b2551, locks in
   `okm-core/tests/driver_thread_test.rs`).
-- **probe** (4.16a landed): `HostBridge` carries a `storage` slot — the
+- **effector** (4.16a landed): `HostBridge` carries a `storage` slot — the
   host's engine behind four byte-closure fns (`StorageEngineFns`: no okm
-  types on the seam, so probe and aura build against different okm revs
+  types on the seam, so effector and aura build against different okm revs
   freely) + the plan's raw collection entries; the python carrier's load
   step builds one `Collection` per entry over it and `module.add`s it
   under the collection name (the engine handle never crosses a seam
@@ -209,7 +209,7 @@ typed.
   realm-side executor survives whole (`store_exec`, plan resolution) —
   the payload's arrival shape is now a typed `store` frame. The
   declaration surface (4.16c): aura-booth carries its own
-  `ChannelEncoding` (the crate stays probe-free), `BoothType::encoded`
+  `ChannelEncoding` (the crate stays effector-free), `BoothType::encoded`
   selects it, `PersistedBooth`/`BoothDef` persist it as a hot-tail
   append (old rows reload as json — their actual behavior), and
   `introspect_schema` spawns the throwaway child in the DECLARED codec.

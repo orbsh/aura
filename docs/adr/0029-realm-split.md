@@ -18,7 +18,7 @@ sharing one owner:
   `dispatch_call`, `resolve_call`, deadline sweep).
 - **Event + MQ plane**: `mq`, `router`, `dead_events` (`emit`, queue compaction,
   cursor consumption glue).
-- **Remote-probe plane**: `probes`, `pending_remote`, `code_base_url`
+- **Remote-effector plane**: `effectors`, `pending_remote`, `code_base_url`
   (`RemotePending`, `ProbeConn`).
 - **Ctx bridge**: `ctx_for`, `host_bridge_for` — the seam that assembles per-call
   host closures for resident sessions.
@@ -61,7 +61,7 @@ reduce nothing — the module boundaries below are what make the improvement pos
    - `events.rs` — event + MQ plane: `emit`, route helpers, queue compaction,
      dead-event glue. (`mq.rs` itself stays as-is — it is the store, not the realm
      glue.)
-   - `remote.rs` — probe plane: `ProbeConn`, `RemotePending`, `probes`,
+   - `remote.rs` — effector plane: `ProbeConn`, `RemotePending`, `effectors`,
      `pending_remote`, `code_base_url`, the remote dispatch arm.
    - `ctx.rs` — ctx bridge: `ctx_for`, `host_bridge_for`, the JSON arg helpers
      currently at the top of lib.rs.

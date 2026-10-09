@@ -379,7 +379,7 @@ mod ns_schema_tests {
         // Shape matrix over the dynamic-segment codec: the nested-composite
         // shapes (Obj inside Array etc.) are exactly what broke the persisted
         // interface_schema before okm 0c2a354 threaded the name resolver.
-        for probe in [
+        for effector in [
             serde_json::json!({"a": [{"c": 0}]}),
             serde_json::json!({"a": [[1]]}),
             serde_json::json!({"a": {"b": [1]}}),
@@ -389,11 +389,11 @@ mod ns_schema_tests {
             serde_json::json!({"a": [1, 2, 3]}),
             serde_json::json!({"a": {"b": 0}}),
         ] {
-            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), encoding: Default::default(), idle_ttl_secs: None, schema: Some(probe.clone()) };
+            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), encoding: Default::default(), idle_ttl_secs: None, schema: Some(effector.clone()) };
             let m2 = MqStore::mem();
             persist(&m2, &def).unwrap();
             let all = load_all(&m2).unwrap();
-            assert!(all[0].schema.is_some(), "roundtrip failed for {probe}");
+            assert!(all[0].schema.is_some(), "roundtrip failed for {effector}");
         }
         let full = serde_json::json!({
             "storage": {"collections": {"notes": {"schema": {

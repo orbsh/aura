@@ -5,7 +5,7 @@
 **Status:** Accepted (2026-09-28). Design; implementation pending, see
 Consequences. Motivated by gravity's full-Rust wish (wasm limits felt as
 needless) and the nushell PTY carrier's cost (the most fragile machinery
-among the four residents). Raised by the user as "probe gains a CGI-like
+among the four residents). Raised by the user as "effector gains a CGI-like
 mode — info travels through the pipes, not environment variables".
 
 ## Context
@@ -39,7 +39,7 @@ by definition, like the cgi/fpm lineage it descends from.**
 
 ### 1. bgi: the resident bridge (the booth mode)
 
-Probe spawns the child once per booth instance and keeps it alive; frames
+Effector spawns the child once per booth instance and keeps it alive; frames
 flow over the child's stdin/stdout. It maps onto the existing
 `ResidentSession` seam without new runtime shapes: load = spawn + handshake,
 call = request frame in / response frame out, evict = close stdin + SIGKILL
@@ -65,7 +65,7 @@ nushell's runtime can actually do (its `open` delivers at writer-EOF).
 
 The vocabulary follows the lineage: **bgi** (section 1) is the framed
 resident shape — the loop lives in the child (author-written or a
-probe-shipped shim; the fcgi-adapts-cgi move). **exec** is bare cgi —
+effector-shipped shim; the fcgi-adapts-cgi move). **exec** is bare cgi —
 the parent's per-call spawn is the adapter, and an adapter that
 re-launches per request has the php-fpm semantics: stateless by
 definition, not by omission. Recorded so nobody files the statelessness
@@ -114,7 +114,7 @@ wire bridge (invoke, iterate, store — ADR-0037 §2, landed 4.16c): a bad
 discriminator or verb fails at decode and answers as an error value, the
 old free-function-name table miss is gone. `ctx_store_emit` joined the
 arm set at Phase 4.14 gate 1 (`HostOp::StoreEmit` — one okm instruction
-as DATA, schema-blind on the probe side); ADR-0037 §3 retired its ENTRY
+as DATA, schema-blind on the effector side); ADR-0037 §3 retired its ENTRY
 (the typed `store` frame carries the same DATA). stdio is a transport
 for the existing ops, not a new surface. The envelope
 (ADR-0034, unified by ADR-0036: one shape, `done` always a boolean,
@@ -125,12 +125,12 @@ field, never a sentinel).
 ### 4. Language = spawn spec, not carrier
 
 The carrier is one; the per-language entries are spawn declarations in the
-probe registry: `nu` = `["nu", "--no-config-file", "-c", ...]` over the
-probe-shipped frame-loop shim; a compiled Rust booth = `["./booth"]`, the
-binary implements the loop against a documented frame contract (probe
+effector registry: `nu` = `["nu", "--no-config-file", "-c", ...]` over the
+effector-shipped frame-loop shim; a compiled Rust booth = `["./booth"]`, the
+binary implements the loop against a documented frame contract (effector
 publishes no guest crate for it; the contract is the ABI, as `aura_alloc`
 is for wasm). Registration advertises carried languages unchanged — the
-probe's capability list gains spawn entries, not a new kind of thing.
+effector's capability list gains spawn entries, not a new kind of thing.
 
 ### 5. BGI — Booth Gateway Interface: the wrapper, named
 
@@ -169,9 +169,9 @@ aura_bgi.run()          # the outer loop; handlers never see frames
 ```
 
 Rust booths implement the trait (or a `main` that calls the shim's loop);
-bash reads `read -r line` cases. The probe ships no guest crate and no
+bash reads `read -r line` cases. The effector ships no guest crate and no
 guest SDK — the wire is the contract (section 4's rule), and each BGI
-wrapper is either a published shim (probe assets, like the nushell
+wrapper is either a published shim (effector assets, like the nushell
 adapter) or three lines of the author's own loop. The name exists so
 those artifacts have one thing to be adapters *of*.
 
@@ -193,7 +193,7 @@ suite red and re-open the double-maintenance door the pass closes. That
 ordering is now satisfied; the retirement landed with it. One execution shape
 per language, ever: nu's shapes are `exec` (bare one-shot) and `bgi` (the two-
 fifo adapter) — the `nushell` language string and its PTY feature are gone from
-the carriers, the Cargo feature tree (probe-runtime, aura-realm, aura-engine)
+the carriers, the Cargo feature tree (effector-runtime, aura-realm, aura-engine)
 and the wire vocabulary.
 
 ### 7. Trust tiers unchanged: exec is the trusted posture, wasm keeps the untrusted one
@@ -228,7 +228,7 @@ wasm module has nothing until the host wires it).
   here: bgi is framed and resident, exec is unframed and per-call; the
   shared part is only spawn supervision, not the exchange.
 - **nushell reaches bgi through a channel adapter, not through stdin.**
-  Probe-verified: nu cannot block-read a non-TTY stdin (`input line`
+  Effector-verified: nu cannot block-read a non-TTY stdin (`input line`
   errors) and its `open` delivers at writer-EOF, so stdin-direct resident
   bgi is impossible. The adapter is a TWO-fifo shape: requests ride `req`
   (parent writes one frame and closes the writer — the batch EOF the
@@ -236,7 +236,7 @@ wasm module has nothing until the host wires it).
   `rep` fifo, result frames ride stdout. The split is what makes reply
   routing deterministic: on one fifo, the author's outer request reader
   and its inline ctx-reply reader race for every written frame (a single-
-  fifo shape hung in the probe; wakeup order decides who gets the frame).
+  fifo shape hung in the effector; wakeup order decides who gets the frame).
   The author's script runs `def main [req rep]` as the loop — nu
   auto-invokes `main` with the script arguments, and because `source`
   rejects a dynamic path at parse and nu has no eval, the entry-side
@@ -251,7 +251,7 @@ wasm module has nothing until the host wires it).
 
 ## Consequences
 
-- **probe:** exec carrier module (spawn, frame loop, shim registry);
+- **effector:** exec carrier module (spawn, frame loop, shim registry);
   bwrap policy reuse; the nushell PTY machinery retired with the §6 gate
   (the `nushell` language string, the PTY module and its Cargo feature are
   gone — nu's shapes are `exec` and `bgi`/two-fifo).
@@ -265,7 +265,7 @@ wasm module has nothing until the host wires it).
   (bare one-shot). The provider booth (python, ADR-0034 §6) is unaffected — its
   generator mode stays where the host drives it across an FFI seam
   nobody has to cross.
-- **okm:** none — the frame contract lives in probe-protocol.
+- **okm:** none — the frame contract lives in effector-protocol.
 - **PLAN:** new phase for the exec carrier; the nushell PTY deletion is
   the phase's last item (gate §6), never a standalone change.
 
@@ -275,5 +275,5 @@ ADR-0034 (envelope and host-op vocabulary the frames carry), ADR-0031
 (outbound behaviour belongs to the booth's own code — an exec binary is
 that code at its strongest), ADR-0027 (content-addressed delivery —
 exec fetches to a temp path and runs it once), ADR-0015/0016 (node trust
-and residency accounting unchanged for bgi instances), probe
-ownership ruling (the probe executes delivered code; spawn is execution).
+and residency accounting unchanged for bgi instances), effector
+ownership ruling (the effector executes delivered code; spawn is execution).

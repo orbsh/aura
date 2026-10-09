@@ -7,8 +7,8 @@
 ## Context
 
 远程调用以 `CodePayload::Inline { bytes }` 投递代码——整个函数源码随控制帧穿行，每次
-调用都如此，且经过网关（prism 挂载 `/probe/<alias>` 之后，再多一跳）。协议里已有
-`CodePayload::Link { url, version, expected_sha256 }`，probe 也已实现拉取 + 校验（不匹配
+调用都如此，且经过网关（prism 挂载 `/effector/<alias>` 之后，再多一跳）。协议里已有
+`CodePayload::Link { url, version, expected_sha256 }`，effector 也已实现拉取 + 校验（不匹配
 = 错误，绝不静默接受），但 aura 从不构造 Link：Link 今天是死臂，Inline 是唯一活着的形态。
 
 三个事实说明 Inline 不是「不修边幅」而是方向错了：
@@ -46,13 +46,13 @@ BoothName 30 / BoothDef 31 / CodeBlob 32
 代码不变的重复注册免费去重（同哈希 → 同一行）；代码变了则产生新哈希，新定义版本指向
 它。不存在第二套版本计数器，也不该有：内容哈希就是版本身份。
 
-### 3. 投递只发引用；probe 按需拉取、按哈希缓存
+### 3. 投递只发引用；effector 按需拉取、按哈希缓存
 
 远程 dispatch 臂用定义的哈希加部署声明的前缀构造 `CodeRef { url, sha256 }` 并发帧——仅此
-而已。probe 解析代码的路径与今天解析 Inline 字节完全一致：sha256 缓存命中 → 源码；未命中 →
+而已。effector 解析代码的路径与今天解析 Inline 字节完全一致：sha256 缓存命中 → 源码；未命中 →
 GET URL、对照帧内断言的哈希校验（不匹配 = 错误，绝不静默）、入缓存、继续；解析出的源码喂给
 既有的 `with_session` 冷启动加载。按哈希的缓存是可丢弃的热层：与驻留 session 同一合法性
-等级——执行节点依然不持有任何需要恢复的东西。（不发明新的 loader 接缝：probe 的
+等级——执行节点依然不持有任何需要恢复的东西。（不发明新的 loader 接缝：effector 的
 resolve-then-load 路径已经存在，变的只是 resolver 的输入形态。）
 
 URL 搭乘部署声明的前缀：`node {}` 配置块里的 `code_base_url`（KDL）。无默认值。只有挂载
@@ -85,13 +85,13 @@ URL 搭乘部署声明的前缀：`node {}` 配置块里的 `code_base_url`（KD
 
 ## Consequences
 
-- **probe-protocol**：`CodePayload` 删除；`ToolCall.code: CodeRef { url, sha256 }`。
-- **probe**：`fetch_link` 成为唯一路径（缓存按 sha256 键控；校验不变）；其余消费面无改动。
+- **effector-protocol**：`CodePayload` 删除；`ToolCall.code: CodeRef { url, sha256 }`。
+- **effector**：`fetch_link` 成为唯一路径（缓存按 sha256 键控；校验不变）；其余消费面无改动。
 - **aura**：`meta.rs` 增 `CodeBlob`（ns 32——ADR-0040 分段后；当时为 42）与 `BoothDef.code_sha256`；`register_inner`
   写哈希 + blob；远程 dispatch 臂按存储的哈希构造 `CodeRef`；`EngineConfig`/KDL 增
   `code_base_url`（无默认，投递处报错）；`PersistedBooth.source` → `code_sha256`（接缝
   结构体随之）。boot reload 按哈希从本地 blob 重新注水字节。
 - **prism PLAN**：`GET /code/{sha256}` 静态导出条目（Phase 1.8 旁）；signed URL +
   cache-key 归一化记为机密性选项，不是默认。
-- **测试**：remote_probe e2e 增设测试内静态源，走真 fetch + 哈希缓存路径（这是一次升级：
+- **测试**：remote_effector e2e 增设测试内静态源，走真 fetch + 哈希缓存路径（这是一次升级：
   它锁定的线路形态从此就是生产形态）。

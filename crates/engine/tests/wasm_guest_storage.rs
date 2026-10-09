@@ -3,13 +3,13 @@
 //! its `interface_schema` export carries the compiled `storage.collections`
 //! block, and the handlers run the in-module Collection over the ctx
 //! store bridge. The full upload → introspect → persist → emit-executor
-//! path is exercised with the artifact built by the probe workspace
+//! path is exercised with the artifact built by the effector workspace
 //! (`cargo build -p actor-guest --example counter_actor --target
 //! wasm32-unknown-unknown`); the test fails loudly when the artifact is
 //! missing (a stale build is a CI recipe error, not a skip condition).
 //
 //! Whole-crate gate: this e2e needs the wasmtime carrier — without the
-//! feature it fails fast with "language not resident-carried by this probe
+//! feature it fails fast with "language not resident-carried by this effector
 //! build" (and imports/helper would dangle unused). Gate the crate, not
 //! the fn.
 #![cfg(feature = "wasmtime")]
@@ -22,10 +22,10 @@ use base64::Engine as _;
 fn wasm_booth() -> BoothType {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/target/wasm32-unknown-unknown/debug/examples/counter_actor.wasm"
+        "/../../../effector/target/wasm32-unknown-unknown/debug/examples/counter_actor.wasm"
     );
     let bytes = std::fs::read(path).expect(
-        "counter_actor.wasm missing — build it in ~/world/probe: cargo build -p actor-guest --example counter_actor --target wasm32-unknown-unknown",
+        "counter_actor.wasm missing — build it in ~/world/effector: cargo build -p actor-guest --example counter_actor --target wasm32-unknown-unknown",
     );
     let source = base64::engine::general_purpose::STANDARD.encode(&bytes);
     BoothType::script("wasm-guest-counter", "wasmtime", source)
@@ -87,16 +87,16 @@ async fn wasm_booth_storage_end_to_end() {
 
 // ---- ADR-0034 consumer side: wasm pulls a python generator's stream ----
 
-/// The consumer fixture module (probe `cargo build -p actor-guest
+/// The consumer fixture module (effector `cargo build -p actor-guest
 /// --example stream_puller --target wasm32-unknown-unknown`): its exports
 /// drive the ctx_iter_start/next/dispose host imports to completion.
 fn puller_booth() -> BoothType {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/target/wasm32-unknown-unknown/debug/examples/stream_puller.wasm"
+        "/../../../effector/target/wasm32-unknown-unknown/debug/examples/stream_puller.wasm"
     );
     let bytes = std::fs::read(path).expect(
-        "stream_puller.wasm missing — build it in ~/world/probe: cargo build -p actor-guest --example stream_puller --target wasm32-unknown-unknown",
+        "stream_puller.wasm missing — build it in ~/world/effector: cargo build -p actor-guest --example stream_puller --target wasm32-unknown-unknown",
     );
     let source = base64::engine::general_purpose::STANDARD.encode(&bytes);
     BoothType::script("wasm-puller", "wasmtime", source)

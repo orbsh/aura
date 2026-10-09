@@ -65,7 +65,7 @@ def audit(args): ...
 | `@on` 多入口 | ✅ 装饰器 | `on` 函数 | 暂单 handler（直接调用声明 handler 名） | 导出约定 |
 | 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | 重隔离三方代码 |
 
-**`interface_schema` 对执行路径透明**：probe 的执行 carrier 只负责"加载源码 → 调 entry → 序列化结果"，从不触碰 `interface_schema`。声明收集（python `@on` 注入、steel `on` 内建）是语言形态，组装与合并语义在 `carrier::introspect` 一层——aura 上传时调用它一次并持久化。同一个脚本交给 probe 执行时，`interface_schema` 只是一个没人调用的函数；交给 aura 上传时，它成为类型定义的元数据来源。
+**`interface_schema` 对执行路径透明**：effector 的执行 carrier 只负责"加载源码 → 调 entry → 序列化结果"，从不触碰 `interface_schema`。声明收集（python `@on` 注入、steel `on` 内建）是语言形态，组装与合并语义在 `carrier::introspect` 一层——aura 上传时调用它一次并持久化。同一个脚本交给 effector 执行时，`interface_schema` 只是一个没人调用的函数；交给 aura 上传时，它成为类型定义的元数据来源。
 
 ---
 
@@ -193,6 +193,6 @@ pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
 
 ---
 
-## 与 probe 的关系（再述）
+## 与 effector 的关系（再述）
 
-probe = **操作执行面**：`ToolCall` 进 → `execute()` → `ToolResult` 出。它不知道摊位、不知道事件、不知道 `interface_schema` 的语义——所有这些是 **aura 的场域层概念**。同一个 python 文件：作为 probe 操作时只有 `execute` 被调用；作为 aura 摊位上传时自省先行、每个 `@on` handler 成为实例的一个消息入口。一个文件，两种宿主，契约透明。
+effector = **操作执行面**：`ToolCall` 进 → `execute()` → `ToolResult` 出。它不知道摊位、不知道事件、不知道 `interface_schema` 的语义——所有这些是 **aura 的场域层概念**。同一个 python 文件：作为 effector 操作时只有 `execute` 被调用；作为 aura 摊位上传时自省先行、每个 `@on` handler 成为实例的一个消息入口。一个文件，两种宿主，契约透明。

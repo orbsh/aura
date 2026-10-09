@@ -59,12 +59,12 @@ pub struct Realm {
     /// Resident script sessions (Phase 2.6): per-instance VM/child, owned by
     /// the realm — sessions die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
-    pub sessions: probe_runtime::carrier::session::Sessions,
-    /// Live probe outbound connections by node alias (Phase 3). The
+    pub sessions: effector_runtime::carrier::session::Sessions,
+    /// Live effector outbound connections by node alias (Phase 3). The
     /// writer half routes realm calls; the peer address exists so a
     /// takeover names both ends (ADR-0015 §7 replacement discipline —
     /// silent alias replacement is the behaviour being removed).
-    pub probes: HashMap<String, ProbeConn>,
+    pub effectors: HashMap<String, ActuatorConn>,
     /// Code reference prefix for remote delivery (ADR-0027): a remote
     /// call carries `CodeRef { url: base + hex(sha256), sha256 }`.
     /// None = remote types are undeliverable in this realm (the dispatch
@@ -77,8 +77,8 @@ pub struct Realm {
     /// invoke replies. Streams die with the realm (eviction of the
     /// producer session = failed pulls, per the ADR).
     pub streams: HashMap<String, StreamEntry>,
-    /// In-flight remote calls awaiting the probe's Result frame. The
-    /// instance id scopes the ctx-bridge host calls the probe makes while
+    /// In-flight remote calls awaiting the effector's Result frame. The
+    /// instance id scopes the ctx-bridge host calls the effector makes while
     /// executing this call (state fields are the instance's own).
     pub pending_remote:
         HashMap<String, RemotePending>,
@@ -154,7 +154,7 @@ pub async fn introspect_schema(booth: &aura_booth::BoothType) -> Option<serde_js
         // throwaway child spawns in the DECLARED codec (a CBOR-declared
         // bgi booth's schema frame round trip rides CBOR).
         let encoding = crate::instance::map_encoding(*encoding);
-        move || probe_runtime::carrier::introspect_encoded(&language, &source, encoding)
+        move || effector_runtime::carrier::introspect_encoded(&language, &source, encoding)
     })
     .await;
     raw.ok()?.ok()
@@ -185,7 +185,7 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 }
 
 /// One in-flight remote call: the reply path plus the instance whose ctx
-/// the probe's host calls resolve against.
+/// the effector's host calls resolve against.
 pub struct RemotePending {
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     pub instance: InstanceId,
@@ -202,13 +202,13 @@ pub struct StreamEntry {
     pub args: serde_json::Value,
 }
 
-/// One live probe connection's registry entry: the writer channel plus
+/// One live effector connection's registry entry: the writer channel plus
 /// the peer address. The address is not decorative — ADR-0015 §7's
 /// replacement discipline requires a takeover event to name the old and
 /// new peers, and a bare channel cannot say where either one came from.
 #[derive(Clone)]
-pub struct ProbeConn {
-    pub sender: tokio::sync::mpsc::UnboundedSender<probe_protocol::Frame>,
+pub struct ActuatorConn {
+    pub sender: tokio::sync::mpsc::UnboundedSender<effector_protocol::Frame>,
     pub peer: std::net::SocketAddr,
 }
 

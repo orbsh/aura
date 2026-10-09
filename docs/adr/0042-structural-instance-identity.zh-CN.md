@@ -21,7 +21,7 @@ ADR-0038 的残余注记记录了这个 bug：实例键空间仍用哨兵字符�
    字符串，用作投递目标的 `InstanceId.key`。
 2. `instance.rs` —— 消费循环只在 `id.key == mq::SINGLETON` 时为实例绑定无键路由。
 3. `mq.rs::bound_instance_key` —— 仅当调用者的实例键等于哨兵时返回 `Singleton`。
-4. `instance.rs` —— probe 会话身份是字符串 `"{booth_type}/{key}"`；单例实例的键
+4. `instance.rs` —— effector 会话身份是字符串 `"{booth_type}/{key}"`；单例实例的键
    把 `__singleton__` 贡献给它。
 5. `ctx.rs` —— 泄压阀 fn 把 `self_id.key`（单例实例即哨兵）传回
    `bound_instance_key`。
@@ -57,7 +57,7 @@ pub struct InstanceId {
 - `Named(key)` 来自 payload 且无保留：没有任何字符串是特殊的，没有要文档化的保留
   值，没有要防范的碰撞。`SINGLETON`/`__singleton__` 从 `mq.rs` 退役；一个键文本恰好
   等于旧哨兵的具名实例就只是叫那个名字的实例。
-- **会话身份**（`instance.rs`）：probe 会话键将 `Singleton` 格式化为 `{type}/`
+- **会话身份**（`instance.rs`）：effector 会话键将 `Singleton` 格式化为 `{type}/`
   （空键段——会话按类型计），`Named(k)` 为 `{type}/{k}`。空键段无歧义：路由规则要求
   `Named` 的键非空（payload 的 key 字段必须产出非空字符串；空 = 畸形，
   `MissingKeyField` 类）。
@@ -87,5 +87,5 @@ pub struct InstanceId {
 - **ADR-0038 的残余注记由本裁决关闭**（按日期记录规矩，原文保留、加被取代指针）。
 - **文档**：`event-flow.md`/`-en.md` §1（词汇：实例键获得 variant 形态）、§6.1
   （目标行）、§6.2（绑定规则）、§8.3（残余段关闭）。
-- **Probe 缝**：会话键格式的变化只在 probe 的会话目录命名上可观察；probe 不依赖
-  哨兵字面量（grep 已核实），所以本裁决不携带 probe 改动。
+- **Effector 缝**：会话键格式的变化只在 effector 的会话目录命名上可观察；effector 不依赖
+  哨兵字面量（grep 已核实），所以本裁决不携带 effector 改动。

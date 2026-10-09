@@ -187,7 +187,7 @@ fn map_to_json(m: &ValueMap) -> serde_json::Value {
 }
 
 /// Resolve a scan route's targets (Phase 4.13, event-flow.md §8.1): the
-/// probe comes from the event payload, the reference (collection/index)
+/// effector comes from the event payload, the reference (collection/index)
 /// from the route row — resolved against the OWNING TYPE's plan (the
 /// 4.16 DynamicCollection face; the scan path is free). Each hit row's
 /// primary key IS a target instance key. The collection's primary key
@@ -200,7 +200,7 @@ pub fn resolve_scan_targets(
     plan: &StorePlan,
     collection: &str,
     index: &str,
-    probe: &serde_json::Value,
+    effector: &serde_json::Value,
 ) -> Result<Vec<String>, String> {
     let schema = plan.collections.get(collection).ok_or_else(|| {
         format!("resolve: collection `{collection}` is not declared by this type")
@@ -218,9 +218,9 @@ pub fn resolve_scan_targets(
     })?.access_method();
     drop(specs);
     let mut key_values = ValueMap::new();
-    key_values.insert(am.fields[0].clone(), json_to_value(probe).map_err(|e| format!("resolve: probe: {e}"))?);
+    key_values.insert(am.fields[0].clone(), json_to_value(effector).map_err(|e| format!("resolve: effector: {e}"))?);
     let encoded = okm_dynamic::encode_fields(schema, &am.fields, &key_values)
-        .map_err(|e| format!("resolve: probe encode: {e}"))?;
+        .map_err(|e| format!("resolve: effector encode: {e}"))?;
     let ns_prefix = plan.ns.to_be_bytes().to_vec();
     let rows = okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)
         .map_err(|e| format!("resolve: scan: {e}"))?;

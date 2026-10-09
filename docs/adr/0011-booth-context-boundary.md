@@ -11,7 +11,7 @@ surface has grown implicitly: `ctx.state` (§2.3, dual API with `ctx.metadata`),
 (§5.13), while `emit`/`on` appear as bare script-level functions and lifecycle hooks
 (`on_sleep`/`on_wake`) as script exports. No document had adjudicated the boundary — what
 belongs on ctx and what must stay off it. Without an explicit rule, every new capability
-(Probe targets, cold-call declarations, future timer APIs) risks drifting onto ctx by default,
+(Effector targets, cold-call declarations, future timer APIs) risks drifting onto ctx by default,
 and the entry-function signature becomes an unprincipled grab-bag.
 
 ## Decision
@@ -25,7 +25,7 @@ bound and (b) subject to Host control or record.** Everything else is expressed 
 |:--|:--|
 | `ctx.state` | This instance's state; per-instance Fjall/SlateDB path, WAL-per-field. Never leaves the node's data plane. |
 | `ctx.metadata` | Controlled metadata (registry, sharding, node-local config) in the meta okm instance — control-plane single-writer, no consensus; no cross-node global sync (user data stays on its home node). |
-| `ctx.invoke()` | The single controlled call surface — timeout, audit, rate-limit, observability all terminate here (§5.13). Bypassing it (PyO3/httpx direct) is forbidden. Target resolution (HTTP / realm Booth / remote Probe) is registry-declared; CallSlot two-tier waiting is a runtime-level split invisible to the Booth. |
+| `ctx.invoke()` | The single controlled call surface — timeout, audit, rate-limit, observability all terminate here (§5.13). Bypassing it (PyO3/httpx direct) is forbidden. Target resolution (HTTP / realm Booth / remote Effector) is registry-declared; CallSlot two-tier waiting is a runtime-level split invisible to the Booth. |
 
 ### Off ctx
 
@@ -48,8 +48,8 @@ The timer rejection narrows: **blocking / self-scheduling forms** (`ctx.sleep()`
 
 - The entry-function signature stays minimal and stable: `(ctx, <event params>)`.
 - New capabilities face the criterion explicitly: instance-bound + Host-controlled → ctx;
-  static contract / Host-driven / realm-level → elsewhere. Probe capability targets
-  (`probe:<node_id>:<cap>`) land on `ctx.invoke()` under this rule with no signature change.
+  static contract / Host-driven / realm-level → elsewhere. Effector capability targets
+  (`effector:<node_id>:<cap>`) land on `ctx.invoke()` under this rule with no signature change.
 - The wiki (aura-architecture.md §5.3) carries the user-facing statement of this boundary;
   this ADR is the decision record.
 

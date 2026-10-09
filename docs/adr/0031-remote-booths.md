@@ -10,7 +10,7 @@ No implementation had started, so there is nothing to roll back.
 
 ## Context — what the proposal was
 
-The draft extended the surface beyond tier-1 remote **execution** (the probe,
+The draft extended the surface beyond tier-1 remote **execution** (the effector,
 `Body::RemoteProbe`, PLAN Phase 3) to tier-2 remote **participation**: a booth
 itself — definition, code, storage — living on an external service, with the
 realm dialing out to its WS endpoint, registering the endpoint on the
@@ -91,7 +91,7 @@ liveness policy for a connection whose semantics it cannot inspect. The
 remote booth was a broker wearing its client's clothes.
 
 **What the realm still does offer remote ends.** Tier-1 remote
-*execution* — the probe (`Body::RemoteProbe`, ADR-0027) — is untouched
+*execution* — the effector (`Body::RemoteProbe`, ADR-0027) — is untouched
 and is the only remote shape: the control plane ships content-addressed
 code into an execution node and holds that WS connection (node keypair,
 ADR-0015). It belongs because the control plane is the code's author;
@@ -143,12 +143,12 @@ Two observations from the draft were correct and remain on the record:
   from the draft's discussion is rewritten to this ruling — the parts that
   stand are prism's own (session plane, auth block, prefix stamp, Phase 1
   streaming half); the dial-out/CBOR/remote-booth registry half is removed.
-  The probe mount (`/probe/<alias>`) and node registry are tier-1 and
+  The effector mount (`/effector/<alias>`) and node registry are tier-1 and
   unaffected.
 - **Code:** no change. `code_base_url` stays a node-level concern
   (ADR-0027 serves tier-1); no remote-booth arm existed to delete. Two
-  comment/string sites that said "remote booth" while meaning the probe
-  were corrected to "remote probe" (`config/src/kdl.rs`,
+  comment/string sites that said "remote booth" while meaning the effector
+  were corrected to "remote effector" (`config/src/kdl.rs`,
   `realm/src/instance.rs`).
 - **Wasm outbound, when a wasmtime booth needs it:** a carrier-capability
   task (wire a wasi-http host into the wasmtime carrier, per booth type),

@@ -142,8 +142,8 @@ async fn state_survives_scale_to_zero() {
 
 // ------------------------------------------------------- Phase 2 (script) --
 
-// Script booths execute through the probe carriers — the same carrier set
-// the remote actuator uses; language execution is not reimplemented here.
+// Script booths execute through the effector carriers — the same carrier set
+// the remote effector uses; language execution is not reimplemented here.
 // Script booths are pure functions in this phase (args in, value out).
 // The nu booth rides the bgi carrier's two-fifo adapter (the retired PTY
 // path): the spawn spec is `nu <author.nu>`, pipelines run untouched.
@@ -152,7 +152,7 @@ async fn nu_bgi_script_booth_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+        "/../../../effector/crates/actor-guest/examples/bgi_nu.nu"
     );
     engine
         .register(aura_booth::BoothType::script(
@@ -200,7 +200,7 @@ async fn python_script_booth() {
 }
 
 // A script booth naming a language this build does not carry is an error
-// value on the call path — the same validate-at-dispatch rule as probe.
+// value on the call path — the same validate-at-dispatch rule as effector.
 // (Carrier-free assertion: the unknown language never resolves a session.)
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
@@ -555,7 +555,7 @@ async fn bgi_nu_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../probe/crates/actor-guest/examples/bgi_nu.nu"
+        "/../../../effector/crates/actor-guest/examples/bgi_nu.nu"
     );
     engine
         .register(aura_booth::BoothType::script(

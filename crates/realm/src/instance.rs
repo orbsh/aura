@@ -29,8 +29,8 @@ impl Realm {
             idle_ttl: Duration::from_secs(30),
             cursor_ttl: DEFAULT_CURSOR_TTL,
             router: event::EventRouter::default(),
-            sessions: probe_runtime::carrier::session::Sessions::new(),
-            probes: HashMap::new(),
+            sessions: effector_runtime::carrier::session::Sessions::new(),
+            effectors: HashMap::new(),
             code_base_url: None,
             pending_remote: HashMap::new(),
             streams: HashMap::new(),
@@ -243,34 +243,34 @@ impl Realm {
             id,
         );
         let sessions = realm.sessions.clone();
-        let probes = realm.probes.clone();
-        let probes_base_url = realm.code_base_url.clone();
+        let effectors = realm.effectors.clone();
+        let effectors_base_url = realm.code_base_url.clone();
         drop(realm);
         let mut result = match body {
             aura_booth::Body::RemoteProbe { node_alias, language, source, encoding } => {
-                // Remote probe execution (Phase 3): find the probe's live
+                // Remote effector execution (Phase 3): find the effector's live
                 // outbound connection, send Frame::Call (inline payload),
-                // await the correlated reply. The probe's resident
+                // await the correlated reply. The effector's resident
                 // sessions own the VM; no ctx bridge crosses the wire yet
                 // (host functions over WS arrive with the frame path).
-                let Some(conn) = probes.get(&node_alias) else {
+                let Some(conn) = effectors.get(&node_alias) else {
                     let _ = job
                         .reply
-                        .send(Err(anyhow::anyhow!("probe '{node_alias}' not connected")));
+                        .send(Err(anyhow::anyhow!("effector '{node_alias}' not connected")));
                     return;
                 };
                 // Code travels by reference (ADR-0027): the bytes were
                 // stored under their hash at registration; the frame
-                // carries the address the probe fetches and verifies.
+                // carries the address the effector fetches and verifies.
                 let sha = crate::meta::code_hash(&source);
-                let code = match probes_base_url {
-                    Some(base) => probe_protocol::CodeRef {
+                let code = match effectors_base_url {
+                    Some(base) => effector_protocol::CodeRef {
                         url: format!("{}/{}", base.trim_end_matches('/'), crate::meta::code_hex(&sha)),
                         sha256: crate::meta::code_hex(&sha),
                     },
                     None => {
                         let _ = job.reply.send(Err(anyhow::anyhow!(
-                            "remote probe '{node_alias}': no code_base_url configured \
+                            "remote effector '{node_alias}': no code_base_url configured \
                              (ADR-0027 — code is content-addressed; set node {{ code_base_url }})"
                         )));
                         return;
@@ -284,7 +284,7 @@ impl Realm {
                     RemotePending { reply: tx, instance: id.clone() },
                 );
                 // Residency identity = this booth INSTANCE (type/key), not the handler:
-                // two instances of one remote type must never share the probe's
+                // two instances of one remote type must never share the effector's
                 // resident runtime, and every handler of one instance must.
                 // `entry` is the handler the call addresses in the delivered code.
                 // Session key format (ADR-0042): `{type}/{key}` with the
@@ -295,11 +295,11 @@ impl Realm {
                 // vocabulary — every dispatch job crosses the wire as a
                 // stream op (invoke is a Start whose reply is terminal).
                 let kind = match job.kind {
-                    aura_booth::JobKind::Start => probe_protocol::CallKind::IterateStart,
-                    aura_booth::JobKind::Next => probe_protocol::CallKind::IterateNext,
-                    aura_booth::JobKind::Dispose => probe_protocol::CallKind::IterateDispose,
+                    aura_booth::JobKind::Start => effector_protocol::CallKind::IterateStart,
+                    aura_booth::JobKind::Next => effector_protocol::CallKind::IterateNext,
+                    aura_booth::JobKind::Dispose => effector_protocol::CallKind::IterateDispose,
                 };
-                let call = probe_protocol::ToolCall {
+                let call = effector_protocol::ToolCall {
                     call_id: call_id.clone(),
                     kind,
                     stream: Some(job.stream.clone()),
@@ -312,13 +312,13 @@ impl Realm {
                     args: job.args.clone(),
                     code,
                 };
-                let result = match conn.sender.send(probe_protocol::Frame::Call(call)) {
+                let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
                     Ok(()) => match rx.await {
                         Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
-                        Err(_) => Err(anyhow::anyhow!("probe '{node_alias}' dropped the call")),
+                        Err(_) => Err(anyhow::anyhow!("effector '{node_alias}' dropped the call")),
                     },
-                    Err(_) => Err(anyhow::anyhow!("probe '{node_alias}' connection closed")),
+                    Err(_) => Err(anyhow::anyhow!("effector '{node_alias}' connection closed")),
                 };
                 result
             }
@@ -368,7 +368,7 @@ impl Realm {
                     // (realm-prefixed [realm][ns][slot]...).
                     let storage = realm_plan.as_ref().map(|plan| {
                         use okm_core::storage::VirtualStorage;
-                        use probe_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
+                        use effector_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
                         let store = realm_mq.clone();
                         let engine = std::sync::Arc::new(StorageEngineFns {
                             put: std::sync::Arc::new(move |k, v| store.put(k, v)),
@@ -399,7 +399,7 @@ impl Realm {
                             engine,
                         })
                     });
-                    Some(probe_runtime::carrier::HostBridge {
+                    Some(effector_runtime::carrier::HostBridge {
                         functions: fns,
                         storage,
                     })
@@ -420,7 +420,7 @@ impl Realm {
                         &language,
                         &source,
                         host.as_ref(),
-                        &probe_runtime::sandbox::SandboxPolicy::None,
+                        &effector_runtime::sandbox::SandboxPolicy::None,
                         // ADR-0037 §2: the declared codec drives the
                         // process carriers' channel; embedded carriers
                         // ignore it (no channel).
@@ -438,7 +438,7 @@ impl Realm {
         // derived from `done` (ADR-0036 §4):
         // - Start: a NON-terminal first reply gets the realm-minted
         //   stream id merged in (the consumer reads it back; no carrier
-        //   — session or remote probe — invents identities). A terminal
+        //   — session or remote effector — invents identities). A terminal
         //   first reply is the invoke shape: no id merged (no stream
         //   opened), and the registration unwinds immediately — mint
         //   and discard costs nothing measurable and keeps ONE code
@@ -685,15 +685,15 @@ impl Realm {
     }
 }
 
-/// Map the declared booth codec (aura-booth's probe-free enum) onto the
+/// Map the declared booth codec (aura-booth's effector-free enum) onto the
 /// runtime's form (ADR-0037 §2 — the two crates keep their own types,
 /// the values are the same wire pair "json"/"cbor").
 pub(crate) fn map_encoding(
     e: aura_booth::ChannelEncoding,
-) -> probe_protocol::ChannelEncoding {
+) -> effector_protocol::ChannelEncoding {
     match e {
-        aura_booth::ChannelEncoding::Json => probe_protocol::ChannelEncoding::Json,
-        aura_booth::ChannelEncoding::Cbor => probe_protocol::ChannelEncoding::Cbor,
+        aura_booth::ChannelEncoding::Json => effector_protocol::ChannelEncoding::Json,
+        aura_booth::ChannelEncoding::Cbor => effector_protocol::ChannelEncoding::Cbor,
     }
 }
 
@@ -703,8 +703,8 @@ pub(crate) fn map_encoding(
 /// carries handler + args: envelope-mode sessions re-invoke the handler
 /// each turn (the guard state is theirs, the args are the stream's
 /// start args), generator-mode sessions use only the stream id.
-pub(crate) fn stream_op(job: &Job) -> probe_runtime::carrier::session::StreamOp {
-    use probe_runtime::carrier::session::StreamOp;
+pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::session::StreamOp {
+    use effector_runtime::carrier::session::StreamOp;
     let stream_id = job.stream.clone();
     match job.kind {
         aura_booth::JobKind::Start => StreamOp::Start {

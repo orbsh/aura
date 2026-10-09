@@ -132,7 +132,7 @@ flat `ctx_state_*` names and switches to dot-namespaced groups —
 injected group set discoverable by introspection (the carrier
 enumerates the `ctx.*` groups it exposes; the schema can declare
 which groups an instance actually carries). New injected capabilities
-(metadata, probe targets) join as groups, not as flat-name accretion.
+(metadata, effector targets) join as groups, not as flat-name accretion.
 
 ### 4. What does NOT change
 

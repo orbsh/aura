@@ -54,6 +54,8 @@ def audit(args): ...
 - `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
 - `ctx_queue_depth(event)` → 本实例在该事件队列上的积压深度（mq-data 上实时 Count 计数的点读，不扫描——水位线 compaction 的 unfold 同步维护）；队列经持久路由注册表解析（与消费循环同源），本类型无路由的事件=错误值
 - `ctx_skip_to_head(event)` → 把本实例游标推到分区头部，丢弃陈旧积压（泄压阀；游标单调——被跳过的积压不会在下一轮 drain 复活；后续事件照常投递）
+- `ctx_timer_register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`（ADR-0016 §3b——命令式定时：从现在起 `at_ms` 毫秒后投递一个 `__on_timer` 队列作业，payload 携带 `tag`；唤醒时刻由摊位在运行时算出，非静态声明。内存层——随进程存活，durable 层待办）
+- `ctx_timer_cancel({"timer_id": n})` → 取消一个未触发的定时器；未知 id（已触发/已取消）是幂等 no-op，不是错误
 
 **语言能力差异**：
 

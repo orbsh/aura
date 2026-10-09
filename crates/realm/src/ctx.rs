@@ -104,6 +104,10 @@ impl Realm {
         // denominator uses), so the closure needs no realm deref and no
         // subscription list — only the store handle + this instance's id.
         store: &crate::mq::MqStore,
+        // The realm's timer handle (ADR-0016 §3b): ctx_timer_* arm
+        // Deliver entries directly — the handle is a cheap command-
+        // channel clone, no realm deref at call time.
+        timers: &crate::timer::TimerHandle,
     ) -> std::collections::BTreeMap<String, effector_runtime::carrier::HostFn> {
         use effector_runtime::carrier::HostFn;
 
@@ -244,6 +248,49 @@ impl Realm {
         // partition head, discarding the stale backlog. Both resolve the
         // instance's bound queue through the persisted route registry
         // (an unbound event = an error value, never a silent no-op).
+        // ADR-0016 §3b, landed: the imperative ctx.timer face. `register`
+        // arms a Deliver entry (fire = an `__on_timer` job carrying the
+        // tag); `cancel` is by id, idempotent (unknown = already fired/
+        // cancelled). Durability is NOT in this surface: the StateStore
+        // the ADR's durable-restore clause named was retired by ADR-0026
+        // §3 — timers live in the wheel for the process lifetime
+        // (recorded residual; a durable path re-enters with a durable
+        // registration table, not by reviving flat instance state).
+        {
+            let timers_register = timers.clone();
+            let target = ctx.self_id.clone();
+            fns.insert(
+                "ctx_timer_register".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    let obj = arg
+                        .as_object()
+                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register expects an object"))?;
+                    let at_ms = obj.get("at_ms").and_then(|v| v.as_u64())
+                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register: missing `at_ms` (delay from now, milliseconds)"))?;
+                    let tag = obj.get("tag").and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register: missing `tag` (delivered to the booth's __on_timer handler)"))?
+                        .to_string();
+                    let id = timers_register.register_deliver(
+                        target.clone(),
+                        tag,
+                        std::time::Duration::from_millis(at_ms),
+                    );
+                    Ok(serde_json::json!({ "timer_id": id.0 }))
+                }) as HostFn,
+            );
+            let timers_cancel = timers.clone();
+            fns.insert(
+                "ctx_timer_cancel".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    let id = arg
+                        .get("timer_id")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_cancel: missing `timer_id`"))?;
+                    timers_cancel.cancel(crate::timer::TimerId(id));
+                    Ok(serde_json::Value::Null)
+                }) as HostFn,
+            );
+        }
         {
             let store = store.clone();
             let booth_type = ctx.self_id.booth_type.clone();

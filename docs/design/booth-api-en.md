@@ -102,6 +102,15 @@ following — each takes one JSON argument and returns a JSON value:
   partition head, discarding the stale backlog (the relief valve;
   cursors are monotonic — a skipped backlog never re-surfaces on the
   next drain; events after the skip flow normally)
+- `ctx_timer_register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`
+  (ADR-0016 §3b — the imperative timer: delivers an `__on_timer` queue
+  job carrying the `tag` after `at_ms` milliseconds from now; the wake
+  time is computed at runtime by the booth, not declared statically.
+  Memory tier — lives for the process lifetime; the durable tier is a
+  recorded residual)
+- `ctx_timer_cancel({"timer_id": n})` → cancels a pending timer; an
+  unknown id (already fired / already cancelled) is an idempotent
+  no-op, not an error
 
 **Language capability matrix**:
 

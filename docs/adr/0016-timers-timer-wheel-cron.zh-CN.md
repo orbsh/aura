@@ -1,6 +1,6 @@
 # ADR-0016: 定时器——timer wheel 延迟投递与 cron 语义
 
-**状态**：Accepted（设计定案，实现未开始）
+**状态**：部分落地（2026-09-23：修订版 timer wheel——DelayQueue 驱动、两类条目、idle 从作业完成起算、watchdog；2026-10-09：命令式 `ctx_timer_register/cancel` 宿主函数——仅内存层，durable 残差见下；待办：durable 层、声明式 `lifecycle.cron`）
 **日期**：2026-09-22
 **英文版**：[0016-timers-timer-wheel-cron.md](0016-timers-timer-wheel-cron.md)
 

@@ -219,10 +219,12 @@ impl Realm {
         // ADR-0016 revised: the instance's pending idle-reclaim entry is
         // void the moment work arrives (work CANCELLED it — idempotent
         // cancel covers a timer that fired between tick and execution).
-        // The watchdog (max_exec budget) arms for the job's duration; the
+        // RECLAIM timers only: the instance's ctx.timer deliveries are
+        // its own scheduled wakes and stay armed across a job. The
+        // watchdog (max_exec budget) arms for the job's duration; the
         // max_exec is per-type, falling back to no watchdog when unset.
         let watchdog_ttl = realm.types.get(&id.booth_type).and_then(|a| a.max_exec);
-        realm.timers.cancel_target(id);
+        realm.timers.cancel_reclaim_target(id);
         if let Some(budget) = watchdog_ttl {
             realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Watchdog, budget);
         }
@@ -245,6 +247,7 @@ impl Realm {
         let sessions = realm.sessions.clone();
         let effectors = realm.effectors.clone();
         let effectors_base_url = realm.code_base_url.clone();
+        let realm_timers = realm.timers.clone();
         drop(realm);
         let mut result = match body {
             aura_booth::Body::RemoteProbe { node_alias, language, source, encoding } => {
@@ -358,7 +361,7 @@ impl Realm {
                     let wasm_raw = realm_plan
                         .as_ref()
                         .map(|p| (p.ns, realm_mq.clone()));
-                    let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq);
+                    let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq, &realm_timers);
                     // Python injection slot (ADR-0037 4.16a): the byte
                     // face rides the SAME realm-mq handle the ctx
                     // executor uses — `ns_raw` is the wasm plane
@@ -488,7 +491,7 @@ impl Realm {
         // meaning as the observation surface (last job arrival).
         {
             let mut realm = self_arc.lock().await;
-            realm.timers.cancel_target(id);
+            realm.timers.cancel_reclaim_target(id);
             let idle = realm
                 .types
                 .get(&id.booth_type)

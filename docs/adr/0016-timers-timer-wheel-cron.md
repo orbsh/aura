@@ -1,6 +1,6 @@
 # ADR-0016: Timers — Timer-Wheel Delayed Emit and Cron Semantics
 
-**Status**: Accepted (design; implementation pending)
+**Status**: Partially landed (2026-09-23: the revised wheel — DelayQueue driver, two entry kinds, idle-from-completion, watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only, see the durability residual below; pending: durable tier, declarative `lifecycle.cron`)
 **Date**: 2026-09-22
 **Chinese**: [0016-timers-timer-wheel-cron.zh-CN.md](0016-timers-timer-wheel-cron.zh-CN.md)
 

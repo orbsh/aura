@@ -57,7 +57,14 @@ enum Command {
     /// shared atomic so register is fully synchronous on the caller side.
     Register { id: TimerId, entry: Entry, at: Duration },
     Cancel(TimerId),
-    CancelTarget(Box<InstanceId>),
+    /// Reclaim entries only: the job-entry path voids pending idle/
+    /// watchdog timers (work arrived) but must NOT touch the instance's
+    /// delivery timers (ctx.timer registrations survive a job — they
+    /// are the instance's own scheduled wakes, not residency bookkeeping).
+    CancelReclaimTarget(Box<InstanceId>),
+    /// Every entry kind: eviction kills the instance outright (a dead
+    /// instance's pending deliveries must not fire either).
+    CancelAllTarget(Box<InstanceId>),
 }
 
 /// The caller-facing half: cheap clones, never blocks (unbounded command
@@ -114,10 +121,17 @@ impl TimerHandle {
         let _ = self.tx.send(Command::Cancel(id));
     }
 
-    /// Cancel every timer targeting an instance (eviction path: a dead
-    /// instance's pending idle/watchdog entries must not fire).
+    /// Cancel the instance's RECLAIM timers (the job-entry path: work
+    /// arrived, so the idle/watchdog bookkeeping is void — the ctx.timer
+    /// deliveries stay armed).
+    pub fn cancel_reclaim_target(&self, target: &InstanceId) {
+        let _ = self.tx.send(Command::CancelReclaimTarget(Box::new(target.clone())));
+    }
+
+    /// Cancel EVERY timer targeting an instance (eviction path: a dead
+    /// instance's pending deliveries must not fire either).
     pub fn cancel_target(&self, target: &InstanceId) {
-        let _ = self.tx.send(Command::CancelTarget(Box::new(target.clone())));
+        let _ = self.tx.send(Command::CancelAllTarget(Box::new(target.clone())));
     }
 }
 
@@ -200,7 +214,8 @@ impl TimerDriver {
                 self.index.insert(id, (key, entry));
             }
             Command::Cancel(id) => self.cancel(&id),
-            Command::CancelTarget(target) => self.cancel_target(&target),
+            Command::CancelReclaimTarget(target) => self.cancel_kind(&target, false),
+            Command::CancelAllTarget(target) => self.cancel_kind(&target, true),
         }
     }
 
@@ -210,11 +225,14 @@ impl TimerDriver {
         }
     }
 
-    fn cancel_target(&mut self, target: &InstanceId) {
+    /// Cancel the instance's timers: reclaim-only, or every kind.
+    fn cancel_kind(&mut self, target: &InstanceId, all: bool) {
         let ids: Vec<TimerId> = self
             .index
             .iter()
-            .filter(|(_, (_, e))| e.targets(target))
+            .filter(|(_, (_, e))| {
+                e.targets(target) && (all || matches!(e, Entry::Reclaim { .. }))
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in ids {

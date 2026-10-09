@@ -128,7 +128,7 @@ impl Realm {
                 let handler = obj.get("handler").and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `handler` (the function to call)"))?;
                 let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                let target = InstanceId { booth_type: ty.to_string(), key: key.to_string() };
+                let target = InstanceId { booth_type: ty.to_string(), key: aura_booth::InstanceKey::parse(key) };
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
@@ -159,7 +159,7 @@ impl Realm {
                             0 => IterateOp::Start {
                                 target: InstanceId {
                                     booth_type: gs("type").to_string(),
-                                    key: gs("key").to_string(),
+                                    key: aura_booth::InstanceKey::parse(gs("key")),
                                 },
                                 handler: gs("handler").to_string(),
                                 args: obj

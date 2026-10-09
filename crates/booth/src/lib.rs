@@ -99,13 +99,35 @@ pub struct BoothType {
     pub receives: Vec<ReceiveDecl>,
 }
 
-/// One event subscription: an event name (or wildcard pattern) + the
-/// instance key field it binds (empty = singleton consumer).
+/// One event subscription: an event name (or wildcard pattern) + HOW the
+/// target instances resolve (Phase 4.13: the three shapes are three
+/// mechanisms, discriminated here — never a sentinel mixing, ADR-0038 §3).
 #[derive(Clone, Debug)]
 pub struct ReceiveDecl {
     pub event: String,
-    pub key_field: String,
+    pub resolution: RouteResolution,
     pub wildcard: bool,
+}
+
+/// How an emit's target instances are resolved (event-flow.md §8.1/§8.2 —
+/// the terminal ruling, landed with Phase 4.13). The reference carries
+/// NAMES, never a cross-plane id: rows store facts, resolution lives with
+/// the schema owner.
+#[derive(Clone, Debug)]
+pub enum RouteResolution {
+    /// Key-less delivery: the type's singleton instance.
+    Singleton,
+    /// The payload field carries the instance key (exactly one value →
+    /// one instance; zero scan — the cheap shape for keyed routes).
+    Field(String),
+    /// An access-method reference: scan the collection's index with the
+    /// probe taken from `probe_field` — each hit row's primary key IS a
+    /// target instance key (naturally one-to-many). The collection's
+    /// primary key must be a SINGLE key field (ruled at landing: the
+    /// instance key is one String; a composite row key has no honest
+    /// string rendering, so multi-key collections are a registration
+    /// error, not a rendering convention).
+    Scan { collection: String, index: String, probe_field: String },
 }
 
 pub type Handler = dyn Fn(Ctx, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
@@ -152,12 +174,34 @@ impl BoothType {
         self
     }
 
-    /// Declare an event subscription on this type (exact event + instance
-    /// key field; empty key = singleton consumer).
+    /// Declare an event subscription binding the payload field that
+    /// carries the instance key (`Field` shape — the zero-scan form).
     pub fn on(mut self, event: impl Into<String>, key_field: impl Into<String>) -> Self {
         self.receives.push(ReceiveDecl {
             event: event.into(),
-            key_field: key_field.into(),
+            resolution: RouteResolution::Field(key_field.into()),
+            wildcard: false,
+        });
+        self
+    }
+
+    /// Declare a scan subscription (Phase 4.13): targets resolve by
+    /// scanning `index` over `collection` with the probe taken from the
+    /// payload's `probe_field` — one hit row per target, fan-out natural.
+    pub fn on_resolve(
+        mut self,
+        event: impl Into<String>,
+        collection: impl Into<String>,
+        index: impl Into<String>,
+        probe_field: impl Into<String>,
+    ) -> Self {
+        self.receives.push(ReceiveDecl {
+            event: event.into(),
+            resolution: RouteResolution::Scan {
+                collection: collection.into(),
+                index: index.into(),
+                probe_field: probe_field.into(),
+            },
             wildcard: false,
         });
         self
@@ -167,7 +211,7 @@ impl BoothType {
     pub fn on_wildcard(mut self, pattern: impl Into<String>) -> Self {
         self.receives.push(ReceiveDecl {
             event: pattern.into(),
-            key_field: String::new(),
+            resolution: RouteResolution::Singleton,
             wildcard: true,
         });
         self
@@ -241,7 +285,50 @@ pub struct Ctx {
 pub struct InstanceId {
     pub booth_type: String,
     /// Instance key: identity within the type (session_id, node_id, ...).
-    pub key: String,
+    /// A variant, never a string (ADR-0042): the singleton is a variant,
+    /// so no payload key can alias into it — `Named` values carry no
+    /// reservation at all.
+    pub key: InstanceKey,
+}
+
+/// The instance key's structured form (ADR-0042). Twin of the MQ plane's
+/// `mq::InstanceKey` slice marker — deliberately isomorphic (the slice
+/// value IS the instance key), a distinct type because the two live on
+/// different planes (MQ / call model).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum InstanceKey {
+    /// The type's singleton instance (at most one; needs no name).
+    Singleton,
+    /// A named instance — the routing value the payload carried.
+    Named(String),
+}
+
+impl InstanceKey {
+    /// The script/ctx-face rendering (ADR-0042): a named instance is its
+    /// key text; the singleton renders as the EMPTY string — it has no
+    /// name, and an empty string is documented rather than a reserved
+    /// literal. The inverse is `InstanceKey::parse`.
+    pub fn render(&self) -> &str {
+        match self {
+            InstanceKey::Singleton => "",
+            InstanceKey::Named(k) => k,
+        }
+    }
+    /// The ctx-string inverse: `""` is the singleton, anything else is a
+    /// named instance. Round-trips with `render` by construction.
+    pub fn parse(s: &str) -> Self {
+        if s.is_empty() {
+            InstanceKey::Singleton
+        } else {
+            InstanceKey::Named(s.to_string())
+        }
+    }
+}
+
+impl std::fmt::Display for InstanceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.render())
+    }
 }
 
 /// Invoke capability: held privately, exposed via `Ctx::invoke`. Target

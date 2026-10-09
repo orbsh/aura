@@ -14,7 +14,7 @@
 //! the fn.
 #![cfg(feature = "wasmtime")]
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use aura_realm::Realm;
 use base64::Engine as _;
@@ -44,7 +44,7 @@ async fn wasm_booth_storage_end_to_end() {
     // The persisted definition carries the module's compiled schema.
     // Verified indirectly: the type resolved a store plan (a handler
     // that emits succeeds) and `ctx.interface_schema` returns the block.
-    let target = InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() };
+    let target = InstanceId { booth_type: "wasm-guest-counter".into(), key: InstanceKey::Named("u1".into()) };
 
     // bump via invoke: the handler does an in-module Collection RMW —
     // put_document/get_document cross the ctx store bridge.
@@ -71,12 +71,12 @@ async fn wasm_booth_storage_end_to_end() {
     // the collections; re-activation reads on demand).
     Realm::evict_instance(
         engine.realm.clone(),
-        &InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() },
+        &InstanceId { booth_type: "wasm-guest-counter".into(), key: InstanceKey::Named("u1".into()) },
     )
     .await;
     let v = engine
         .invoke(
-            InstanceId { booth_type: "wasm-guest-counter".into(), key: "u1".into() },
+            InstanceId { booth_type: "wasm-guest-counter".into(), key: InstanceKey::Named("u1".into()) },
             "peek",
             serde_json::json!(null),
         )
@@ -127,7 +127,7 @@ async fn wasm_consumer_pulls_python_generator_to_done() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "wasm-puller".into(), key: "w1".into() },
+            InstanceId { booth_type: "wasm-puller".into(), key: InstanceKey::Named("w1".into()) },
             "pull_all",
             serde_json::json!({
                 "type": "py-prod", "key": "p1", "handler": "tokens",
@@ -155,7 +155,7 @@ async fn wasm_consumer_break_disposes() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "wasm-puller".into(), key: "w1".into() },
+            InstanceId { booth_type: "wasm-puller".into(), key: InstanceKey::Named("w1".into()) },
             "pull_break",
             serde_json::json!({
                 "type": "py-prod", "key": "p1", "handler": "tokens",

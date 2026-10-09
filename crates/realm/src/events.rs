@@ -16,17 +16,8 @@
 use super::{Realm, SharedRealm};
 use crate::event::DeadReason;
 use crate::mq::{self, InstanceKey};
-use aura_booth::InstanceId;
-
-/// The instance a queue slice is delivered to: the slice's own value for a
-/// named partition (instance key = partition value), the type's singleton
-/// instance for a key-less one.
-fn instance_of(part: &InstanceKey) -> String {
-    match part {
-        InstanceKey::Singleton => mq::SINGLETON.to_string(),
-        InstanceKey::Named(key) => key.clone(),
-    }
-}
+use crate::store_exec;
+use aura_booth::{InstanceId, InstanceKey as BoothKey, RouteResolution};
 
 impl Realm {
     pub async fn emit(
@@ -54,48 +45,94 @@ impl Realm {
         // so every subscriber's cursor exists before the message lands.
         let mut targets: Vec<InstanceKey> = Vec::new();
         for route in routes {
-            // Queue identity: @on-declared key → per-(event, partition); no
-            // key → per-event singleton queue. The key comes from the event
-            // data (wiki §5.4), not the emitter, and the slice is a
-            // STRUCTURAL marker (ADR-0039 §1) — the singleton never enters
-            // the name dictionary, so no payload key can alias into it.
-            let part = if route.instance_key_field.is_empty() {
-                InstanceKey::Singleton
-            } else {
-                match data.get(&route.instance_key_field).and_then(|v| v.as_str()) {
-                    Some(key) => InstanceKey::Named(key.to_string()),
-                    // ADR-0038 §4: a matched route whose declared key field
-                    // is absent (or is not a string) is a MALFORMED event —
-                    // not a delivery to some fallback instance. It reaches
-                    // nobody, so it is recorded: the same class as a
-                    // zero-target scan.
-                    None => {
+            // Queue identity: the route's resolution produces the slice set
+            // (Phase 4.13 — three mechanisms, discriminated at the row
+            // layer). The slice is a STRUCTURAL marker (ADR-0039 §1) — the
+            // singleton never enters the name dictionary, so no payload key
+            // can alias into it; and the instance key is the variant
+            // (ADR-0042), not a string round trip.
+            let slices: Vec<InstanceKey> = match &route.resolution {
+                RouteResolution::Singleton => vec![InstanceKey::Singleton],
+                RouteResolution::Field(field) => {
+                    match data.get(field).and_then(|v| v.as_str()) {
+                        Some(key) if !key.is_empty() => {
+                            vec![InstanceKey::Named(key.to_string())]
+                        }
+                        // ADR-0038 §4: a matched route whose declared key field
+                        // is absent (or is not a non-empty string) is a MALFORMED
+                        // event — not a delivery to some fallback instance. It
+                        // reaches nobody, so it is recorded: the same class as a
+                        // zero-target scan. (Empty = the singleton's ctx
+                        // rendering, ADR-0042 — a named instance's key is
+                        // non-empty by the route rule.)
+                        _ => {
+                            let mut realm = self_arc.lock().await;
+                            realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
+                            continue;
+                        }
+                    }
+                }
+                RouteResolution::Scan { collection, index, probe_field } => {
+                    // The probe comes from the payload; missing = malformed
+                    // (the same class as a missing key field). The scan
+                    // itself resolves against the OWNING TYPE's plan —
+                    // zero hits is a legitimate empty fan-out (delivers
+                    // nowhere, no dead entry: append per slice is a
+                    // backlog write, and there is no slice to write).
+                    let Some(probe) = data.get(probe_field) else {
                         let mut realm = self_arc.lock().await;
                         realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
                         continue;
+                    };
+                    let plan = {
+                        let realm = self_arc.lock().await;
+                        realm.plan_of(&route.booth_type).cloned()
+                    };
+                    let Some(plan) = plan else {
+                        let mut realm = self_arc.lock().await;
+                        realm.dead_events.push(event, data.clone(), DeadReason::NoRoute);
+                        continue;
+                    };
+                    match store_exec::resolve_scan_targets(&self_arc.lock().await.mq, &plan, collection, index, probe) {
+                        Ok(rows) => rows.into_iter().map(InstanceKey::Named).collect(),
+                        Err(e) => {
+                            // A broken reference (undeclared collection/index)
+                            // is a registration fault, as observable as no
+                            // route: recorded, never silent.
+                            eprintln!("scan resolve failed for {event}: {e}");
+                            let mut realm = self_arc.lock().await;
+                            realm.dead_events.push(event, data.clone(), DeadReason::NoRoute);
+                            continue;
+                        }
                     }
                 }
             };
-            // Virtual-booth activation: emitting to an instance that has
-            // never run activates it first, so its @on subscriptions bind
-            // before the event lands in the queue.
-            let target = InstanceId {
-                booth_type: route.booth_type.clone(),
-                key: instance_of(&part),
-            };
-            {
-                let realm = self_arc.lock().await;
-                if !realm.instances.contains_key(&(route.booth_type.clone(), target.key.clone())) {
-                    drop(realm);
-                    let mut r = self_arc.lock().await;
-                    r.instance(self_arc.clone(), &target).await?;
+            for part in slices {
+                // Virtual-booth activation: emitting to an instance that has
+                // never run activates it first, so its @on subscriptions bind
+                // before the event lands in the queue. The target's key IS
+                // the slice value (the instance key = the resolved variant).
+                let target = InstanceId {
+                    booth_type: route.booth_type.clone(),
+                    key: match &part {
+                        InstanceKey::Singleton => BoothKey::Singleton,
+                        InstanceKey::Named(k) => BoothKey::Named(k.clone()),
+                    },
+                };
+                {
+                    let realm = self_arc.lock().await;
+                    if !realm.instances.contains_key(&(route.booth_type.clone(), target.key.clone())) {
+                        drop(realm);
+                        let mut r = self_arc.lock().await;
+                        r.instance(self_arc.clone(), &target).await?;
+                    }
                 }
-            }
-            // Queue identity is the CONCRETE event name — for a wildcard
-            // route that is the emitted name (route.event is the pattern);
-            // one row per concrete event per partition, N cursors fan out.
-            if !targets.contains(&part) {
-                targets.push(part);
+                // Queue identity is the CONCRETE event name — for a wildcard
+                // route that is the emitted name (route.event is the pattern);
+                // one row per concrete event per partition, N cursors fan out.
+                if !targets.contains(&part) {
+                    targets.push(part);
+                }
             }
         }
         for part in targets {

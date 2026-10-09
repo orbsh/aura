@@ -10,7 +10,7 @@
 //! by the spawn declaration, not by new realm machinery; this file locks
 //! both citizenships plus the statelessness boundary.
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 
 fn bin(name: &str) -> String {
@@ -35,7 +35,7 @@ async fn bgi_booth_invoke() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: "k1".into() },
+            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k1".into()) },
             "echo",
             serde_json::json!({ "x": 1 }),
         )
@@ -47,7 +47,7 @@ async fn bgi_booth_invoke() {
     // call must not cold-start — the registry key is type/key identity).
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: "k1".into() },
+            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k1".into()) },
             "echo",
             serde_json::json!({ "y": 2 }),
         )
@@ -81,7 +81,7 @@ def handle(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: "k2".into() },
+            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k2".into()) },
             "ctx_round_trip",
             serde_json::json!({
                 "type": "py-target", "key": "p1", "handler": "handle",
@@ -105,7 +105,7 @@ async fn bgi_booth_iterate_through_realm() {
         .unwrap();
 
     let realm = engine.realm.clone();
-    let target = InstanceId { booth_type: "bin-prod".into(), key: "p1".into() };
+    let target = InstanceId { booth_type: "bin-prod".into(), key: InstanceKey::Named("p1".into()) };
     let mut items = Vec::new();
     let mut sid: Option<String> = None;
     loop {
@@ -150,7 +150,7 @@ async fn bgi_booth_eviction_reaps_the_child() {
         )
         .await
         .unwrap();
-    let target = InstanceId { booth_type: "bin-echo".into(), key: "k3".into() };
+    let target = InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k3".into()) };
     engine.invoke(target.clone(), "echo", serde_json::json!(1)).await.unwrap();
     assert!(engine.realm.lock().await.is_resident(&target));
 
@@ -178,7 +178,7 @@ async fn exec_oneshot_booth_through_realm() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-shot".into(), key: "s1".into() },
+            InstanceId { booth_type: "bin-shot".into(), key: InstanceKey::Named("s1".into()) },
             "echo",
             serde_json::json!({ "now": 1 }),
         )
@@ -195,7 +195,7 @@ async fn exec_oneshot_booth_through_realm() {
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
-            target: InstanceId { booth_type: "bin-shot".into(), key: "s1".into() },
+            target: InstanceId { booth_type: "bin-shot".into(), key: InstanceKey::Named("s1".into()) },
             handler: "count".into(),
             args: serde_json::json!({ "total": 2 }),
         },
@@ -251,7 +251,7 @@ async fn bgi_booth_store_emit_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-store".into(), key: "s1".into() },
+            InstanceId { booth_type: "bin-store".into(), key: InstanceKey::Named("s1".into()) },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",
@@ -297,7 +297,7 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "nu-store".into(), key: "s1".into() },
+            InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s1".into()) },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",
@@ -317,11 +317,11 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
     // — the count guard lives in the child's $env (the PTY carrier's
     // $env rule, now without the PTY).
     let c1 = engine
-        .invoke(InstanceId { booth_type: "nu-store".into(), key: "s2".into() }, "count", serde_json::json!({}))
+        .invoke(InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s2".into()) }, "count", serde_json::json!({}))
         .await
         .unwrap();
     let c2 = engine
-        .invoke(InstanceId { booth_type: "nu-store".into(), key: "s2".into() }, "count", serde_json::json!({}))
+        .invoke(InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s2".into()) }, "count", serde_json::json!({}))
         .await
         .unwrap();
     assert_eq!((c1["count"].as_u64(), c2["count"].as_u64()), (Some(1), Some(2)),
@@ -352,7 +352,7 @@ async fn bgi_cbor_booth_store_emit_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-store-cbor".into(), key: "s1".into() },
+            InstanceId { booth_type: "bin-store-cbor".into(), key: InstanceKey::Named("s1".into()) },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",

@@ -7,7 +7,7 @@
 
 #[cfg(feature = "python")]
 mod py_schema_tests {
-    use aura_booth::{BoothType, InstanceId};
+    use aura_booth::{BoothType, InstanceId, InstanceKey};
     use aura_engine::Engine;
 
     // Storage handlers receive host fns taking ONE JSON string; the
@@ -48,7 +48,7 @@ def read(args):
         // round trip through the type's declared collection.
         let out = engine
             .invoke(
-                InstanceId { booth_type: "py-counter".into(), key: "k".into() },
+                InstanceId { booth_type: "py-counter".into(), key: InstanceKey::Named("k".into()) },
                 "bump",
                 serde_json::json!({"user_id": "alice"}),
             )
@@ -60,7 +60,7 @@ def read(args):
         // output, not a store poke.
         let read = engine
             .invoke(
-                InstanceId { booth_type: "py-counter".into(), key: "k".into() },
+                InstanceId { booth_type: "py-counter".into(), key: InstanceKey::Named("k".into()) },
                 "read",
                 serde_json::json!({"user_id": "alice"}),
             )

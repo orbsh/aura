@@ -2,10 +2,10 @@
 //!
 //! Design (wiki §5): the event name IS the reference. Booths never address
 //! each other directly — `emit(name, data)` reaches whoever registered
-//! `on(name)`; the instance key is extracted from event data, not from
+//! `on(name)`; the instance key is resolved from event data, not from
 //! the emitter's identity. Two routing layers:
 //!
-//! - exact: event name → routes (booth_type + instance_key_field)
+//! - exact: event name → routes (booth_type + resolution)
 //! - wildcard: prefix `foo.` → singleton instance routes
 //!
 //! ADR-0012: there is NO emits whitelist — the receiver set is a runtime
@@ -15,13 +15,16 @@
 
 use serde_json::Value;
 
-/// One registration: which booth type handles this event, and which field
-/// of the event payload carries the instance key.
+use aura_booth::RouteResolution;
+
+/// One registration: which booth type handles this event, and how the
+/// target instances resolve (the three Phase 4.13 shapes).
 #[derive(Clone, Debug)]
 pub struct Route {
     pub booth_type: String,
-    /// Field name in the event payload; empty = singleton instance.
-    pub instance_key_field: String,
+    /// How the emit's targets are resolved (singleton / payload field /
+    /// access-method scan).
+    pub resolution: RouteResolution,
     /// The event name as the handler sees it (kept so multi-event booths
     /// can dispatch; script booths receive a map keyed by event name once
     /// Phase 2.5 lands).
@@ -42,11 +45,33 @@ use std::collections::HashMap;
 
 impl EventRouter {
     /// Register a precise subscription: `on("order_created", key="user_id")`.
-    pub fn on(&mut self, event: impl Into<String>, booth_type: &str, instance_key_field: &str) {
+    pub fn on(&mut self, event: impl Into<String>, booth_type: &str, key_field: impl Into<String>) {
         let name = event.into();
         self.exact.entry(name.clone()).or_default().push(Route {
             booth_type: booth_type.into(),
-            instance_key_field: instance_key_field.into(),
+            resolution: RouteResolution::Field(key_field.into()),
+            event: name,
+        });
+    }
+
+    /// Register a scan subscription (Phase 4.13): targets come from an
+    /// access-method scan over the type's own storage.
+    pub fn on_resolve(
+        &mut self,
+        event: impl Into<String>,
+        booth_type: &str,
+        collection: impl Into<String>,
+        index: impl Into<String>,
+        probe_field: impl Into<String>,
+    ) {
+        let name = event.into();
+        self.exact.entry(name.clone()).or_default().push(Route {
+            booth_type: booth_type.into(),
+            resolution: RouteResolution::Scan {
+                collection: collection.into(),
+                index: index.into(),
+                probe_field: probe_field.into(),
+            },
             event: name,
         });
     }
@@ -59,7 +84,7 @@ impl EventRouter {
             prefix,
             Route {
                 booth_type: booth_type.into(),
-                instance_key_field: String::new(),
+                resolution: RouteResolution::Singleton,
                 event: pattern.to_string(),
             },
         ));

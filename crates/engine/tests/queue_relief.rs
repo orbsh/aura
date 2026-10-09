@@ -12,15 +12,14 @@
 //! this test proves the bridge reaches them from a script and that the
 //! handler's read agrees with the store's.
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey as BKey};
 use aura_engine::Engine;
-use aura_realm::mq::InstanceKey;
 use aura_realm::{mq, Realm};
 
 /// A keyed slice (the script's `(on "tick" "user_id")` resolves the
 /// payload's user_id into a named partition).
-fn named(key: &str) -> InstanceKey {
-    InstanceKey::Named(key.to_string())
+fn named(key: &str) -> aura_realm::mq::InstanceKey {
+    aura_realm::mq::InstanceKey::Named(key.to_string())
 }
 
 fn script() -> &'static str {
@@ -33,7 +32,7 @@ fn script() -> &'static str {
 }
 
 fn valve() -> InstanceId {
-    InstanceId { booth_type: "valve".into(), key: "k1".into() }
+    InstanceId { booth_type: "valve".into(), key: BKey::Named("k1".into()) }
 }
 
 #[tokio::test]

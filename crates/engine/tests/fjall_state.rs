@@ -6,7 +6,7 @@
 
 #[cfg(feature = "fjall")]
 mod fjall_tests {
-    use aura_booth::{BoothType, InstanceId};
+    use aura_booth::{BoothType, InstanceId, InstanceKey};
     use aura_config::{Engine as EngineKind, EngineConfig};
     use aura_engine::Engine;
 
@@ -69,7 +69,7 @@ mod fjall_tests {
         {
             let engine = Engine::start(&fjall_config(dir.path())).await.unwrap();
             engine.register(counter()).await.unwrap();
-            let target = InstanceId { booth_type: "counter".into(), key: "k".into() };
+            let target = InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) };
             engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
             engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
         } // Engine dropped — process-restart semantics.
@@ -80,7 +80,7 @@ mod fjall_tests {
         engine.register(counter()).await.unwrap();
         let out = engine
             .invoke(
-                InstanceId { booth_type: "counter".into(), key: "k".into() },
+                InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) },
                 "execute",
                 serde_json::json!(null),
             )

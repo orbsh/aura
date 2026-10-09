@@ -35,8 +35,9 @@ pub const DEFAULT_CURSOR_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 pub struct Realm {
     /// Registered booth types by name.
     types: HashMap<String, BoothType>,
-    /// Live instances by (type, key).
-    instances: HashMap<(String, String), Instance>,
+    /// Live instances by (type, key) — the key is the call-model variant
+    /// (ADR-0042), never a string.
+    instances: HashMap<(String, aura_booth::InstanceKey), Instance>,
     /// Queue capacity per instance.
     queue_capacity: usize,
     /// The mq byte engine (ADR-0018 step 1): the event-queue tables bind

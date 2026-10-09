@@ -186,6 +186,74 @@ fn map_to_json(m: &ValueMap) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
+/// Resolve a scan route's targets (Phase 4.13, event-flow.md §8.1): the
+/// probe comes from the event payload, the reference (collection/index)
+/// from the route row — resolved against the OWNING TYPE's plan (the
+/// 4.16 DynamicCollection face; the scan path is free). Each hit row's
+/// primary key IS a target instance key. The collection's primary key
+/// must be a SINGLE key field — the instance key is one String, a
+/// composite row key has no honest rendering, so multi-key collections
+/// are a named error at resolve time (the registration surface should
+/// reject them first; this is the enforced backstop).
+pub fn resolve_scan_targets(
+    store: &MqStore,
+    plan: &StorePlan,
+    collection: &str,
+    index: &str,
+    probe: &serde_json::Value,
+) -> Result<Vec<String>, String> {
+    let schema = plan.collections.get(collection).ok_or_else(|| {
+        format!("resolve: collection `{collection}` is not declared by this type")
+    })?;
+    if schema.key_fields.len() != 1 {
+        return Err(format!(
+            "resolve: collection `{collection}` has a {}-field primary key; scan routes take a single-key collection",
+            schema.key_fields.len()
+        ));
+    }
+    let key_field = &schema.key_fields[0].name;
+    let specs = INDEX_SPECS.lock().unwrap();
+    let am = specs.get(&(collection.to_string(), index.to_string())).ok_or_else(|| {
+        format!("resolve: index `{index}` is not declared on collection `{collection}`")
+    })?.access_method();
+    drop(specs);
+    let mut key_values = ValueMap::new();
+    key_values.insert(am.fields[0].clone(), json_to_value(probe).map_err(|e| format!("resolve: probe: {e}"))?);
+    let encoded = okm_dynamic::encode_fields(schema, &am.fields, &key_values)
+        .map_err(|e| format!("resolve: probe encode: {e}"))?;
+    let ns_prefix = plan.ns.to_be_bytes().to_vec();
+    let rows = okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)
+        .map_err(|e| format!("resolve: scan: {e}"))?;
+    // Each hit's primary key map → the instance key string. Single key
+    // field, so exactly one entry; rendered in its canonical string form.
+    rows.into_iter()
+        .map(|pk| {
+            let v = pk.get(key_field).ok_or_else(|| format!("resolve: hit row key missing `{key_field}`"))?;
+            Ok(value_to_key_string(v))
+        })
+        .collect()
+}
+
+/// The canonical string form of a key-field value (U64 → decimal, string →
+/// itself, bytes → hex). Scan routes need the row key as the instance-key
+/// String; this is the single rendering rule (single-key collections only).
+fn value_to_key_string(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.clone(),
+        Value::U8(x) => x.to_string(),
+        Value::U16(x) => x.to_string(),
+        Value::U32(x) => x.to_string(),
+        Value::U64(x) => x.to_string(),
+        Value::I64(x) => x.to_string(),
+        Value::F64(x) => x.to_string(),
+        Value::Bool(x) => x.to_string(),
+        Value::Bytes(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
+        // Non-scalar key fields are rejected by the schema's fixed-width
+        // key encoding long before this point; Null cannot be a key.
+        _ => String::new(),
+    }
+}
+
 /// Execute one op against the type's declared collections.
 pub fn execute(
     store: &MqStore,

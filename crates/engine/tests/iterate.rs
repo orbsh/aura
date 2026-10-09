@@ -4,7 +4,7 @@
 //! Every pull is one hot call riding the existing machinery — these
 //! tests assert the delivery shape, not a new queue.
 
-use aura_booth::{BoothType, Body, InstanceId};
+use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ async fn python_generator_to_python_consumer() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: "c1".into() },
+            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c"] }),
         )
@@ -87,7 +87,7 @@ async fn break_sends_dispose() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: "c1".into() },
+            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c"] }),
         )
@@ -171,7 +171,7 @@ def consume(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: "c1".into() },
+            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
             "consume",
             serde_json::json!({}),
         )
@@ -218,7 +218,7 @@ async fn steel_envelope_producer() {
         .unwrap();
 
     let realm = engine.realm.clone();
-    let target = InstanceId { booth_type: "steel-prod".into(), key: "n1".into() };
+    let target = InstanceId { booth_type: "steel-prod".into(), key: InstanceKey::Named("n1".into()) };
     let mut items = Vec::new();
     let mut stream_id: Option<String> = None;
     loop {
@@ -283,7 +283,7 @@ async fn rust_body_iterate_is_error_value() {
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
-            target: InstanceId { booth_type: "rust-prod".into(), key: "r1".into() },
+            target: InstanceId { booth_type: "rust-prod".into(), key: InstanceKey::Named("r1".into()) },
             handler: "whatever".into(),
             args: serde_json::json!({}),
         },

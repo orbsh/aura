@@ -5,7 +5,7 @@
 //! never replays.
 
 use aura_booth::call::{CallId, CallSpec};
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ async fn hot_call_parks_and_returns() {
     engine.register(echo()).await.unwrap();
     let waited = engine
         .call(
-            InstanceId { booth_type: "echo".into(), key: "a".into() },
+            InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("a".into()) },
                 "execute",
             serde_json::json!({"hot": true}),
         )
@@ -71,7 +71,7 @@ async fn hot_timeout_is_failure_value() {
 
     let err = engine
         .call(
-            InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
+            InstanceId { booth_type: "slow_echo".into(), key: InstanceKey::Named("s".into()) },
                 "slow",
             serde_json::json!(null),
         )
@@ -102,7 +102,7 @@ async fn cold_call_returns_pending_without_parking() {
     let started = std::time::Instant::now();
     let waited = engine
         .call(
-            InstanceId { booth_type: "approval".into(), key: "human".into() },
+            InstanceId { booth_type: "approval".into(), key: InstanceKey::Named("human".into()) },
                 "execute",
             serde_json::json!({"ask": "allow rm -rf?"}),
         )
@@ -151,7 +151,7 @@ async fn deadline_scan_fails_expired_hot_calls() {
     // Fire without awaiting: the call is in-flight past its deadline.
     let slot = engine
         .call(
-            InstanceId { booth_type: "slow_echo".into(), key: "s".into() },
+            InstanceId { booth_type: "slow_echo".into(), key: InstanceKey::Named("s".into()) },
                 "slow",
             serde_json::json!(null),
         )

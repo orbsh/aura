@@ -3,14 +3,13 @@
 //! delivery to the singleton instance (ADR-0038 §1), the dead ring as the
 //! Realm boundary (ADR-0012 + ADR-0038 §4).
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey as BKey};
 use aura_engine::Engine;
-use aura_realm::mq::InstanceKey;
 use aura_realm::Realm;
 
 /// A keyed slice (what a route with a key field resolves to).
-fn named(key: &str) -> InstanceKey {
-    InstanceKey::Named(key.to_string())
+fn named(key: &str) -> aura_realm::mq::InstanceKey {
+    aura_realm::mq::InstanceKey::Named(key.to_string())
 }
 
 // Steel counter (ADR-0026): per-user count into the type's declared
@@ -88,7 +87,7 @@ async fn exact_route_instance_key_from_event_data() {
     let read = async |uid: &str| {
         engine
             .invoke(
-                InstanceId { booth_type: "cart".into(), key: format!("cart/{uid}") },
+                InstanceId { booth_type: "cart".into(), key: BKey::Named(format!("cart/{uid}")) },
                 "count",
                 serde_json::json!({ "user_id": uid }),
             )
@@ -120,7 +119,7 @@ async fn wildcard_route_goes_to_singleton() {
 
     let count = engine
         .invoke(
-            InstanceId { booth_type: "audit".into(), key: "__singleton__".into() },
+            InstanceId { booth_type: "audit".into(), key: BKey::Named("__singleton__".into()) },
             "count",
             serde_json::json!({ "user_id": "u1" }),
         )
@@ -186,7 +185,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
     // Exact: keyed instance got it.
     assert_eq!(
         engine.invoke(
-            InstanceId { booth_type: "cart".into(), key: "alice".into() },
+            InstanceId { booth_type: "cart".into(), key: BKey::Named("alice".into()) },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -195,7 +194,7 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
     // event's own user_id — same key the exact-route instance wrote).
     assert_eq!(
         engine.invoke(
-            InstanceId { booth_type: "stats".into(), key: "__singleton__".into() },
+            InstanceId { booth_type: "stats".into(), key: BKey::Named("__singleton__".into()) },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -213,11 +212,11 @@ async fn invoke_path_unaffected() {
         BoothType::script("echo", "steel", ECHO)
     ).await.unwrap();
     let out = engine
-        .invoke(InstanceId { booth_type: "echo".into(), key: "a".into() }, "execute", serde_json::json!({"x": 1}))
+        .invoke(InstanceId { booth_type: "echo".into(), key: BKey::Named("a".into()) }, "execute", serde_json::json!({"x": 1}))
         .await
         .unwrap();
     assert_eq!(out, serde_json::json!({"x": 1}));
-    let _ = InstanceId { booth_type: String::new(), key: String::new() }; // silence unused if refactors
+    let _ = InstanceId { booth_type: String::new(), key: aura_booth::InstanceKey::Singleton }; // silence unused if refactors
 }
 
 // ------------------------------------- Phase 4.5c (step 2: event queues) --
@@ -245,14 +244,14 @@ async fn one_event_multiple_subscriber_types() {
     // Both subscriber types received the same event, independently.
     assert_eq!(
         engine.invoke(
-            InstanceId { booth_type: "cart".into(), key: "alice".into() },
+            InstanceId { booth_type: "cart".into(), key: BKey::Named("alice".into()) },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
     );
     assert_eq!(
         engine.invoke(
-            InstanceId { booth_type: "stats".into(), key: "alice".into() },
+            InstanceId { booth_type: "stats".into(), key: BKey::Named("alice".into()) },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 1})
@@ -287,7 +286,7 @@ async fn multi_route_instance_drains_every_queue() {
     // per-user, so 2 means both handlers ran, not fan-out copies.
     assert_eq!(
         engine.invoke(
-            InstanceId { booth_type: "multi".into(), key: "alice".into() },
+            InstanceId { booth_type: "multi".into(), key: BKey::Named("alice".into()) },
             "count", serde_json::json!({ "user_id": "alice" }),
         ).await.unwrap(),
         serde_json::json!({"count": 2})
@@ -425,7 +424,7 @@ async fn wildcard_delivers_to_the_singleton_instance_only() {
     for key in ["alice", "bob"] {
         engine
             .invoke(
-                InstanceId { booth_type: "audit".into(), key: key.into() },
+                InstanceId { booth_type: "audit".into(), key: aura_booth::InstanceKey::Named(key.into()) },
                 "count",
                 serde_json::json!({ "user_id": key }),
             )
@@ -441,7 +440,7 @@ async fn wildcard_delivers_to_the_singleton_instance_only() {
     assert_eq!(
         engine
             .invoke(
-                InstanceId { booth_type: "audit".into(), key: "__singleton__".into() },
+                InstanceId { booth_type: "audit".into(), key: BKey::Named("__singleton__".into()) },
                 "count",
                 serde_json::json!({ "user_id": "u1" }),
             )
@@ -512,8 +511,8 @@ async fn expired_cursor_forfeits_its_backlog() {
     let realm = std::sync::Arc::new(tokio::sync::Mutex::new(Realm::default()));
     let vs = realm.lock().await.mq.clone();
     // Two registered types on one event: the denominator's members.
-    mq::route_put(&vs, "e", "cart", "user_id", false).unwrap();
-    mq::route_put(&vs, "e", "stats", "user_id", false).unwrap();
+    mq::route_put(&vs, "e", "cart", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
+    mq::route_put(&vs, "e", "stats", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
     let s1 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
     let s2 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
     mq::advance(&vs, "e", &named("u1"), "stats", s2).unwrap();

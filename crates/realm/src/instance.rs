@@ -75,17 +75,24 @@ impl Realm {
             let mut subs: Vec<(String, InstanceKey, bool)> = Vec::new();
             if let Some(_booth) = self.types.get(&id.booth_type) {
                 for route in self.router.routes_of(&id.booth_type) {
-                    let partition = if route.instance_key_field.is_empty() {
-                        if id.key != mq::SINGLETON {
-                            continue;
+                    let partition = match route.resolution {
+                        // ADR-0038 §1: a key-less route's queue is consumed
+                        // by the type's singleton instance only — variant
+                        // matching (ADR-0042), never a string compare.
+                        aura_booth::RouteResolution::Singleton => {
+                            if !matches!(id.key, aura_booth::InstanceKey::Singleton) {
+                                continue;
+                            }
+                            InstanceKey::Singleton
                         }
-                        InstanceKey::Singleton
-                    } else {
-                        // For keyed routes the partition value equals the
-                        // instance key only when the route derives the key
-                        // from the same field emit used — which it does by
-                        // construction (emit set key = data[field]).
-                        InstanceKey::Named(id.key.clone())
+                        // For keyed/scan routes the partition value equals
+                        // the instance key by construction (emit set key =
+                        // the resolved variant; a scan route's hit-row key
+                        // is the instance key it delivered to).
+                        aura_booth::RouteResolution::Field(_)
+                        | aura_booth::RouteResolution::Scan { .. } => {
+                            InstanceKey::Named(id.key.render().to_string())
+                        }
                     };
                     // The third element marks a wildcard subscription:
                     // route.event is a PATTERN, expanded to concrete names
@@ -280,6 +287,9 @@ impl Realm {
                 // two instances of one remote type must never share the probe's
                 // resident runtime, and every handler of one instance must.
                 // `entry` is the handler the call addresses in the delivered code.
+                // Session key format (ADR-0042): `{type}/{key}` with the
+                // singleton's key segment EMPTY (it has no name) — InstanceKey's
+                // Display renders Named(k) as k and Singleton as "".
                 let session = format!("{}/{}", id.booth_type, id.key);
                 // ADR-0036: the frame kind vocabulary is the stream
                 // vocabulary — every dispatch job crosses the wire as a
@@ -605,7 +615,7 @@ impl Realm {
                 .unwrap_or(default_ttl)
         };
         let mut evicted = Vec::new();
-        let keys: Vec<(String, String)> = self
+        let keys: Vec<(String, aura_booth::InstanceKey)> = self
             .instances
             .iter()
             .filter(|(k, inst)| {

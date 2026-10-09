@@ -63,13 +63,14 @@ fn partition_dictionary_is_a_proxied_vocabulary() {
     assert_eq!(mq::instance_key_id_of(&vs, "carol").unwrap(), None);
     assert_eq!(mq::instance_key_id_of(&vs, "alice").unwrap(), Some(a));
 
-    // A key whose literal text equals the singleton INSTANCE's name is just
-    // another partition — no aliasing into the singleton queue (the retired
-    // hash mapped that string to the reserved value, which let a keyed
+    // The retired sentinel is just another name (ADR-0042): a key whose
+    // literal text equals the old "__singleton__" marker is a NAMED
+    // instance — no aliasing into the singleton queue (the old sentinel
+    // mapped that string to the reserved value, which let a keyed
     // instance share the singleton's queue).
-    let odd = mq::instance_key_id(&vs, &named(mq::SINGLETON)).unwrap();
+    let odd = mq::instance_key_id(&vs, &named("__singleton__")).unwrap();
     assert_ne!(odd, mq::SINGLETON_KEY_ID);
-    assert_eq!(mq::instance_key_of(&vs, odd).unwrap().as_deref(), Some(mq::SINGLETON));
+    assert_eq!(mq::instance_key_of(&vs, odd).unwrap().as_deref(), Some("__singleton__"));
 }
 
 #[test]
@@ -91,16 +92,16 @@ fn event_route_registry_persists_and_scans_by_booth() {
     let vs = mq::MqStore::mem();
 
     // Register two subscribers on one event, one on another; one wildcard.
-    mq::route_put(&vs, "order.created", "cart", "user_id", false).unwrap();
-    mq::route_put(&vs, "order.created", "stats", "user_id", false).unwrap();
-    mq::route_put(&vs, "order.*", "audit", "", true).unwrap();
+    mq::route_put(&vs, "order.created", "cart", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
+    mq::route_put(&vs, "order.created", "stats", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
+    mq::route_put(&vs, "order.*", "audit", &aura_booth::RouteResolution::Singleton, true).unwrap();
     // Idempotent re-register (hot-swap re-declaration) overwrites, not duplicates.
-    mq::route_put(&vs, "order.created", "cart", "user_id", false).unwrap();
+    mq::route_put(&vs, "order.created", "cart", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
 
     // Forward lookup: every subscriber of one event.
     let subs = mq::routes_of_event(&vs, "order.created").unwrap();
     assert_eq!(subs.len(), 2, "two subscribers on the exact event: {subs:?}");
-    assert!(subs.iter().all(|(_, k, w)| k == "user_id" && !*w));
+    assert!(subs.iter().all(|(_, k, w)| matches!(k, aura_booth::RouteResolution::Field(f) if f == "user_id") && !*w));
 
     // Reverse lookup (by_booth index): one booth's full subscription set.
     let audit = mq::routes_of_booth(&vs, "audit").unwrap();
@@ -116,7 +117,7 @@ fn event_route_registry_persists_and_scans_by_booth() {
     // by being emitted or subscribed to (here: the exact route below), which
     // is what `booth_subscribes` resolves; an unknown name has no queue and no
     // cursor, so it answers false before any wildcard is consulted.
-    mq::route_put(&vs, "order.cancelled", "cart", "user_id", false).unwrap();
+    mq::route_put(&vs, "order.cancelled", "cart", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
     let audit_id = mq::booth_id_of(&vs, "audit").unwrap();
     assert!(mq::booth_subscribes(&vs, audit_id, "order.created").unwrap());
     assert!(mq::booth_subscribes(&vs, audit_id, "order.cancelled").unwrap());
@@ -140,11 +141,11 @@ fn routes_drop_booth_targets_only_its_own_rows() {
     let vs = mq::MqStore::mem();
     // event ids allocate in first-seen order: e1=1, e2=2, e3=3.
     // type ids: a=1, b=2, c=3.
-    mq::route_put(&vs, "e1", "a", "k", false).unwrap(); // (event 1, type 1)
-    mq::route_put(&vs, "e2", "a", "k", false).unwrap(); // (event 2, type 1)
-    mq::route_put(&vs, "e3", "a", "k", false).unwrap(); // (event 3, type 1)
-    mq::route_put(&vs, "e1", "b", "k", false).unwrap(); // (event 1, type 2)
-    mq::route_put(&vs, "e2", "c", "k", false).unwrap(); // (event 2, type 3)
+    mq::route_put(&vs, "e1", "a", &aura_booth::RouteResolution::Field("k".into()), false).unwrap(); // (event 1, type 1)
+    mq::route_put(&vs, "e2", "a", &aura_booth::RouteResolution::Field("k".into()), false).unwrap(); // (event 2, type 1)
+    mq::route_put(&vs, "e3", "a", &aura_booth::RouteResolution::Field("k".into()), false).unwrap(); // (event 3, type 1)
+    mq::route_put(&vs, "e1", "b", &aura_booth::RouteResolution::Field("k".into()), false).unwrap(); // (event 1, type 2)
+    mq::route_put(&vs, "e2", "c", &aura_booth::RouteResolution::Field("k".into()), false).unwrap(); // (event 2, type 3)
 
     // Drop booth "a" (id 1). The old scan would also hit rows whose
     // EVENT id == 1 (the (e1,b) row), wrongly deleting booth b's route.

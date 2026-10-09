@@ -2,7 +2,7 @@
 //! realm routes an invoke through the wire; the probe's resident session
 //! executes; the result round-trips.
 
-use aura_booth::{BoothType, InstanceId, Body};
+use aura_booth::{BoothType, InstanceId, InstanceKey, Body};
 use aura_engine::{Engine, probes};
 use std::time::Duration;
 
@@ -78,7 +78,7 @@ async fn remote_probe_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "remote-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "remote-counter".into(), key: InstanceKey::Named("k".into()) },
             "double",
             serde_json::json!({"n": 4}),
         )
@@ -114,7 +114,7 @@ async fn remote_probe_roundtrip() {
     assert!(gone, "dropped connection unregisters the node alias");
     let err = engine
         .invoke(
-            InstanceId { booth_type: "remote-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "remote-counter".into(), key: InstanceKey::Named("k".into()) },
             "double",
             serde_json::json!({"n": 1}),
         )
@@ -228,7 +228,7 @@ async fn remote_code_travels_as_reference() {
     }
     let out = engine
         .invoke(
-            InstanceId { booth_type: "ref-counter".into(), key: "k".into() },
+            InstanceId { booth_type: "ref-counter".into(), key: InstanceKey::Named("k".into()) },
             "double",
             serde_json::json!({"n": 21}),
         )
@@ -293,7 +293,7 @@ def tokens(args):
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let target = InstanceId { booth_type: "remote-prod".into(), key: "p1".into() };
+    let target = InstanceId { booth_type: "remote-prod".into(), key: InstanceKey::Named("p1".into()) };
     let mut got = Vec::new();
     let mut sid: Option<String> = None;
     loop {
@@ -395,7 +395,7 @@ def consume(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "remote-cons".into(), key: "c1".into() },
+            InstanceId { booth_type: "remote-cons".into(), key: InstanceKey::Named("c1".into()) },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c", "d"] }),
         )

@@ -189,11 +189,24 @@ pub struct EventRoute {
     /// Mirror of the key's type segment — index fields must be payload
     /// fields (the key is not one), so the by_booth scan reads this.
     pub booth_id: u32,
-    /// Empty = singleton subscription (no instance key); a wildcard
-    /// subscription carries the PREFIX here (matching is the emit path's
-    /// job) and `wildcard` is set.
+    /// HOW targets resolve (Phase 4.13, event-flow.md §8.2): 0 = singleton,
+    /// 1 = payload field, 2 = access-method scan. Three mechanisms,
+    /// discriminated at the row-structure layer — never sentinel mixing.
+    pub resolution: u8,
+    /// `resolution = 1`: the payload field carrying the instance key.
+    /// `resolution = 0`: empty.
     pub key_field: String,
+    /// `resolution = 2`: the access-method reference, stored as NAMES
+    /// (never a slot/ns number — position is not identity, ADR-0038 §3).
+    /// `resolution < 2`: empty.
+    pub collection: String,
+    /// `resolution = 2`: the index name. `resolution < 2`: empty.
+    pub index: String,
+    /// `resolution = 2`: the payload field supplying the scan probe.
+    /// `resolution < 2`: empty.
+    pub probe_field: String,
     /// 0 = exact, 1 = wildcard (okm FieldType has no Bool — u8 sentinel).
+    /// A wildcard row is always `resolution = 0` (singleton delivery).
     pub wildcard: u8,
 }
 
@@ -536,14 +549,9 @@ pub fn append(
 
 /// The reserved id for key-less delivery: wildcards and key-less `@on` slices.
 /// The registry issuer never produces 0, so the reservation is structural by
-/// construction (ADR-0039 §1). The singleton INSTANCE's own key is `SINGLETON`
-/// below — a name in the instance namespace, not this id.
+/// construction (ADR-0039 §1). The singleton INSTANCE's own key is the
+/// `InstanceKey::Singleton` VARIANT (aura_booth, ADR-0042) — not a string.
 pub const SINGLETON_KEY_ID: u32 = 0;
-
-/// The singleton INSTANCE's key (a name in the instance namespace, not an
-/// instance-key id): a key-less route's delivery target and the instance that
-/// consumes the singleton slice.
-pub const SINGLETON: &str = "__singleton__";
 
 /// The subscriber's cursor (0 = nothing consumed). The subscriber is the
 /// booth TYPE (ADR-0038 §2): one dictionary id, no participant name.
@@ -720,21 +728,28 @@ pub fn skip_to_head(
 // `routes_of` (activation binding) and the watermark denominator.
 // ---------------------------------------------------------------------------
 
-/// Persist one subscription: (event, booth TYPE) → key field declaration.
+/// Persist one subscription: (event, booth TYPE) → resolution declaration.
 /// Idempotent (a re-register overwrites the same row).
 pub fn route_put(
     store: &MqStore,
     event: &str,
     booth_type: &str,
-    key_field: &str,
+    resolution: &aura_booth::RouteResolution,
     is_wildcard: bool,
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
+    let (tag, key_field, collection, index, probe_field) = match resolution {
+        aura_booth::RouteResolution::Singleton => (0u8, String::new(), String::new(), String::new(), String::new()),
+        aura_booth::RouteResolution::Field(f) => (1u8, f.clone(), String::new(), String::new(), String::new()),
+        aura_booth::RouteResolution::Scan { collection, index, probe_field } => {
+            (2u8, String::new(), collection.clone(), index.clone(), probe_field.clone())
+        }
+    };
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     t.put(
         &EventRouteKey { event_id, booth_id },
-        &EventRoute { booth_id, key_field: key_field.to_string(), wildcard: u8::from(is_wildcard) },
+        &EventRoute { booth_id, resolution: tag, key_field, collection, index, probe_field, wildcard: u8::from(is_wildcard) },
     );
     Ok(())
 }
@@ -758,11 +773,11 @@ pub fn routes_drop_booth(store: &MqStore, booth_type: &str) -> anyhow::Result<()
     Ok(())
 }
 
-/// Every subscription row for one event: (booth_id, key_field, is_wildcard).
+/// Every subscription row for one event: (booth_id, resolution, is_wildcard).
 pub fn routes_of_event(
     store: &MqStore,
     event: &str,
-) -> anyhow::Result<Vec<(u32, String, bool)>> {
+) -> anyhow::Result<Vec<(u32, aura_booth::RouteResolution, bool)>> {
     let event_id = resolve_event_id(store, event)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut prefix = Vec::new();
@@ -780,27 +795,42 @@ pub fn routes_of_event(
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);
         if let Some(row) = t.get(&EventRouteKey { event_id, booth_id }) {
-            out.push((booth_id, row.key_field, row.wildcard != 0));
+            out.push((booth_id, row_resolution(&row), row.wildcard != 0));
         }
     }
     Ok(out)
 }
 
-/// Every subscription row for one booth type: (event_id, key_field,
+/// Every subscription row for one booth type: (event_id, resolution,
 /// is_wildcard). The activation binding's persistent `routes_of`.
 pub fn routes_of_booth(
     store: &MqStore,
     booth_type: &str,
-) -> anyhow::Result<Vec<(u32, String, bool)>> {
+) -> anyhow::Result<Vec<(u32, aura_booth::RouteResolution, bool)>> {
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut out = Vec::new();
     for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes()) {
         if let Some(row) = &hit.1 {
-            out.push((hit.0.decoded.event_id, row.key_field.clone(), row.wildcard != 0));
+            out.push((hit.0.decoded.event_id, row_resolution(row), row.wildcard != 0));
         }
     }
     Ok(out)
+}
+
+/// The row's resolution columns decoded back into the declaration enum
+/// (the inverse of `route_put`'s encoding; the u8 tag is the row-structure
+/// discriminator, the names ride their own columns).
+fn row_resolution(row: &EventRoute) -> aura_booth::RouteResolution {
+    match row.resolution {
+        1 => aura_booth::RouteResolution::Field(row.key_field.clone()),
+        2 => aura_booth::RouteResolution::Scan {
+            collection: row.collection.clone(),
+            index: row.index.clone(),
+            probe_field: row.probe_field.clone(),
+        },
+        _ => aura_booth::RouteResolution::Singleton,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -903,20 +933,20 @@ pub fn event_name_of(store: &MqStore, event_id: u32) -> anyhow::Result<Option<St
 /// watermark denominator and the consumer loop's binding use. An exact
 /// row matches by id; a wildcard row (the registry stores the PREFIX as
 /// its event name) matches when the concrete name starts with it. The
-/// returned slice is `InstanceKey::Singleton` for a key-less route and
-/// `InstanceKey::Named(instance_key)` for a keyed one (the emit path derives
-/// the partition from the same field, so subscriber and queue agree by
+/// returned slice is `Singleton` for a key-less route and
+/// `Named(instance_key)` for a keyed one (the emit path derives the
+/// partition from the same field, so subscriber and queue agree by
 /// construction). None = no route of this booth type binds the event.
 pub fn bound_instance_key(
     store: &MqStore,
     booth_type: &str,
-    instance_key: &str,
+    instance_key: &aura_booth::InstanceKey,
     event: &str,
 ) -> anyhow::Result<Option<InstanceKey>> {
     let Some(event_id) = event_id_of(store, event)? else {
         return Ok(None);
     };
-    for (rid, key_field, wildcard) in routes_of_booth(store, booth_type)? {
+    for (rid, resolution, wildcard) in routes_of_booth(store, booth_type)? {
         let matched = if rid == event_id {
             true
         } else if wildcard {
@@ -934,11 +964,17 @@ pub fn bound_instance_key(
             // ADR-0038 §1: a key-less route's queue is consumed by the
             // type's SINGLETON instance only — any other instance of the
             // type has no bound queue for it (the valve reports "no route"
-            // rather than aiming at a queue it does not consume).
-            if key_field.is_empty() {
-                return Ok((instance_key == SINGLETON).then_some(InstanceKey::Singleton));
+            // rather than aiming at a queue it does not consume). Variant
+            // matching, not a string comparison (ADR-0042).
+            match resolution {
+                aura_booth::RouteResolution::Singleton => {
+                    return Ok(matches!(instance_key, aura_booth::InstanceKey::Singleton)
+                        .then_some(InstanceKey::Singleton));
+                }
+                aura_booth::RouteResolution::Field(_) | aura_booth::RouteResolution::Scan { .. } => {
+                    return Ok(Some(InstanceKey::Named(instance_key.render().to_string())));
+                }
             }
-            return Ok(Some(InstanceKey::Named(instance_key.to_string())));
         }
     }
     Ok(None)

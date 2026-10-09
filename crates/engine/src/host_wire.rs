@@ -18,7 +18,8 @@ pub async fn resolve_host_call(
         HostOp::Invoke { target_type, target_key, handler, args } => {
             let target = InstanceId {
                 booth_type: target_type.clone(),
-                key: target_key.clone(),
+                // Wire string → variant (ADR-0042): "" is the singleton.
+                key: aura_booth::InstanceKey::parse(target_key),
             };
             // Unified call model: wait hot (script ctx_invoke semantics —
             // the probe blocks until the reply, same as in-process).
@@ -51,7 +52,7 @@ pub async fn resolve_host_call(
             let iterate_op = aura_booth::IterateOp::Start {
                 target: InstanceId {
                     booth_type: target_type.clone(),
-                    key: target_key.clone(),
+                    key: aura_booth::InstanceKey::parse(target_key),
                 },
                 handler: handler.clone(),
                 args: args.clone(),

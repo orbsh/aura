@@ -4,7 +4,7 @@
 //! 4.5a: the demo is a steel script booth — script source is the only
 //! public booth form; the Rust-closure form is gone.
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 
 const ECHO: &str = r#"
 (define (execute args)
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         .register(BoothType::script("echo", "steel", ECHO))
         .await?;
 
-    let target = InstanceId { booth_type: "echo".into(), key: "a1".into() };
+    let target = InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("a1".into()) };
     let result = engine.invoke(target, "execute", serde_json::json!({"hello": "aura"})).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
 
@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     let result = engine
         .invoke(
-            InstanceId { booth_type: "caller".into(), key: "c1".into() },
+            InstanceId { booth_type: "caller".into(), key: InstanceKey::Named("c1".into()) },
             "execute",
             serde_json::json!(null),
         )

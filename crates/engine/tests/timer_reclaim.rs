@@ -4,7 +4,7 @@
 //! and the execution watchdog (max_exec budget: expiry = evict). Rust
 //! bodies keep the tests carrier-independent (exact sleep control).
 
-use aura_booth::{BoothType, Body, InstanceId};
+use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,7 +41,7 @@ fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64
 }
 
 fn id(name: &str) -> InstanceId {
-    InstanceId { booth_type: name.into(), key: "k".into() }
+    InstanceId { booth_type: name.into(), key: InstanceKey::Named("k".into()) }
 }
 
 // Idle entry arms at job COMPLETION: after a job whose execution alone

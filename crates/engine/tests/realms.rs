@@ -4,7 +4,7 @@
 //! NamedRealm handle is bound at construction — cross-realm delivery is
 //! not expressible, not merely checked.
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use aura_realm::Realm;
 
@@ -73,7 +73,7 @@ async fn same_type_key_isolated_per_realm() {
     engine.register_in("alice", counter()).await;
     engine.register_in("bob", counter()).await;
 
-    let target = InstanceId { booth_type: "counter".into(), key: "k".into() };
+    let target = InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) };
     engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
     engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
     engine.call_in("bob", target.clone(), "execute", serde_json::json!({"user_id": "bob"})).await.unwrap();
@@ -128,7 +128,7 @@ async fn events_do_not_cross_realms() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let target = InstanceId { booth_type: "listener".into(), key: "u1".into() };
+    let target = InstanceId { booth_type: "listener".into(), key: InstanceKey::Named("u1".into()) };
     // Read back through the `count` handler (the booth's observable output).
     let read = |ns: String| {
         let engine_ns = engine.realm_set.clone();
@@ -164,7 +164,7 @@ async fn type_registered_in_one_realm_is_unknown_in_another() {
     let err = engine
         .call_in(
             "bob",
-            InstanceId { booth_type: "counter".into(), key: "k".into() },
+            InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) },
                 "execute",
             serde_json::json!(null),
         )

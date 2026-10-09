@@ -65,12 +65,31 @@ impl Realm {
             self.sessions.evict(&format!("{t}/{k}"));
         }
         for decl in &booth.receives {
-            if decl.wildcard {
-                self.router.on_wildcard(&decl.event, &booth.name);
-            } else {
-                self.router.on(decl.event.clone(), &booth.name, &decl.key_field);
+            match &decl.resolution {
+                aura_booth::RouteResolution::Scan { collection, index, probe_field }
+                    if !decl.wildcard =>
+                {
+                    self.router.on_resolve(
+                        decl.event.clone(),
+                        &booth.name,
+                        collection.clone(),
+                        index.clone(),
+                        probe_field.clone(),
+                    );
+                }
+                _ if decl.wildcard => self.router.on_wildcard(&decl.event, &booth.name),
+                aura_booth::RouteResolution::Singleton => {
+                    self.router.on(decl.event.clone(), &booth.name, "")
+                }
+                aura_booth::RouteResolution::Field(f) => {
+                    self.router.on(decl.event.clone(), &booth.name, f.clone())
+                }
+                // A wildcard scan declaration is a category error at the
+                // declaration layer; treated as the wildcard's singleton
+                // delivery by the `_ if wildcard` arm above.
+                _ => {}
             }
-            if let Err(e) = mq::route_put(&self.mq, &decl.event, &booth.name, &decl.key_field, decl.wildcard) {
+            if let Err(e) = mq::route_put(&self.mq, &decl.event, &booth.name, &decl.resolution, decl.wildcard) {
                 eprintln!("route persist failed for {}/{}: {e}", decl.event, booth.name);
             }
         }

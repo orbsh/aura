@@ -341,9 +341,10 @@ dict/junction 基址住 collection schema 常量）；实例是 ns 内 document�
 
 本节记录事件面的**终态裁决**（裁决文本住 ADR-0038/0039/0040，这里只留机制、理由摘要与
 实施连带）。§8.3（身份与投递）与 §8.4（分区身份、分段、保留承诺）**已落地**；
-§8.1（路由终态：访问方法扫描）仍待决，前置 = 动态 schema；§8.5 仍开放。
+§8.1/§8.2（路由终态 + EventRoute 行形状）已随 Phase 4.13 落地（commit `33ef84e`、
+`e3690ac`，含 ADR-0042 实例身份结构化同批）；§8.5 仍开放。
 
-### 8.1 路由终态：instance key 走访问方法扫描（目标形状已锁）
+### 8.1 路由终态：instance key 走访问方法扫描（已落地，Phase 4.13）
 
 partitioning.md §1 记录的目标：`key_field` 取 payload 字段（恰好一值、一实例）
 → 事件经该类型 ns 的**访问方法扫描**出 id（天然一对多）。机制拆解（声明/登记/
@@ -379,14 +380,33 @@ partitioning.md §1 记录的目标：`key_field` 取 payload 字段（恰好一
 的函数，类型级默认只在「该类型每个事件恰好同构」时才有定义；且缺省值必须唯一确定语义
 （既无 `resolve` 也无 `key_field` = 单例投递），「缺失 = 继承」会让同一字段有两个读法 =
 声明-执行漂移温床。方案 B（类型默认 + 覆盖）由此否决。**多目标失败语义**亦已裁：逐目标
-dead-ring，与 ADR-0038 §4 的无静默丢弃一致。实施 = Phase 4.17。
+dead-ring，与 ADR-0038 §4 的无静默丢弃一致。**已实施**（Phase 4.13）。
 
-### 8.2 EventRoute 行形状
+落地连带（Phase 4.13，commit `33ef84e`/`e3690ac`）：`RouteResolution
+{ Singleton, Field, Scan }` 三形状判别在行结构层；EventRoute 行（ns 25）换引用载荷
+（`resolution` u8 判别 + collection/index/probe_field 名字列）；`instance_of` 删除——
+切片 variant 直通投递目标，无字符串往返；求值走 4.16 的 DynamicCollection 面
+（`store_exec::resolve_scan_targets`）；扫描路由的集合主键裁为**单 key 字段**
+（实例键是一个 String，复合行键没有诚实的渲染，多键 = 注册错误而非约定）。
+端到端锁定：`engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`。
 
-`key_field: String` 载荷换成引用载荷。**已裁（ADR-0038 §3）**：引用不带集合 ns 号——
-行里存 collection/index/probe 的**名字**（解析住在拥有 schema 的一侧），存 slot/ns 号
-等于把位置当身份，schema 一改就静默改指向。三种声明形状（单例 / payload 解析 / 索引
-扫描）是三种机制，判别在行结构层，不搞哨兵混合。实施 = Phase 4.17。
+**残差（挂账，okm 侧）**：okm-dynamic 的声明式索引条目把索引字段值编进**键**
+（`[ns][slot][索引字段段][主键]`，段内无定界无长度帧），所以索引字段必须定宽
+（`fields_width` 拒绝变宽）——扫描路由的探针因此今天只能对 FixedBytes/U64 等
+定宽字段做等值匹配。存储层不排斥变宽（冷段按名键控，email 照常存）；缺的只是
+「变宽索引段」这一种条目形态。终态是**长度前缀帧化**变宽段（扫描路由只要等值
+匹配，不要范围序，帧化丢失字节序无关紧要）；在 okm 落地前，变长业务键的容量
+约束显式写在 schema（定宽字段）里——这是声明期约束，不是运行期哈希别名
+（任何「摘要索引」都会重开 ADR-0038/0042 刚关掉的别名类，不做）。
+
+### 8.2 EventRoute 行形状（已落地，Phase 4.13）
+
+`key_field: String` 载荷已换成引用载荷：`resolution: u8` 判别（0 单例 /
+1 payload 字段 / 2 扫描）+ collection/index/probe_field 名字列。**已裁
+（ADR-0038 §3）**：引用不带集合 ns 号——行里存 collection/index/probe 的
+**名字**（解析住在拥有 schema 的一侧），存 slot/ns 号等于把位置当身份，
+schema 一改就静默改指向。三种声明形状（单例 / payload 解析 / 索引扫描）是
+三种机制，判别在行结构层，不搞哨兵混合。**已实施**（Phase 4.13）。
 
 ### 8.3 双字典收编与游标键正交化（已落，ADR-0038 §1/§2）
 
@@ -400,9 +420,10 @@ emit 都激活一个新实例，而新实例游标从 0 起 = 重放该队列现
 消息只被一个消费，当时被读作语义回归）；裁决解在另一头——那个语义本就该是单例投递。
 
 落地连带（已完成，当时名 `bound_partition`，ADR-0041 起为 `bound_instance_key`）：解析链改造、测试调用点、
-`by_type` → `by_booth` 索引、`split_once('/')` 消失。残余（未覆盖）：实例键空间仍用
-`"__singleton__"` 哨兵字符串，payload 里字面等于它的 key 仍会别名到单例**实例**——
-让实例身份结构化会牵动整个 call model 与 probe 缝上的 `InstanceId`（ADR-0038 已记录）。
+`by_type` → `by_booth` 索引、`split_once('/')` 消失。~~残余（未覆盖）：实例键空间仍用
+`"__singleton__"` 哨兵字符串……~~ **残余已关闭（2026-10-09，ADR-0042，随 Phase 4.13
+落地）**：`InstanceId.key` 变为 `aura_booth::InstanceKey { Singleton, Named }` 枚举，
+哨兵字符串从框架退役，单例是 variant 不是值，字面别名构造性不可达（commit `33ef84e`）。
 
 ### 8.4 分区身份、键空间分段与游标保留承诺（已落，ADR-0039 §1/§2、ADR-0040）
 

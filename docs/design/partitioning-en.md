@@ -16,18 +16,20 @@ instance key (session_id, channel_id, order_id, ...). Placement rules:
 - **Different keys, parallel**: instances with different keys are fully
   independent and never block each other
 - **Wildcard-subscription exception**: an Booth registered via `on_wildcard`
-  binds to the singleton `__singleton__` and does not participate in
-  partitioning (an observer listening to global events has no meaningful
-  state shard)
+  binds to the singleton instance (a variant, not a sentinel string) and
+  does not participate in partitioning (an observer listening to global
+  events has no meaningful state shard)
 
-The extraction of the instance key differs between the current state and
-the target state: today the route table declares an `instance_key_field`
-(taken from the event payload by field name; a missing field lands on the
-`__default__` catch-all instance). In the target state (once dynamic schema
-lands), the event name maps to an okm ns and the routing resolves ids
-through that ns's access methods — a scan is one-to-many by nature, so a
-single emit can deliver to multiple instances (sequenced: PLAN Phase 4.13,
-precondition = dynamic schema).
+The instance key's resolution has landed at its end state (Phase 4.13):
+the route table declares a `RouteResolution` — singleton / payload field
+(`Field`: a missing field is a malformed event into the dead ring, no
+catch-all instance) / **access-method scan** (`Scan`: the event resolves
+through the type's ns index, each hit row's primary key = the target
+instance key; a scan is one-to-many by nature, so a single emit can
+deliver to multiple instances). Constraints: a scan-route collection's
+primary key must be a single key field; index fields must currently be
+fixed-width (the okm-dynamic variable-width index segment is on the
+backlog — see event-flow.md §8.1 residual).
 
 ## 2. booth_type: type vs instance
 

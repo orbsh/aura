@@ -484,10 +484,11 @@ This section records the event plane's **terminal rulings** (the ruling text
 lives in ADR-0038/0039/0040; what stays here is the mechanism, the reason in
 brief, and the implementation fallout). §8.3 (identity and delivery) and §8.4
 (partition identity, bands, the retention promise) are **LANDED**; §8.1 (the
-routing end state: access-method scans) still awaits its precondition (dynamic
-schema); §8.5 stays open.
+routing end state: access-method scans) LANDED with Phase 4.13 (commits
+`33ef84e`, `e3690ac`, landing ADR-0042's structural instance identity in the
+same batch); §8.5 stays open.
 
-### 8.1 The routing end state: instance key via access-method scans
+### 8.1 The routing end state: instance key via access-method scans (LANDED, Phase 4.13)
 
 The target (partitioning.md §1): replace `key_field` payload extraction
 (exactly one value → one instance) with an ACCESS-METHOD SCAN over the type's
@@ -539,17 +540,46 @@ default value must fix its semantics uniquely (no `resolve` and no `key_field` =
 singleton delivery), while "absence = inherit" would give one field two readings
 — the declaration/execution drift class. Option B (type default + override) is
 therefore rejected. The **multi-target failure semantics** are ruled too:
-per-target dead-ring, consistent with ADR-0038 §4. Implementation = Phase 4.17.
+per-target dead-ring, consistent with ADR-0038 §4. **Implemented** (Phase 4.13).
 
-### 8.2 The EventRoute row shape
+Landed fallout (Phase 4.13, commits `33ef84e`/`e3690ac`): `RouteResolution
+{ Singleton, Field, Scan }` discriminated at the row-structure layer; the
+EventRoute row (ns 25) carries the reference payload (`resolution` u8 tag +
+collection/index/probe_field name columns); `instance_of` is gone — the
+slice variant flows to the delivery target with no string round trip;
+evaluation rides the 4.16 DynamicCollection face
+(`store_exec::resolve_scan_targets`); scan-route collections are ruled to a
+SINGLE key field (the instance key is one String; a composite row key has
+no honest rendering — multi-key is a registration error, not a convention).
+End-to-end lock: `engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`.
 
-The `key_field: String` payload becomes the reference payload. **Ruled
-(ADR-0038 §3)**: a reference carries NO collection ns number — the row stores the
-collection/index/probe **names** (resolution lives with the schema owner), while
-a stored slot/ns number would make position the identity and any schema edit
-would silently re-point the row. The three declaration shapes (singleton /
-payload resolution / index scan) are three mechanisms, discriminated at the row
-structure layer, never by sentinel mixing. Implementation = Phase 4.17.
+**Residual (open, okm side)**: okm-dynamic's declared index entries encode
+the indexed-field values into the KEY (`[ns][slot][index-field segment]
+[pkey]`, no delimiter or length frame inside the segment), so index fields
+must be fixed-width (`fields_width` rejects variable-width) — scan-route
+probes therefore match only FixedBytes/U64-class fields for now. The
+storage layer does not reject variable-width (the cold segment is
+name-keyed; an email stores fine); what is missing is the VARIABLE-WIDTH
+INDEX SEGMENT as an entry shape. The end state is length-prefixed framing
+of variable-width segments (scan routes need equality matching only, never
+range order — losing byte order is irrelevant). Until okm lands it, the
+capacity constraint on a variable-length business key lives explicitly in
+the schema (a fixed-width field) — a declaration-time constraint, not a
+runtime hash alias (any "digest index" would reopen the aliasing class
+ADR-0038/0042 just closed; not done).
+
+### 8.2 The EventRoute row shape (LANDED, Phase 4.13)
+
+The `key_field: String` payload is replaced by the reference payload: a
+`resolution: u8` tag (0 singleton / 1 payload field / 2 scan) plus
+collection/index/probe_field name columns. **Ruled (ADR-0038 §3)**: a
+reference carries NO collection ns number — the row stores the
+collection/index/probe **names** (resolution lives with the schema owner),
+while a stored slot/ns number would make position the identity and any
+schema edit would silently re-point the row. The three declaration shapes
+(singleton / payload resolution / index scan) are three mechanisms,
+discriminated at the row structure layer, never by sentinel mixing.
+**Implemented** (Phase 4.13).
 
 ### 8.3 Double-dictionary consolidation + cursor-key orthogonality (landed, ADR-0038 §1/§2)
 
@@ -572,11 +602,13 @@ delivery all along.
 
 Landed fallout (done; the resolver was named `bound_partition` at the time,
 `bound_instance_key` since ADR-0041): the resolver chain, the test call sites,
-`by_type` → `by_booth`, `split_once('/')` gone. Residual (not
-covered): the INSTANCE key space still uses the `"__singleton__"` sentinel string,
-so a payload key with that literal text still aliases the singleton INSTANCE —
-making instance identity structural would touch `InstanceId` across the call model
-and the probe seam (recorded in ADR-0038).
+`by_type` → `by_booth`, `split_once('/')` gone. ~~Residual (not
+covered): the INSTANCE key space still uses the `"__singleton__"` sentinel
+string…~~ **Residual CLOSED (2026-10-09, ADR-0042, landed with Phase 4.13)**:
+`InstanceId.key` became the `aura_booth::InstanceKey { Singleton, Named }`
+enum; the sentinel string retired from the framework — the singleton is a
+variant, not a value, and the literal aliasing is structurally unreachable
+(commit `33ef84e`).
 
 ### 8.4 Partition identity, keyspace bands, and the cursor retention promise (landed, ADR-0039 §1/§2, ADR-0040)
 

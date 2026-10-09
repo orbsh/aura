@@ -2,8 +2,11 @@
 
 > **Languages:** [English](0042-structural-instance-identity.md) (primary) · [中文](0042-structural-instance-identity.zh-CN.md)
 
-**Status:** Accepted (2026-10-08) — implementation lands with Phase 4.13 (the two
-touch the same EventRoute row shape; separating them would mean two migrations).
+**Status:** Accepted (2026-10-08) — **LANDED 2026-10-09 with Phase 4.13**
+(commits `33ef84e` + `e3690ac`: `InstanceId.key` is the
+`aura_booth::InstanceKey { Singleton, Named }` enum; the sentinel retired;
+the route-resolution row shape migrated in the same batch — the two touch
+the same EventRoute row shape; separating them would mean two migrations).
 User ruling (2026-10-08): make instance identity structural now, riding the 4.13
 window.
 

@@ -2,9 +2,11 @@
 
 > **语言：** [English](0042-structural-instance-identity.md)（主文档） · [中文](0042-structural-instance-identity.zh-CN.md)
 
-**状态：** Accepted（2026-10-08）——实现随 Phase 4.13 落地（两者动的是同一张
-EventRoute 行形状，分开做等于两次迁移）。用户裁决（2026-10-08）：趁 4.13 的窗口把
-实例身份结构化。
+**状态：** Accepted（2026-10-08）—— **已落地（2026-10-09，随 Phase 4.13）**
+（commits `33ef84e` + `e3690ac`：`InstanceId.key` 已是
+`aura_booth::InstanceKey { Singleton, Named }` 枚举，哨兵退役，路由行形状
+同批迁移——两者动同一张 EventRoute 行，分开做等于两次迁移）。
+用户裁决（2026-10-08）：趁 4.13 的窗口把实例身份结构化。
 
 ## 上下文
 

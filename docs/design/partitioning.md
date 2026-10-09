@@ -9,9 +9,13 @@
 
 - **同 key 串行**：同一 instance key 的所有消息进同一个实例的 queue，单消费者逐条处理——状态一致性不靠锁，靠队列串行
 - **异 key 并行**：不同 key 的实例完全独立，互不阻塞
-- **通配订阅例外**：`on_wildcard` 的摊位绑定单例 `__singleton__`，不参与分区（监听全局事件的观察者天然无状态分片意义）
+- **通配订阅例外**：`on_wildcard` 的摊位绑定单例实例（variant，非哨兵字符串），不参与分区（监听全局事件的观察者天然无状态分片意义）
 
-instance key 的提取方式现在和终态不同：当前是路由表声明 `instance_key_field`（从事件 payload 按字段名取值，取不到落 `__default__` 兜底实例）；终态（动态 schema 落地后）是事件名映射到 okm ns，通过该 ns 的访问方法扫描出 id——扫描天然一对多，一次 emit 可投递多个实例（排期：PLAN Phase 4.13，前置=动态 schema）。
+instance key 的解析已随 Phase 4.13 落到终态：路由表声明 `RouteResolution`——单例 /
+payload 字段（`Field`，取不到 = 畸形事件落 dead ring，无兜底实例）/ **访问方法扫描**
+（`Scan`，事件经该类型 ns 的索引扫出命中行主键 = 实例键，扫描天然一对多，一次 emit
+投递多个实例）。约束：扫描路由的集合主键必须是单 key 字段；索引字段当前须定宽
+（okm-dynamic 变宽索引段挂账，见 event-flow.md §8.1 残差）。
 
 ## 2. booth_type：类型与实例
 

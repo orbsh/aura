@@ -197,7 +197,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   swept in the same pass; PLAN 3.6/4.5/4.9 historical entries keep landing-time wording
   (log rule); ADR-0026 twins got dated Update notes.
 
-- [ ] **Phase 4.13 — Routing final form: instance key via okm access methods (PRIORITY; precondition = dynamic schema)**
+- [x] **Phase 4.13 — Routing final form: instance key via okm access methods (PRIORITY; precondition = dynamic schema) — LANDED 2026-10-09 (commits `33ef84e` + `e3690ac`, with ADR-0042's structural instance identity riding the same EventRoute-row migration)**
   - Target (recorded in partitioning.md §1): instance-key extraction moves from the
     route table's `instance_key_field` (single payload field, `__default__` fallback,
     one event → one instance) to the event name resolving through the owning ns's
@@ -561,6 +561,33 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+## 会话记录（2026-10-09，Phase 4.13 + ADR-0042 落地：路由终态 + 实例身份结构化）
+
+- **落地**（commits `33ef84e` + `e3690ac`，4.13 与 ADR-0042 同批，动同一张
+  EventRoute 行形状）：
+  - **实例身份**：`InstanceId.key` 变为 `aura_booth::InstanceKey { Singleton, Named }`；
+    哨兵 `mq::SINGLETON` 退役；`instance_of` 字符串往返删除，切片 variant 直通投递目标；
+    会话键/ctx 渲染 = `Display`（单例 = 空串）；probe wire 字符串经 `InstanceKey::parse`
+    进 variant（空串 = Singleton）。
+  - **路由终态**：`RouteResolution { Singleton, Field, Scan }`；EventRoute 行
+    `resolution: u8` 判别 + collection/index/probe_field **名字列**（存名不存号）；
+    `on_resolve` 声明面 + 内省 `receives[event].resolve` 接线（无 resolve 无 key =
+    单例，无类型默认）；求值 = `store_exec::resolve_scan_targets`（4.16 面）。
+  - **扫描路由约束（实施时裁）**：集合主键必须单 key 字段——实例键是一个 String，
+    复合行键没有诚实渲染，多键 = 注册错误而非约定（`k1=v1` 类渲染规则是在掩盖类型
+    不匹配，不发明）；索引字段当前须定宽（okm-dynamic 索引段无定界），变长业务键的
+    容量约束显式写进 schema（FixedBytes(32)），**不做摘要索引**——任何 U64 摘要都是
+    有损压缩，会重开 0038/0042 刚关掉的别名类。终态 = okm 变宽索引段长度前缀帧化
+    （等值扫描不要范围序，帧化丢字节序无关紧要），okm 侧挂账，event-flow §8.1 残差记录。
+  - **端到端锁定**：`engine/tests/events.rs::scan_route_fans_out_to_the_hit_rows`
+    ——一次 emit 探针 a@x 扇出到两行（主键 = 实例键 "1"/"2"，扫描产出身份而非声明），
+    各切片恰一游标且耗尽；不命中行无投递无游标（空扇出 ≠ 死信）。
+  - **文档**：event-flow 双语 §8.1/§8.2 标 LANDED + 落地连带 + 残差；§8.3 残余段
+    关闭（ADR-0042 指针）；partitioning 双语 §1 终态改写；ADR-0042 双语状态行补
+    落地提交；PLAN 勾 4.13。
+  - **测试**：workspace 67 过 1 挂——挂的 `exec_booth::bgi_booth_ctx_invoke_to_sibling`
+    经 HEAD 导出（git archive 基线）核实为既有失败，与本批无关。
 
 ## 会话记录（2026-10-08b，A2 裁决：实例身份结构化；ADR-0042）
 

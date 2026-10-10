@@ -2,8 +2,22 @@
 
 > **Languages:** [English](0043-ctx-object.md)（主文档） · [中文](0043-ctx-object.zh-CN.md)
 
-**状态**：Accepted（2026-10-10）——设计定案，实现未开始。整体取代
-ADR-0011 的安置决定，但保留它的方向规则（入口保持语言原生）与它对
+**状态**：Accepted（2026-10-10）——**改名波已落地（2026-10-10）**
+（aura `8a2b85b` + effector `fdb9507`/`1c6fbdc`：分组桥 key、
+python/steel 的 ctx 对象注入、bgi 帧臂、wasm 在 aura_host 下保持平铺
+ABI）。python 注入被迫做成顺序无关：`store` 同时是叶子和 `store.frame`
+的分组——第一趟物化分组（双角色前缀成为可调用的 AuraCtxNode），第二趟
+绑叶子。仍未落地：`ctx.emit`、`ctx.on`（§3）、payload 上 ctx（§4）、
+bgi 的 emit 臂。落地过程暴露了那个预先存在的 `bgi_booth_invoke_to_sibling`
+失败的真实原因（默认构建不含 python 载体 + 夹具把 host_reply 错误吞成
+Null）——已加 feature 门 + 错误上抛，`--features python` 下转绿。
+**emit 波已落地（2026-10-10）**（aura `4635a60` + effector `badcccd`）：
+Weak-realm 发布闭包在 ctx_for 注入（emitter=类型名）；bgi 的 `Emit` 臂
+按契约**不应答**（fire-and-forget 是方法语义；WS 跳仍保留帧级应答配对
+——配对是协议、不是业务）；nu 垫片 helper；dead-ring 边界经活体验收。
+仍未落地：`ctx.on`（§3）、payload 上 ctx（§4 的单参签名塌缩——自成
+一波，量级同改名波）。
+整体取代 ADR-0011 的安置决定，同时保留其方向规则（入口保持原生）与对
 "运行时动态订阅"的否决（重述为相位门）。用户裁决（2026-10-10）：
 **全换、不兼容**——平铺 `ctx_*` 名字整体退役，不留别名。
 

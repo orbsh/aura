@@ -2,7 +2,25 @@
 
 > **Languages:** [English](0043-ctx-object.md) (primary) · [中文](0043-ctx-object.zh-CN.md)
 
-**Status:** Accepted (2026-10-10) — design; implementation pending.
+**Status:** Accepted (2026-10-10) — **rename wave LANDED 2026-10-10**
+(aura `8a2b85b` + effector `fdb9507`/`1c6fbdc`: dotted bridge keys,
+python/steel ctx-object injection, bgi arms, wasm flat ABI under
+aura_host). Python's injection proved order-independent by necessity:
+`store` is BOTH a leaf and `store.frame`'s group — pass 1 materializes
+groups (a double-role prefix becomes a callable AuraCtxNode), pass 2
+binds leaves. Still pending: `ctx.emit`, `ctx.on` (§3), payload-on-ctx
+(§4), bgi emit arm. Landing exposed the old pre-existing
+`bgi_booth_invoke_to_sibling` failure's real cause (python carrier not
+in the default build + the fixture swallowing host_reply errors to
+Null) — gated + surfaced, now green under `--features python`.
+**emit wave LANDED 2026-10-10** (aura `4635a60` + effector `badcccd`):
+Weak-realm publish closure injected at ctx_for (emitter = type name),
+bgi `Emit` arm answers NOTHING by contract (fire-and-forget is the
+method; the WS hop keeps frame-level reply pairing — pairing is
+protocol, not business), nu shim helper, dead-ring boundary verified.
+Remaining: `ctx.on` (§3), payload-on-ctx (the carrier-wide
+single-argument signature change — its own wave, same scale as the
+rename).
 Supersedes ADR-0011's placement decisions in full while keeping its
 direction rule (entry stays native) and its rejection of dynamic-runtime
 subscription (re-expressed as a phase gate). User ruling (2026-10-10):

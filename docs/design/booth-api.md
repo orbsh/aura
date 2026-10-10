@@ -165,7 +165,7 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
 
 [English](#wasm-rust-1)
 
-Rust 服务的唯一发布形态：编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛，host 侧 NestStorage 执行器在 registry 分配的 app ns 前缀下承载物理存储（ADR-0007 存储承载分流）。静态 OKM derive，不需要 okm-dynamic。
+Rust 服务的唯一发布形态：编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛，host 侧 NestStorage 执行器在 registry 分配的 app ns 前缀下承载物理存储。静态 OKM derive，不需要 okm-dynamic。（注：通用 NestStorage 执行器作为 Phase 6.6 已出局——k10r 解耦裁决后没有消费者需要 hosted 存储；wasm 摊位的存储上抛由各 Booth type 自行声明消费。）
 
 约定（已落地——CBOR 过线性内存，无 JSON 债）：
 

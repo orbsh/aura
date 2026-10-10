@@ -261,8 +261,11 @@ them in would fork the platform per app, collapsing the platform into a
 framework. Storage never enters the sandbox: the OKM schema compiles into
 the wasm unchanged, with the `VirtualStorage` implementation swapped for
 a frame up-call — the host-side NestStorage executor carries the physical
-store under a registry-allocated app ns prefix (ADR-0007 storage-carriage
-split). Static OKM derives; no okm-dynamic needed.
+store under a registry-allocated app ns prefix. Static OKM derives; no
+okm-dynamic needed. (Note: the general NestStorage executor was withdrawn
+with PLAN Phase 6.6 — after the k10r decoupling ruling no consumer needs
+hosted storage; wasm booths' storage up-calls are consumed by their own
+Booth type declarations.)
 
 Convention (landed — CBOR over linear memory, no JSON debt):
 

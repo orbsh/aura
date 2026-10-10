@@ -549,7 +549,14 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - [ ] same-session consecutive tool calls fill via in-memory oneshot (hot loop: zero persistence per call); session persisted + executor released at turn end or retention expiry; a new same-session turn within the window reuses the resident executor (skips session fetch)
   - Stateless semantics intact — state externalization (executor holds no session state) is what "stateless" means; the resident is a discardable hot cache, rebuildable from the event stream. Persistence delta: call_id only.
   - Effector Booth type hosting: booth_type = Effector, partition_key = node_id; the connection plane adapts outbound WS frames to Realm queue semantics (frame down = event delivery, frame up = reply_to return via `resolve_call`) — adapter, not a bypass.
-- [ ] Phase 6.6 — Storage Booth (decision recorded here; never filed as a numbered ADR — "ADR-0010" previously referenced here now denotes the timer ADR, docs/adr/0016): host `#[kv_storage]` executor instances
+- [x] Phase 6.6 — **WITHDRAWN (2026-10-10, k10r decoupling ruling)**: k10r is an
+  independent network service (Fjall + self-held embedding + HTTP), never an
+  aura citizen — no booth, no spawn, no ns (krystallizer ADR-0007 as revised).
+  The value-representation work recorded below is real and carries over
+  (mq/state bind to ONE okm engine); the NestStorage host executor for
+  third-party `#[kv_storage]` instances is not — no consumer ever needed
+  hosted storage, and the last would-be consumer (k10r) is now HTTP-only.
+  Remaining sub-entries kept for the historical record only:
   - one declared instance per application (ns = app_id/tenant_id prefix)
   - surface is exactly one method: frame in (op + bytes) → scan bytes out; arrival path (outbound WS / realm events / in-process direct call) is the caller's business, invisible to the executor
   - the receiver holds no OKM semantics: prepend declared prefix, execute, fill back

@@ -89,7 +89,7 @@ async fn wasm_booth_storage_end_to_end() {
 
 /// The consumer fixture module (effector `cargo build -p actor-guest
 /// --example stream_puller --target wasm32-unknown-unknown`): its exports
-/// drive the ctx_iter_start/next/dispose host imports to completion.
+/// drive the ctx.iterate.start/next/dispose host imports to completion.
 fn puller_booth() -> BoothType {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),

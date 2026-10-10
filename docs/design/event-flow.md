@@ -268,7 +268,7 @@ emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass �
 - seq 比较即顺序比较（§2 第 5 步：它是计数器，不是时间）。
 - **depth**：MqData 的 live `Count` reduce 一次点读（§2 第 11 步）——skip-to-head
   的决策输入，永不扫描。
-- **skip-to-head**（`mq::skip_to_head`；脚本面 host fn 同名 `ctx_skip_to_head`，effector carrier 白名单已同步）：把游标跳到写头（该切片的 seq 水位），丢弃陈旧 backlog（泄压
+- **skip-to-head**（`mq::skip_to_head`；脚本面 host fn 同名 `ctx.queue.skip_to_head`，effector carrier 白名单已同步）：把游标跳到写头（该切片的 seq 水位），丢弃陈旧 backlog（泄压
   阀）。游标单调（`advance` 只进不退）是它持久的原因；`rewind_cursor` 仅测试支持，
   生产路径不用。
 - **游标过期（ADR-0039 §2，已落）**：全局 `cursor_ttl`（`EngineConfig` 一个字段，

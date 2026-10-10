@@ -21,7 +21,7 @@ pub async fn resolve_host_call(
                 // Wire string → variant (ADR-0042): "" is the singleton.
                 key: aura_booth::InstanceKey::parse(target_key),
             };
-            // Unified call model: wait hot (script ctx_invoke semantics —
+            // Unified call model: wait hot (script ctx.invoke semantics —
             // the effector blocks until the reply, same as in-process).
             let slot = aura_realm::Realm::call(
                 realm,
@@ -72,11 +72,11 @@ pub async fn resolve_host_call(
         // CLONED out (the ctx_for discipline: execution never
         // dereferences the realm); no plan = the type declared no
         // storage, a named error value (ADR-0026 Consequences: remote
-        // ctx_store_emit requires a resolved plan — the 4.5b upload
+        // ctx.store requires a resolved plan — the 4.5b upload
         // lifecycle's, not this frame path's).
         HostOp::StoreEmit { instruction } => {
             let store_op: aura_booth::StoreOp = serde_json::from_value(instruction.clone())
-                .map_err(|e| format!("ctx_store_emit: malformed op: {e}"))?;
+                .map_err(|e| format!("ctx.store: malformed op: {e}"))?;
             let (plan, store) = {
                 let r = realm.lock().await;
                 (r.plan_of(&instance.booth_type).cloned(), r.mq.clone())
@@ -84,7 +84,7 @@ pub async fn resolve_host_call(
             match plan {
                 Some(plan) => aura_realm::store_exec::execute(&store, &plan, &store_op),
                 None => Err(format!(
-                    "ctx_store_emit: type '{}' has no storage plan (no declared \
+                    "ctx.store: type '{}' has no storage plan (no declared \
                      collections) — ctx.store is unavailable",
                     instance.booth_type
                 )),

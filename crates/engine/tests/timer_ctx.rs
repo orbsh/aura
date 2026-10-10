@@ -1,4 +1,4 @@
-//! ADR-0016 §3b landed: the imperative `ctx_timer_*` face. A steel booth
+//! ADR-0016 §3b landed: the imperative `ctx.timer` face. A steel booth
 //! registers a one-shot delivery timer from inside a handler (the wake
 //! time computed at runtime — the imperative shape's whole point); the
 //! wheel fires a `__on_timer` job with the tag; the booth's
@@ -26,28 +26,28 @@ fn script() -> &'static str {
 
 ;; A handler arms a one-shot wake: `at_ms` from the payload, tag fixed.
 (define (arm args)
-  (ctx_timer_register (hash "at_ms" (hash-ref args "at_ms") "tag" (hash-ref args "tag")))
+  (ctx.timer.register (hash "at_ms" (hash-ref args "at_ms") "tag" (hash-ref args "tag")))
   (hash "armed" 1))
 
 ;; The delivery path: the wheel delivers an `__on_timer` job whose args
 ;; carry the tag; the handler records it (put id=7, tag as count seed —
 ;; any write proves the job ran; the tag round-trips through the value).
 (define (__on_timer args)
-  (ctx_store_emit (hash "collection" "ticks" "op" "put_document"
+  (ctx.store (hash "collection" "ticks" "op" "put_document"
                         "key" (hash "id" 7)
                         "doc" (hash "count" 1)))
   (hash "woke" (hash-ref args "tag")))
 
 ;; Read back what the timer delivery wrote.
 (define (check args)
-  (let ((cur (ctx_store_emit (hash "collection" "ticks" "op" "get_document" "key" (hash "id" 7)))))
+  (let ((cur (ctx.store (hash "collection" "ticks" "op" "get_document" "key" (hash "id" 7)))))
     (if (void? cur) (hash "fired" 0) (hash "fired" 1))))
 
 ;; The cancel half: arm, immediately cancel by id.
 (define (arm_then_cancel args)
-  (let* ((r (ctx_timer_register (hash "at_ms" 400 "tag" "cancelled")))
+  (let* ((r (ctx.timer.register (hash "at_ms" 400 "tag" "cancelled")))
          (id (hash-ref r "timer_id")))
-    (ctx_timer_cancel (hash "timer_id" id))
+    (ctx.timer.cancel (hash "timer_id" id))
     (hash "cancelled" id)))
 "#
 }

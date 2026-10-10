@@ -13,7 +13,7 @@ const ECHO: &str = r#"
 
 const CALLER: &str = r#"
 (define (execute args)
-  (ctx_invoke "{\"type\": \"echo\", \"key\": \"a2\", \"handler\": \"execute\", \"args\": {\"via\": \"ctx.invoke\"}}"))
+  (ctx.invoke "{\"type\": \"echo\", \"key\": \"a2\", \"handler\": \"execute\", \"args\": {\"via\": \"ctx.invoke\"}}"))
 "#;
 
 #[tokio::main]

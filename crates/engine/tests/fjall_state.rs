@@ -30,12 +30,12 @@ mod fjall_tests {
         "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
 (define (interface_schema args) (schema))
 (define (count args)
-  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1)))))
+  (let* ((cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1)))))
     (hash "count" (if (void? cur) 0 (hash-ref cur "count" 0)))))
 (define (execute args)
-  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+  (let* ((cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
          (c (if (void? cur) 0 (hash-ref cur "count"))))
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" 1) "doc" (hash "count" (+ c 1))))
     (hash "count" (+ c 1))))
 "#;

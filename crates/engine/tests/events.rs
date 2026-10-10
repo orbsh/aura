@@ -30,7 +30,7 @@ fn counter_script(events: &[&'static str]) -> String {
 (define (interface_schema args) (schema))
 (define (count args)
   (let* ((n (user-n (hash-ref args "user_id")))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
     (if (void? cur) (hash "count" 0) (hash "count" (hash-ref cur "count")))))
 "#;
     // user-doc maps user_id → a fixed U64 id (the collection's key fields
@@ -40,9 +40,9 @@ fn counter_script(events: &[&'static str]) -> String {
         r#"(define ({name} args)
   (let* ((uid (hash-ref args "user_id"))
          (n (user-n uid))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
          (c (if (void? cur) 0 (hash-ref cur "count"))))
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                        "key" (hash "id" n) "doc" (hash "count" (+ c 1))))
     (+ c 1)))"#
     );
@@ -574,14 +574,14 @@ async fn scan_route_fans_out_to_the_hit_rows() {
 (define (interface_schema args) (schema))
 (define (newsletter args)
   (let* ((me (hash-ref args "me"))
-         (cur (ctx_store_emit (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" me))))
+         (cur (ctx.store (hash "collection" "subscribers" "op" "get_document" "key" (hash "id" me))))
          (c (if (void? cur) 0 (if (hash-contains? cur "hits") (hash-ref cur "hits") 0))))
-    (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
+    (ctx.store (hash "collection" "subscribers" "op" "put_document"
                        "key" (hash "id" me)
                        "doc" (hash "hits" (+ c 1))))
     (+ c 1)))
 (define (enroll args)
-  (ctx_store_emit (hash "collection" "subscribers" "op" "put_document"
+  (ctx.store (hash "collection" "subscribers" "op" "put_document"
                      "key" (hash "id" (hash-ref args "id"))
                      "doc" (hash "email" (hash-ref args "email") "hits" 0)))
   (hash-ref args "id"))

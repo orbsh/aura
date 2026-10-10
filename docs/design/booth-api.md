@@ -49,13 +49,13 @@ def audit(args): ...
 
 **Host 函数**（ctx bridge，Phase 2.5）：脚本内可调用以下名字的函数——每个接受一个 JSON 参数，返回 JSON 值：
 
-- `ctx_store_emit(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
-- `ctx_interface_schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
-- `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
-- `ctx_queue_depth(event)` → 本实例在该事件队列上的积压深度（mq-data 上实时 Count 计数的点读，不扫描——水位线 compaction 的 unfold 同步维护）；队列经持久路由注册表解析（与消费循环同源），本类型无路由的事件=错误值
-- `ctx_skip_to_head(event)` → 把本实例游标推到分区头部，丢弃陈旧积压（泄压阀；游标单调——被跳过的积压不会在下一轮 drain 复活；后续事件照常投递）
-- `ctx_timer_register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`（ADR-0016 §3b——命令式定时：从现在起 `at_ms` 毫秒后投递一个 `__on_timer` 队列作业，payload 携带 `tag`；唤醒时刻由摊位在运行时算出，非静态声明。内存层——随进程存活，durable 层待办）
-- `ctx_timer_cancel({"timer_id": n})` → 取消一个未触发的定时器；未知 id（已触发/已取消）是幂等 no-op，不是错误
+- `ctx.store(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
+- `ctx.schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
+- `ctx.invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
+- `ctx.queue.depth(event)` → 本实例在该事件队列上的积压深度（mq-data 上实时 Count 计数的点读，不扫描——水位线 compaction 的 unfold 同步维护）；队列经持久路由注册表解析（与消费循环同源），本类型无路由的事件=错误值
+- `ctx.queue.skip_to_head(event)` → 把本实例游标推到分区头部，丢弃陈旧积压（泄压阀；游标单调——被跳过的积压不会在下一轮 drain 复活；后续事件照常投递）
+- `ctx.timer.register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`（ADR-0016 §3b——命令式定时：从现在起 `at_ms` 毫秒后投递一个 `__on_timer` 队列作业，payload 携带 `tag`；唤醒时刻由摊位在运行时算出，非静态声明。内存层——随进程存活，durable 层待办）
+- `ctx.timer.cancel({"timer_id": n})` → 取消一个未触发的定时器；未知 id（已触发/已取消）是幂等 no-op，不是错误
 
 **语言能力差异**：
 
@@ -79,10 +79,10 @@ def audit(args): ...
 @on("add_to_cart", key="user_id")
 def add(args):
     # args: 解码后的 JSON 值（dict/list/...），非字符串
-    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+    ctx.store(json.dumps({"collection": "counters", "op": "put_document",
                                "key": {"id": 1}, "doc": {"visits": 1}}))   # host 函数传 JSON 字符串
-    got = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
-    echo = ctx_invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
+    got = ctx.store(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
+    echo = ctx.invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
     return {"stored": got["visits"], "echo": echo["x"]}
 
 @on("remove_from_cart")
@@ -104,7 +104,7 @@ def interface_schema(args=None):
 - host 函数的参数是**一个 JSON 字符串**（carrier 边界解码），脚本内用 `json.dumps(...)` 构造；返回值已是原生 dict（无需再 `json.loads`）
 - `@on` 装饰器由 carrier 注入，脚本不需要（也不应该）自己定义 `on`；装饰器是恒等变换，函数照常可直接调用
 - 通配符只有前缀形态 `prefix.*`（与 etcd 一致），匹配 `order.created` 不匹配 `order`；声明了通配符的 handler 路由到单例实例
-- **直接调用要声明调哪个函数**：`ctx_invoke` 载荷必须带 `handler` 字段（函数名），engine `invoke(target, handler, args)` 同理——没有保留函数名，没有隐式入口；无 entry 注册时源码顶层 `result` 变量亦可
+- **直接调用要声明调哪个函数**：`ctx.invoke` 载荷必须带 `handler` 字段（函数名），engine `invoke(target, handler, args)` 同理——没有保留函数名，没有隐式入口；无 entry 注册时源码顶层 `result` 变量亦可
 
 ## Steel
 
@@ -115,10 +115,10 @@ def interface_schema(args=None):
 ;; 参数：事件名、key 字段（空字符串 = 单例）、handler
 (on "add_to_cart" "user_id"
   (lambda (args)
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" 1) "doc" (hash "visits" 1)))
-    (let* ((got (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
-           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
+    (let* ((got (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+           (echoed (ctx.invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
       (hash "visits" (hash-ref got "visits")
             "echo" (hash-ref echoed "x")))))
 

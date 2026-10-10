@@ -18,7 +18,7 @@ def tokens(args):
 "#;
 
 // Consumer: pulls via the loaded ctx_iterate wrapper (a native
-// generator over ctx_iter_start/next/dispose) and returns the items
+// generator over ctx.iterate.start/next/dispose) and returns the items
 // gathered. `limit` breaks mid-stream — GeneratorExit through the
 // wrapper's finally must send dispose to the producer.
 #[cfg(feature = "python")]

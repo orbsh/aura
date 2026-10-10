@@ -379,7 +379,7 @@ denominator is the **EventRoute registry**, not the raw cursor keys:
 - **depth**: one point read of MqData's live `Count` reduce (§2 step 11) — the
   skip-to-head decision input, never a scan.
 - **skip-to-head** (`mq::skip_to_head`; the script-facing host fn is the same name,
-  `ctx_skip_to_head` — effector's carrier allowlist was updated in step): jump the cursor to the partition write
+  `ctx.queue.skip_to_head` — effector's carrier allowlist was updated in step): jump the cursor to the partition write
   head, discarding the stale backlog (the relief valve). The cursor's
   monotonicity (`advance` only moves forward) is what makes it durable;
   `rewind_cursor` is test-support only, never a production path.

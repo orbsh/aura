@@ -104,7 +104,7 @@ impl Realm {
         // denominator uses), so the closure needs no realm deref and no
         // subscription list — only the store handle + this instance's id.
         store: &crate::mq::MqStore,
-        // The realm's timer handle (ADR-0016 §3b): ctx_timer_* arm
+        // The realm's timer handle (ADR-0016 §3b): ctx.timer.* arm
         // Deliver entries directly — the handle is a cheap command-
         // channel clone, no realm deref at call time.
         timers: &crate::timer::TimerHandle,
@@ -117,20 +117,20 @@ impl Realm {
         let mut fns: std::collections::BTreeMap<String, HostFn> = Default::default();
         let invoke_handle = handle.clone();
         fns.insert(
-            "ctx_invoke".into(),
+            "invoke".into(),
             Arc::new(move |arg: serde_json::Value| {
                 let handle = &invoke_handle;
                 // arg: { "type": ..., "key": ..., "args": ... }. Blocks the
                 // script thread on the unified call model (Phase 3.5) — the
                 // script itself runs in spawn_blocking, so this is bounded
                 // by the call's own tier/timeout semantics.
-                let obj = arg.as_object().ok_or_else(|| anyhow::anyhow!("ctx_invoke expects an object"))?;
+                let obj = arg.as_object().ok_or_else(|| anyhow::anyhow!("ctx.invoke expects an object"))?;
                 let ty = obj.get("type").and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `type`"))?;
+                    .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `type`"))?;
                 let key = obj.get("key").and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `key`"))?;
+                    .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `key`"))?;
                 let handler = obj.get("handler").and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("ctx_invoke: missing `handler` (the function to call)"))?;
+                    .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `handler` (the function to call)"))?;
                 let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
                 let target = InstanceId { booth_type: ty.to_string(), key: aura_booth::InstanceKey::parse(key) };
                 handle.block_on(dispatch(target, handler, args))
@@ -143,7 +143,7 @@ impl Realm {
         // envelope with the realm-minted stream_id merged in.
         if let Some(iterate) = ctx.iterate_handle() {
             let h = handle.clone();
-            for name in ["ctx_iter_start", "ctx_iter_next", "ctx_iter_dispose"] {
+            for name in ["iterate.start", "iterate.next", "iterate.dispose"] {
                 let iterate = iterate.clone();
                 let handle = h.clone();
                 let op_kind = match name {
@@ -157,7 +157,7 @@ impl Realm {
                         use aura_booth::IterateOp;
                         let obj = arg
                             .as_object()
-                            .ok_or_else(|| anyhow::anyhow!("{name}: expects an object"))?;
+                            .ok_or_else(|| anyhow::anyhow!("ctx.{name}: expects an object"))?;
                         let gs = |k: &str| obj.get(k).and_then(|v| v.as_str()).unwrap_or("");
                         let op = match op_kind {
                             0 => IterateOp::Start {
@@ -187,10 +187,10 @@ impl Realm {
         if let Some(surface) = ctx.store_emit_handle() {
             let emit_fn = surface.clone();
             fns.insert(
-                "ctx_store_emit".into(),
+                "store".into(),
                 Arc::new(move |arg: serde_json::Value| {
                     let op: aura_booth::StoreOp = serde_json::from_value(arg)
-                        .map_err(|e| anyhow::anyhow!("ctx_store_emit: bad op: {e}"))?;
+                        .map_err(|e| anyhow::anyhow!("ctx.store: bad op: {e}"))?;
                     (emit_fn)(op).map_err(|e| anyhow::anyhow!(e))
                 }) as HostFn,
             );
@@ -198,7 +198,7 @@ impl Realm {
         if let Some(schema) = ctx.interface_schema() {
             let schema = schema.clone();
             fns.insert(
-                "ctx_interface_schema".into(),
+                "schema".into(),
                 Arc::new(move |_arg: serde_json::Value| Ok(schema.clone())) as HostFn,
             );
         }
@@ -212,17 +212,17 @@ impl Realm {
             // arrays (lossless; storage is not a hot path here).
             let handle = crate::mq::MqStore::ns_raw(&store, ns);
             fns.insert(
-                "emit".into(),
+                "store.frame".into(),
                 Arc::new(move |arg: serde_json::Value| {
                     use okm_wire::{OpFrame, OpResponse};
                     let bytes: Vec<u8> = arg
                         .as_array()
-                        .ok_or_else(|| anyhow::anyhow!("emit: expected byte array"))?
+                        .ok_or_else(|| anyhow::anyhow!("ctx.store.frame: expected byte array"))?
                         .iter()
-                        .map(|v| v.as_u64().map(|x| x as u8).ok_or_else(|| anyhow::anyhow!("emit: bad byte")))
+                        .map(|v| v.as_u64().map(|x| x as u8).ok_or_else(|| anyhow::anyhow!("ctx.store.frame: bad byte")))
                         .collect::<Result<Vec<u8>, _>>()?;
                     let frame = OpFrame::decode(&bytes)
-                        .ok_or_else(|| anyhow::anyhow!("emit: malformed op frame"))?;
+                        .ok_or_else(|| anyhow::anyhow!("ctx.store.frame: malformed op frame"))?;
                     let mut out = OpResponse::default();
                     let s = handle.clone();
                     for (tag, key, value) in &frame.0 {
@@ -232,7 +232,7 @@ impl Realm {
                             okm_wire::OP_DELETE => s.del(key),
                             okm_wire::OP_GET => out.value = s.get(key),
                             okm_wire::OP_SCAN => out.suffixes = s.scan_range(key, None),
-                            other => anyhow::bail!("emit: unsupported op tag {other}"),
+                            other => anyhow::bail!("ctx.store.frame: unsupported op tag {other}"),
                         }
                     }
                     Ok(serde_json::Value::Array(
@@ -242,11 +242,11 @@ impl Realm {
             );
         }
         // Queue relief valve (Phase 4.5c, realm.md retention ruling):
-        // `ctx_queue_depth(event)` reads the live backlog count (a point
+        // `ctx.queue.depth(event)` reads the live backlog count (a point
         // read of the Count reduce — the zero-scan operational surface);
-        // `ctx_skip_to_head(event)` jumps THIS instance's cursor to the
-        // partition head, discarding the stale backlog. Both resolve the
-        // instance's bound queue through the persisted route registry
+        // `ctx.queue.skip_to_head(event)` jumps THIS instance's cursor to
+        // the partition head, discarding the stale backlog. Both resolve
+        // the instance's bound queue through the persisted route registry
         // (an unbound event = an error value, never a silent no-op).
         // ADR-0016 §3b, landed: the imperative ctx.timer face. `register`
         // arms a Deliver entry (fire = an `__on_timer` job carrying the
@@ -260,15 +260,15 @@ impl Realm {
             let timers_register = timers.clone();
             let target = ctx.self_id.clone();
             fns.insert(
-                "ctx_timer_register".into(),
+                "timer.register".into(),
                 Arc::new(move |arg: serde_json::Value| {
                     let obj = arg
                         .as_object()
-                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register expects an object"))?;
+                        .ok_or_else(|| anyhow::anyhow!("ctx.timer.register expects an object"))?;
                     let at_ms = obj.get("at_ms").and_then(|v| v.as_u64())
-                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register: missing `at_ms` (delay from now, milliseconds)"))?;
+                        .ok_or_else(|| anyhow::anyhow!("ctx.timer.register: missing `at_ms` (delay from now, milliseconds)"))?;
                     let tag = obj.get("tag").and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_register: missing `tag` (delivered to the booth's __on_timer handler)"))?
+                        .ok_or_else(|| anyhow::anyhow!("ctx.timer.register: missing `tag` (delivered to the booth's __on_timer handler)"))?
                         .to_string();
                     let id = timers_register.register_deliver(
                         target.clone(),
@@ -280,12 +280,12 @@ impl Realm {
             );
             let timers_cancel = timers.clone();
             fns.insert(
-                "ctx_timer_cancel".into(),
+                "timer.cancel".into(),
                 Arc::new(move |arg: serde_json::Value| {
                     let id = arg
                         .get("timer_id")
                         .and_then(|v| v.as_u64())
-                        .ok_or_else(|| anyhow::anyhow!("ctx_timer_cancel: missing `timer_id`"))?;
+                        .ok_or_else(|| anyhow::anyhow!("ctx.timer.cancel: missing `timer_id`"))?;
                     timers_cancel.cancel(crate::timer::TimerId(id));
                     Ok(serde_json::Value::Null)
                 }) as HostFn,
@@ -295,16 +295,16 @@ impl Realm {
             let store = store.clone();
             let booth_type = ctx.self_id.booth_type.clone();
             let booth_key = ctx.self_id.key.clone();
-            for name in ["ctx_queue_depth", "ctx_skip_to_head"] {
+            for name in ["queue.depth", "queue.skip_to_head"] {
                 let store = store.clone();
                 let booth_type = booth_type.clone();
                 let booth_key = booth_key.clone();
-                let skip = name == "ctx_skip_to_head";
+                let skip = name == "queue.skip_to_head";
                 fns.insert(
                     name.into(),
                     Arc::new(move |arg: serde_json::Value| {
                         let event = arg.as_str().ok_or_else(|| {
-                            anyhow::anyhow!("{name}: expects the event name (a string)")
+                            anyhow::anyhow!("ctx.{name}: expects the event name (a string)")
                         })?;
                         // ADR-0038 §1: a key-less route binds the singleton
                         // INSTANCE; any other instance of the type has no
@@ -312,7 +312,7 @@ impl Realm {
                         // '<type>' binds '<event>'" — the subscription truth,
                         // not a silent no-op.
                         let part = crate::mq::bound_instance_key(&store, &booth_type, &booth_key, event)?
-                            .ok_or_else(|| anyhow::anyhow!("{name}: no route of '{booth_type}' binds '{event}'"))?;
+                            .ok_or_else(|| anyhow::anyhow!("ctx.{name}: no route of '{booth_type}' binds '{event}'"))?;
                         if skip {
                             crate::mq::skip_to_head(&store, event, &part, &booth_type)?;
                             Ok(serde_json::Value::Null)

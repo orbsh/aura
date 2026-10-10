@@ -2,7 +2,7 @@
 //! declares its collections with `@DocumentEncode` classes (the python
 //! mirror of the Rust derive); introspection assembles the serde form of
 //! okm's CollectionSchema; `engine.register` persists it with the
-//! definition; the ctx.store plan resolves from it — `ctx_store_emit`
+//! definition; the ctx.store plan resolves from it — `ctx.store`
 //! round-trips through the type's own ns. Requires the `python` feature.
 
 #[cfg(feature = "python")]
@@ -27,15 +27,15 @@ class Counters:
 
 @on("bump", key="user_id")
 def bump(args):
-    cur = ctx_store_emit(json.dumps({"collection": "Counters", "op": "get_document", "key": {"id": 1}}))
+    cur = ctx.store(json.dumps({"collection": "Counters", "op": "get_document", "key": {"id": 1}}))
     c = 0 if (cur is None or "count" not in cur) else cur["count"]
-    ctx_store_emit(json.dumps({"collection": "Counters", "op": "put_document",
+    ctx.store(json.dumps({"collection": "Counters", "op": "put_document",
                                "key": {"id": 1}, "doc": {"count": c + 1}}))
     return {"count": c + 1}
 
 @on("read", key="user_id")
 def read(args):
-    cur = ctx_store_emit(json.dumps({"collection": "Counters", "op": "get_document", "key": {"id": 1}}))
+    cur = ctx.store(json.dumps({"collection": "Counters", "op": "get_document", "key": {"id": 1}}))
     return {"count": 0 if (cur is None or "count" not in cur) else cur["count"]}
 "##;
 

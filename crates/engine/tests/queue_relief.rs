@@ -1,5 +1,5 @@
 //! Phase 4.5c close-out: the queue relief valve as observable surface.
-//! `ctx_queue_depth` / `ctx_skip_to_head` resolve the instance's bound
+//! `ctx.queue.depth` / `ctx.queue.skip_to_head` resolve the instance's bound
 //! queue through the PERSISTED route registry — routing here comes from
 //! the script's own `(on ...)` declarations (the registration path's
 //! EventRoute rows), not a manual `router.on`, which is exactly the
@@ -25,9 +25,9 @@ fn named(key: &str) -> aura_realm::mq::InstanceKey {
 fn script() -> &'static str {
     r#"
 (on "tick" "user_id" (lambda (args) (hash "got" (hash-ref args "n"))))
-(define (depth args) (ctx_queue_depth "tick"))
-(define (skip args) (ctx_skip_to_head "tick") 1)
-(define (peek args) (ctx_queue_depth (hash-ref args "ev")))
+(define (depth args) (ctx.queue.depth "tick"))
+(define (skip args) (ctx.queue.skip_to_head "tick") 1)
+(define (peek args) (ctx.queue.depth (hash-ref args "ev")))
 "#
 }
 

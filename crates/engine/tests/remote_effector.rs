@@ -14,7 +14,7 @@ async fn remote_effector_roundtrip() {
     // remote.rs::code_ref_fetch_verify_cache_and_mismatch_rejection).
     const SRC: &str = r#"
 (define (double args)
-  (let* ((echoed (ctx_invoke (hash "type" "echo" "key" "e1" "handler" "execute" "args" (hash "x" 1)))))
+  (let* ((echoed (ctx.invoke (hash "type" "echo" "key" "e1" "handler" "execute" "args" (hash "x" 1)))))
     (hash "doubled" (* 2 (hash-ref args "n"))
           "echo" (hash-ref echoed "x"))))
 "#;
@@ -53,7 +53,7 @@ async fn remote_effector_roundtrip() {
     })
     .await.unwrap();
 
-    // Local target for ctx_invoke from the effector script.
+    // Local target for ctx.invoke from the effector script.
     engine.register(
         BoothType::script(
             "echo",
@@ -91,8 +91,8 @@ async fn remote_effector_roundtrip() {
     );
 
     // A remote execution node holds NO state. The ctx bridge over the
-    // wire carries ctx_invoke (plus the ADR-0034 iterate verbs and —
-    // Phase 4.14 gate 1 — ctx_store_emit, which executes against the
+    // wire carries ctx.invoke (plus the ADR-0034 iterate verbs and —
+    // Phase 4.14 gate 1 — ctx.store, which executes against the
     // type's resolved storage plan; remote types register no schema, so
     // that arm answers the named no-plan error here — the store round
     // trip over a live plan is locked in exec_booth.rs's bgi test). The
@@ -330,7 +330,7 @@ def tokens(args):
 
 /// Consumer lives on the Effector (remote python booth running the loaded
 /// ctx_iterate wrapper); the producer is a LOCAL booth. The host fns
-/// ctx_iter_start/next/dispose cross back over Frame::Host — the remote
+/// ctx.iterate.start/next/dispose cross back over Frame::Host — the remote
 /// consumer leg.
 #[cfg(feature = "python")]
 #[tokio::test]

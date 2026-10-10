@@ -15,7 +15,7 @@ const ECHO: &str = r#"
 
 const CALLER: &str = r#"
 (define (execute args)
-  (ctx_invoke (string-append
+  (ctx.invoke (string-append
     "{\"type\": \"echo\", \"key\": \""
     (hash-ref args "target_key")
     "\", \"handler\": \"execute\", \"args\": {\"via\": \"ctx.invoke\"}}")))
@@ -44,7 +44,7 @@ async fn invoke_returns_handler_result() {
 }
 
 #[tokio::test]
-async fn ctx_invoke_routes_through_realm() {
+async fn invoke_routes_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine.register(echo_type()).await.unwrap();
 
@@ -118,9 +118,9 @@ async fn state_survives_scale_to_zero() {
         "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
 (define (interface_schema args) (schema))
 (define (execute args)
-  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+  (let* ((cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
          (n (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0)))
-         (put (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+         (put (ctx.store (hash "collection" "counters" "op" "put_document"
                                     "key" (hash "id" 1) "doc" (hash "count" (+ n 1))))))
     (hash "count" (+ n 1))))
 "#;
@@ -293,12 +293,12 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 // ------------------------------------------------- Phase 2.5 (ctx bridge) --
 //
 // Script booths reach the host through named functions: one JSON argument
-// in, one JSON value out. Storage rides `ctx_store_emit` (the type's
-// declared collections, ADR-0026 §3); `ctx_invoke` rides the unified call
+// in, one JSON value out. Storage rides `ctx.store` (the type's
+// declared collections, ADR-0026 §3); `ctx.invoke` rides the unified call
 // model (Phase 3.5).
 
 // Steel script: one RMW into the type's declared collection, read back,
-// and invoke another booth through ctx_invoke. The storage declaration is
+// and invoke another booth through ctx.invoke. The storage declaration is
 // the interface_schema `storage` block (same shape as events.rs).
 #[cfg(feature = "steel")]
 #[tokio::test]
@@ -321,9 +321,9 @@ async fn steel_script_ctx_bridge() {
         "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
 (define (interface_schema args) (schema))
 (define (execute args)
-  (let* ((cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
-         (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"ttl2\", \"handler\": \"execute\", \"args\": {\"hello\": true}}")))
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+  (let* ((cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+         (echoed (ctx.invoke "{\"type\": \"echo\", \"key\": \"ttl2\", \"handler\": \"execute\", \"args\": {\"hello\": true}}")))
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" 1) "doc" (hash "count" 1)))
     (hash "present" (if (void? cur) #f #t) "visits" (if (void? cur) 1 (+ 1 (hash-ref cur "count"))) "echo" (hash-ref echoed "hello"))))
 "#,
@@ -372,10 +372,10 @@ def interface_schema(args):
                   "junction_base": 12288}}}}}}
 
 def execute(args):
-    cur = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
-    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+    cur = ctx.store(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
+    ctx.store(json.dumps({"collection": "counters", "op": "put_document",
                                "key": {"id": 1}, "doc": {"count": 1}}))
-    echo = ctx_invoke(json.dumps({"type": "echo", "key": "ttl3", "handler": "execute", "args": {"ok": 7}}))
+    echo = ctx.invoke(json.dumps({"type": "echo", "key": "ttl3", "handler": "execute", "args": {"ok": 7}}))
     stored = 1 if cur is None else (cur.get("count") or 1)
     return {"stored": stored, "echo": echo["ok"]}
 "#,
@@ -684,8 +684,8 @@ async fn re_register_replaces_routes() {
 
 // ADR-0026 §3 + §4: the type declares storage collections through its
 // interface_schema (`storage.collections` — serde CollectionSchema +
-// indexes/reduces); `ctx_store_emit` executes ops against the type's own
-// ns, and `ctx_interface_schema` reads the persisted copy. steel script,
+// indexes/reduces); `ctx.store` executes ops against the type's own
+// ns, and `ctx.schema` reads the persisted copy. steel script,
 // full round trip through the host bridge.
 #[cfg(feature = "steel")]
 #[tokio::test]
@@ -707,18 +707,18 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
                                 "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
 
 (define (put-note args)
-  (ctx_store_emit (hash "collection" "notes"
+  (ctx.store (hash "collection" "notes"
                         "op" "put_document"
                         "key" (hash "id" 7)
                         "doc" (hash "count" 42))))
 
 (define (get-note args)
-  (ctx_store_emit (hash "collection" "notes"
+  (ctx.store (hash "collection" "notes"
                         "op" "get_document"
                         "key" (hash "id" 7))))
 
 (define (read-schema args)
-  (ctx_interface_schema ""))
+  (ctx.schema ""))
 "#;
     engine
         .register(aura_booth::BoothType::script(
@@ -735,25 +735,25 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
     engine
         .invoke(target.clone(), "put-note", serde_json::json!(7))
         .await
-        .expect("put through ctx_store_emit");
+        .expect("put through ctx.store");
     let got = engine
         .invoke(target.clone(), "get-note", serde_json::json!(7))
         .await
-        .expect("get through ctx_store_emit");
+        .expect("get through ctx.store");
     assert_eq!(got["count"], 42);
 
     // The persisted schema copy is readable from the handler.
     let schema = engine
         .invoke(target.clone(), "read-schema", serde_json::json!(null))
         .await
-        .expect("ctx_interface_schema");
+        .expect("ctx.schema");
     assert!(
         schema["storage"]["collections"]["notes"].is_object(),
         "interface_schema carries the storage declaration: {schema}"
     );
 
     // A type without a storage declaration has no ctx.store surface:
-    // registering one and calling ctx_store_emit errors as a value.
+    // registering one and calling ctx.store errors as a value.
 }
 
 // The PTY ctx file-bridge store test retired with the carrier: the same

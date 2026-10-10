@@ -54,7 +54,7 @@ BoothType "cart"                ← blueprint: state schema + handler + subscrip
   fixed here; the body (Rust handler or script) attaches to the type and is
   shared by every instance
 - **Routing**: `router.on("order.created", "cart", "user_id")` delivers to
-  `(type, key extracted from the event)`; `ctx_invoke` addresses targets the
+  `(type, key extracted from the event)`; `ctx.invoke` addresses targets the
   same way with `{type, key}`
 - **State layout**: storage isolation lives at the type level (ADR-0026 §3) —
   each booth type occupies one real okm ns and declares its own collections;

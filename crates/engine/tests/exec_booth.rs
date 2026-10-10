@@ -57,11 +57,15 @@ async fn bgi_booth_invoke() {
 }
 
 /// The ctx seam across the process boundary, into the REALM: the bgi
-/// booth's `ctx_round_trip` sends a host frame (ctx_invoke) which the
+/// booth's `ctx_round_trip` sends a host frame (ctx.invoke) which the
 /// host bridge answers against a sibling python booth — child → pipes →
-/// realm → child, one full round.
+/// realm → child, one full round. The sibling is a python booth: the
+/// gate matches the carrier the test actually needs (ungated it failed
+/// on default builds — `language not resident-carried by this effector
+/// build: python`, swallowed to Null by the fixture's old host helper).
+#[cfg(feature = "python")]
 #[tokio::test]
-async fn bgi_booth_ctx_invoke_to_sibling() {
+async fn bgi_booth_invoke_to_sibling() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("bin-echo", "bgi", bin("bgi_loop")))
@@ -226,7 +230,7 @@ async fn exec_oneshot_booth_through_realm() {
     assert!(err.contains("not live"), "the id is dead by construction: {err}");
 }
 
-/// Phase 4.14 gate 1: `ctx_store_emit` over the bgi seam into the REALM
+/// Phase 4.14 gate 1: `ctx.store` over the bgi seam into the REALM
 /// store. The fixture's `store_round_trip` forwards two okm Collection
 /// instructions (put, read-back) as host frames — pure transport, the
 /// child never parses them — and the parent answers from the type's own

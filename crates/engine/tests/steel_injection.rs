@@ -3,7 +3,7 @@
 //! (the host-injected face — built over the realm's live engine at
 //! session load, addressed by NAME through the six `collection-*!`
 //! fns), and writes through the BINDING face must be readable through
-//! `ctx_store_emit` and vice versa — same bytes, one engine (the
+//! `ctx.store` and vice versa — same bytes, one engine (the
 //! acceptance lock, the shape py_injection.rs established). The steel
 //! mirror also locks the INTROSPECTION side: the handler bodies
 //! reference the collection fns at define-compile time — the stub arms
@@ -36,10 +36,10 @@ const SCRIPT: &str = r#"
   (collection-put! "notes"
     (list->vector (list 0 0 0 0 0 0 0 1))
     (hash "id" 1 "count" 41))
-  (ctx_store_emit (hash "collection" "notes" "op" "get_document" "key" (hash "id" 1))))
+  (ctx.store (hash "collection" "notes" "op" "get_document" "key" (hash "id" 1))))
 
 (define (emit_write_bind_read args)
-  (ctx_store_emit (hash "collection" "notes" "op" "put_document"
+  (ctx.store (hash "collection" "notes" "op" "put_document"
                         "key" (hash "id" 2) "doc" (hash "count" 42)))
   (collection-get! "notes" (list->vector (list 0 0 0 0 0 0 0 2))))
 
@@ -50,7 +50,7 @@ const SCRIPT: &str = r#"
 "#;
 
 #[tokio::test]
-async fn steel_binding_face_and_ctx_store_emit_share_one_keyspace() {
+async fn steel_binding_face_and_ctx_store_share_one_keyspace() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("steel-inject", "steel", SCRIPT))
@@ -59,14 +59,14 @@ async fn steel_binding_face_and_ctx_store_emit_share_one_keyspace() {
 
     let target = |key: &str| InstanceId { booth_type: "steel-inject".into(), key: key.into() };
 
-    // Binding write → ctx_store_emit read (same session instance).
+    // Binding write → ctx.store read (same session instance).
     let out = engine
         .invoke(target("k"), "bind_write_emit_read", serde_json::json!({"user_id": "a"}))
         .await
         .expect("bind_write_emit_read");
     assert_eq!(out["count"], 41);
 
-    // ctx_store_emit write → binding read.
+    // ctx.store write → binding read.
     let out = engine
         .invoke(target("k"), "emit_write_bind_read", serde_json::json!({"user_id": "a"}))
         .await

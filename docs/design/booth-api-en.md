@@ -83,32 +83,32 @@ values — never a panic.
 **Host functions** (the ctx bridge, Phase 2.5): scripts may call the
 following — each takes one JSON argument and returns a JSON value:
 
-- `ctx_store_emit(op)` → the operation's result (one storage instruction:
+- `ctx.store(op)` → the operation's result (one storage instruction:
   collection name + operation + arguments, over **the type's declared
   collections** — ADR-0026 §3; storage addressing is bound to the type's
   ns, cross-type access is not expressible; a type that declares no
   storage schema errors — there is no ctx.store surface)
-- `ctx_interface_schema(arg)` → the type's persisted interface_schema copy
+- `ctx.schema(arg)` → the type's persisted interface_schema copy
   (handlers reflecting over their own declared shape)
-- `ctx_invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
+- `ctx.invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → the target
   Booth's return value (blocking wait through the unified call model;
   timeout = failure value)
-- `ctx_queue_depth(event)` → this instance's backlog depth on the event's
+- `ctx.queue.depth(event)` → this instance's backlog depth on the event's
   queue (a point read of the live Count reduce over mq-data — never a
   scan; the watermark compaction's unfold maintains it); the queue
   resolves through the persisted route registry (the consumer loop's own
   source) — an event this type has no route for is an error value
-- `ctx_skip_to_head(event)` → jumps this instance's cursor to the
+- `ctx.queue.skip_to_head(event)` → jumps this instance's cursor to the
   partition head, discarding the stale backlog (the relief valve;
   cursors are monotonic — a skipped backlog never re-surfaces on the
   next drain; events after the skip flow normally)
-- `ctx_timer_register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`
+- `ctx.timer.register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`
   (ADR-0016 §3b — the imperative timer: delivers an `__on_timer` queue
   job carrying the `tag` after `at_ms` milliseconds from now; the wake
   time is computed at runtime by the booth, not declared statically.
   Memory tier — lives for the process lifetime; the durable tier is a
   recorded residual)
-- `ctx_timer_cancel({"timer_id": n})` → cancels a pending timer; an
+- `ctx.timer.cancel({"timer_id": n})` → cancels a pending timer; an
   unknown id (already fired / already cancelled) is an idempotent
   no-op, not an error
 
@@ -141,10 +141,10 @@ it becomes the type definition's metadata source.
 @on("add_to_cart", key="user_id")
 def add(args):
     # args: the decoded JSON value (dict/list/...), not a string
-    ctx_store_emit(json.dumps({"collection": "counters", "op": "put_document",
+    ctx.store(json.dumps({"collection": "counters", "op": "put_document",
                                "key": {"id": 1}, "doc": {"visits": 1}}))   # host fns take a JSON string
-    got = ctx_store_emit(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
-    echo = ctx_invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
+    got = ctx.store(json.dumps({"collection": "counters", "op": "get_document", "key": {"id": 1}}))
+    echo = ctx.invoke('{"type": "echo", "key": "k1", "args": {"x": 1}}')
     return {"stored": got["visits"], "echo": echo["x"]}
 
 @on("remove_from_cart")
@@ -172,7 +172,7 @@ Notes:
 - wildcards are prefix-only (`prefix.*`, etcd-style), matching
   `order.created` but not `order`; wildcard-declared handlers route to
   the singleton instance
-- **a direct call declares which function to call**: the `ctx_invoke`
+- **a direct call declares which function to call**: the `ctx.invoke`
   payload must carry a `handler` field (the function name), and so must
   engine `invoke(target, handler, args)` — no reserved function names, no
   implicit entry; when registered without an entry, a module-level
@@ -188,10 +188,10 @@ Notes:
 ;; singleton), handler.
 (on "add_to_cart" "user_id"
   (lambda (args)
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" 1) "doc" (hash "visits" 1)))
-    (let* ((got (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
-           (echoed (ctx_invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
+    (let* ((got (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" 1))))
+           (echoed (ctx.invoke "{\"type\": \"echo\", \"key\": \"k1\", \"handler\": \"execute\", \"args\": {\"x\": 1}}")))
       (hash "visits" (hash-ref got "visits")
             "echo" (hash-ref echoed "x")))))
 

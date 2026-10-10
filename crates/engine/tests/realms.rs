@@ -27,13 +27,13 @@ const COUNTER: &str = r#"
   9)))
 (define (count args)
   (let* ((n (user-n (hash-ref args "user_id")))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
     (hash "count" (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0)))))
 (define (execute args)
   (let* ((n (user-n (hash-ref args "user_id")))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
          (c (if (void? cur) 0 (if (hash-contains? cur "count") (hash-ref cur "count") 0))))
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" n) "doc" (hash "count" (+ c 1))))
     (hash "count" (+ c 1))))
 "#;
@@ -51,13 +51,13 @@ const LISTENER: &str = r#"
   9))
 (define (count args)
   (let* ((n (user-n (hash-ref args "user_id")))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n)))))
     (hash "seen" (if (void? cur) 0 (if (hash-contains? cur "seen") (hash-ref cur "seen") 0)))))
 (define (order.created args)
   (let* ((n (user-n (hash-ref args "user_id")))
-         (cur (ctx_store_emit (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
+         (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
          (c (if (void? cur) 0 (if (hash-contains? cur "seen") (hash-ref cur "seen") 0))))
-    (ctx_store_emit (hash "collection" "counters" "op" "put_document"
+    (ctx.store (hash "collection" "counters" "op" "put_document"
                           "key" (hash "id" n) "doc" (hash "seen" (+ c 1))))
     (+ c 1)))
 "#;

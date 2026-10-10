@@ -33,7 +33,7 @@
 
 场域是引擎内部的事件空间。摊位通过 `on(name, fn)` 订阅事件、`emit(name, data)` 发射事件。发射者不关心谁处理，处理者不关心谁发射。外部世界（HTTP/WS）的协议层由调用方（Fluxora、网关）处理——Fluxora 将外部请求转成 `emit()`，将 `on()` 事件转成 HTTP 响应或 WS 推送。Aura 引擎本身不碰 HTTP/WS。
 
-**术语校准**：在 Aura，"摊位" 只承诺**调度语义**——按实例键串行、状态住在本类型声明的 collections、失败是值（ADR-0012/0026）。它不描述**通讯语义**：per-摊位 mailbox 模型已在 PLAN 4.5c 退役（ADR-0014），事件投递是 MQ 形态——按事件名的 (event, partition) 持久队列 + 每订阅者游标，多订阅者零复制；直接调用（`ctx_invoke`）只是请求-响应的例外路径（能用事件表达的协作不用直接调用）。驻留也不同于传统 actor 的"永生邮箱"：实例可睡、可驱逐，唤醒靠积压与游标（scale-to-zero）。一个 realm 参与者的精确一句话：**MQ 投递、按实例键串行的状态消费者**。
+**术语校准**：在 Aura，"摊位" 只承诺**调度语义**——按实例键串行、状态住在本类型声明的 collections、失败是值（ADR-0012/0026）。它不描述**通讯语义**：per-摊位 mailbox 模型已在 PLAN 4.5c 退役（ADR-0014），事件投递是 MQ 形态——按事件名的 (event, partition) 持久队列 + 每订阅者游标，多订阅者零复制；直接调用（`ctx.invoke`）只是请求-响应的例外路径（能用事件表达的协作不用直接调用）。驻留也不同于传统 actor 的"永生邮箱"：实例可睡、可驱逐，唤醒靠积压与游标（scale-to-zero）。一个 realm 参与者的精确一句话：**MQ 投递、按实例键串行的状态消费者**。
 
 **开发者体验方向**：Fluxora 不做 MQ（Kafka/NATS 已去掉），只做 HTTP/WS 协议桥接。进一步的 DX 目标：Web 控制台 + 嵌入 VSCode，开发者直接在浏览器里写 Python 摊位。摊位之间只管发消息，存数据由框架处理。这是 FaaS + Web 框架的融合形态——不是"给你一个数据库让你写 CRUD"，而是"给你一个事件空间让你编排摊位"。
 
@@ -419,7 +419,7 @@ def handle(ctx, add_to_cart=None, remove_from_cart=None):
                   'required '("user_id" "item"))))
   (lambda (ctx data)
     ;; 状态经 ctx.store.emit 写本类型声明的 collections（ADR-0026 §3）
-    (ctx_store_emit (hash "collection" "carts" "op" "put_document"
+    (ctx.store (hash "collection" "carts" "op" "put_document"
                           "key" (hash "user" (hash-ref data "user_id"))
                           "doc" (hash "items" (append items (list (hash-ref data "item"))))))
     (emit "cart_updated"

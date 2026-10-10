@@ -36,7 +36,7 @@ BoothType "cart"                ← 蓝图：状态 schema + handler + 订阅声
 ```
 
 - **注册**：`engine.register(BoothType::simple("echo", handler))` 或 `BoothType::script("py-ctx", "python", source, entry)`——类型名在这里定，body（Rust handler 或脚本）挂在类型上，所有实例共享同一份代码
-- **路由**：`router.on("order.created", "cart", "user_id")` 的事件投递目标是 `(类型, 从事件提取的 key)`；`ctx_invoke` 也用 `{type, key}` 定位目标
+- **路由**：`router.on("order.created", "cart", "user_id")` 的事件投递目标是 `(类型, 从事件提取的 key)`；`ctx.invoke` 也用 `{type, key}` 定位目标
 - **状态布局**：存储隔离在类型层（ADR-0026 §3）——每个摊位类型占一个真实 okm ns，类型声明自己的 collections，实例是其中的 document；实例键只回答「谁串行处理这条消息」，不再决定存储布局
 - **分片归属**：`(booth_type, key)` 合起来构成完整的分区标识；单看 key 不够（"alice" 在 `cart` 和 `session` 里是两个无关实例）
 

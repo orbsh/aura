@@ -36,7 +36,7 @@ Events are the only collaboration channel between booths (field pub/sub, see boo
 - **The event name is the addressing name**: `@on(event, key=...)` declares what each handler listens to; the delivery instance key is taken from the event data's key field (e.g. `key="channel_id"` reads `data.channel_id`), falling to the `__default__` catch-all instance when missing — so emitted events **must carry the field declared as key**, otherwise everything piles into the catch-all.
 - **emits are not declared** (ADR-0012): the receiver set is a runtime fact; events without subscribers land in the dead-event ring (an observable audit surface). Modeling requires no "who listens" ledger — and must not keep one.
 - **One queue, many subscribers** is structural: several booth types may consume the same event (e.g. `order.created` feeds both `inventory` and `audit`), each with its own cursor, mutually independent.
-- **Direct calls (`ctx_invoke`) are the exception path**: for request-response shapes; the payload must declare the target `{type, key, handler, args}`. Prefer events when they can express the collaboration — events leave a delivery record and admit multiple subscribers by nature.
+- **Direct calls (`ctx.invoke`) are the exception path**: for request-response shapes; the payload must declare the target `{type, key, handler, args}`. Prefer events when they can express the collaboration — events leave a delivery record and admit multiple subscribers by nature.
 
 ## Step 3: state lives in the type's collections
 
@@ -62,7 +62,7 @@ Cross-partition queries (aggregate every user's cart in a department; which chan
                           ("dept_stats", "d7")  ← projection partitioned by dept_id
                           dept_totals collection: { dept_total, ... }
                                           ▲
-                        query: ctx_invoke(dept_stats, "d7")
+                        query: ctx.invoke(dept_stats, "d7")
 ```
 
 ## Residency: whether to stay warm, in three ledgers
@@ -177,7 +177,7 @@ served by consuming a sibling booth (ADR-0031's ruling shape).
 | A shared collaboration space | Partition by channel_id/room_id; the ownership key rides in the message, the initiator's identity as a parameter |
 | Global observation / audit | Wildcard-subscribed singleton booth |
 | Cross-partition stats / reverse lookup | Projection booth (partitioned by the aggregation dimension) |
-| Request-response | `ctx_invoke` (declares the handler); prefer events |
+| Request-response | `ctx.invoke` (declares the handler); prefer events |
 | Streaming sequential output (tokens/pagination/scans) | `ctx.iterate` — generator/envelope handler as producer, native iterable as consumer (ADR-0034); not a durable stream — need at-least-once? use events |
 | External data import/export | Dedicated booth wrapper |
 | Long waits on external results | Timer wheel / event re-entry, no residency held |

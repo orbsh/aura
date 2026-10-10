@@ -35,7 +35,7 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 - **事件名是寻址名**：`@on(event, key=...)` 声明每个 handler 监听的事件；事件投递的分区键取自事件数据中的 key 字段（如 `key="channel_id"` 取 `data.channel_id`），取不到落 `__default__` 兜底实例——所以发出的事件**必须携带声明为 key 的字段**，否则全部堆进兜底实例。
 - **emits 不声明**（ADR-0012）：接收者集合是运行时事实，无订阅者的事件落 dead-event ring（可观测审计面）。建模时不需要也不应该维护「谁在听」的清单。
 - **一个队列多个订阅者**是结构性的：多个摊位类型可监听同一事件（如 `order.created` 同时被 `inventory` 和 `audit` 消费），各自有独立 cursor，互不干扰。
-- **直接调用（`ctx_invoke`）是例外路径**：用于请求-响应形态，载荷必须声明目标 `{type, key, handler, args}`——能用事件表达的协作不用直接调用，事件留下投递记录且天然多订阅。
+- **直接调用（`ctx.invoke`）是例外路径**：用于请求-响应形态，载荷必须声明目标 `{type, key, handler, args}`——能用事件表达的协作不用直接调用，事件留下投递记录且天然多订阅。
 
 ## 第三步：状态是本类型的 collections
 
@@ -59,7 +59,7 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
                         ("dept_stats", "d7")  ← 按 dept_id 分区的投影
                         dept_totals collection: { dept_total, ... }
                                         ▲
-                            查询：ctx_invoke(dept_stats, "d7")
+                            查询：ctx.invoke(dept_stats, "d7")
 ```
 
 ## 驻留（retention）：留不留，算三笔账
@@ -142,7 +142,7 @@ prism 按 payload.user_id 找到该用户的 WS 连接，逐一下发
 | 多人共享的协作空间 | 按 channel_id/room_id 分区；归属键自带在消息里，发起者身份走参数 |
 | 全局观察/审计 | 通配订阅单例摊位 |
 | 跨分区统计/反查 | 投影摊位（按聚合维度分区） |
-| 请求-响应 | `ctx_invoke`（声明 handler），事件优先 |
+| 请求-响应 | `ctx.invoke`（声明 handler），事件优先 |
 | 流式顺序输出（token/分页/扫描） | `ctx.iterate` 生产方生成器/信封 handler，消费方原生可迭代对象（ADR-0034）；不是持久流——要 at-least-once 用事件 |
 | 外部数据导入导出 | 专用摊位包装 |
 | 长时等待外部结果 | timer wheel / 事件回投，不占驻留 |

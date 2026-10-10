@@ -277,3 +277,27 @@ that code at its strongest), ADR-0027 (content-addressed delivery —
 exec fetches to a temp path and runs it once), ADR-0015/0016 (node trust
 and residency accounting unchanged for bgi instances), effector
 ownership ruling (the effector executes delivered code; spawn is execution).
+
+## Update (2026-10-01) — the reply contract, made explicit (from mudra's extension review)
+
+Section 3 lists the frames but nowhere states what a guest must produce.
+The implemented answer already exists in `CallSpec` (`crates/booth/src/call.rs`):
+**reply semantics are per-target, statically declared** — Tier rides the
+booth/target registry beside the carried languages ("static execution
+nature … declared at registration, never guessed at runtime"). A **Hot**
+target parks the caller: the guest's `result` must arrive within the
+deadline, and expiry is itself a failure value — the caller never hangs.
+A **Cold** target never parks: dispatch returns Pending and re-enters via
+`resolve_call` whenever the guest answers (minutes-scale waits on humans or
+external systems). A handler is one shape or the other — a call that is
+simultaneously fire-and-forget and request-response does not exist. Also
+worth restating: `result` is not the booth's only outbound voice — the
+typed `host` frames are how an actor-initiated call flows mid-handler.
+The wire section read as plain RPC; this note records that it is an actor
+substrate with function-call sugar on top.
+
+Adoption record: mudra's extension protocol
+(`~/world/mudra/docs/ADR-extension-protocol.md`) takes this vocabulary as
+its wire contract — profile deltas: no `store` arm (extension state lives
+with the extension), json-lines codec only, `@on` event subscriptions
+declared in the script's interface_schema and carried by the session hello.

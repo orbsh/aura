@@ -214,3 +214,22 @@ ADR-0034（bgi 帧所承载的信封与 host-op 词汇）、ADR-0031（对外行
 交付——exec 取回临时路径后跑一次）、ADR-0015/0016（节点信任与驻留计时
 对 bgi 实例不变）、effector 归属裁决（effector 执行交付的代码；spawn 就是
 执行）。
+
+## Update (2026-10-01) — 应答契约显式化（源自 mudra 扩展协议审查）
+
+§3 罗列了帧，却没有任何一句写明 guest 必须产出什么。实现里的答案早已存
+在于 `CallSpec`（`crates/booth/src/call.rs`）：**应答语义逐 target 静态
+声明**——Tier 与所载语言同属 booth/target 注册表（"static execution
+nature … declared at registration, never guessed at runtime"）。**Hot**
+目标泊住调用方：guest 的 `result` 必须在 deadline 内到达，到期本身即
+failure value——调用方永不泊住悬挂。**Cold** 目标永不泊：dispatch 返回
+Pending，guest 何时作答何时经 `resolve_call` 再入（分钟级等待人或外部系
+统）。一个 handler 二选一——同时是 fire-and-forget 又是 request-response
+的调用不存在。另值得重述：`result` 不是 booth 唯一的出站声音——actor
+式的主动调用经类型化 `host` 帧在 handler 中途流出。线格式一节读起来像普
+通 RPC；本注记录它的实底：函数调用糖衣之下的 actor 基座。
+
+采用记录：mudra 的扩展协议（`~/world/mudra/docs/ADR-extension-protocol.md`）
+采用本词汇表为线契约——profile 差异：无 `store` 臂（扩展状态归扩展自
+有）、仅 json-lines codec、`@on` 事件订阅声明在脚本的 interface_schema
+里、由会话 hello 携带。

@@ -42,6 +42,12 @@ impl Realm {
         // that keeps the fjall Database open forever after engine drop.
         let dispatch_realm = Arc::downgrade(&self_arc);
         let iterate_realm = Arc::downgrade(&self_arc);
+        // ctx.emit (ADR-0043 §2): publish rides the SAME Weak-realm
+        // discipline as dispatch/iterate; the emitter is captured as the
+        // TYPE name (audit; publishing is instance-free — 0011's own
+        // observation kept in force under the new placement).
+        let emit_realm = Arc::downgrade(&self_arc);
+        let emitter = id.booth_type.clone();
         let mut ctx = aura_booth::Ctx::new(
             id.clone(),
             Arc::new(move |target, handler: &str, args| {
@@ -67,6 +73,19 @@ impl Realm {
                 })
             }),
         );
+        // ctx.emit (ADR-0043 §2): publish into the MQ plane, same Weak
+        // discipline; emitter = this ctx's type name (audit rides the
+        // Realm::emit signature).
+        ctx = ctx.with_emit(Arc::new(move |event: String, data| {
+            let realm = emit_realm.clone();
+            let emitter = emitter.clone();
+            Box::pin(async move {
+                let realm = std::sync::Weak::upgrade(&realm).ok_or_else(|| {
+                    anyhow::anyhow!("realm dropped: emit after engine shutdown")
+                })?;
+                Realm::emit(&realm, Some(&emitter), &event, data).await
+            })
+        }));
         // Type-scoped storage executor (ADR-0026 §3): the handle resolves
         // the type's plan through the realm (Weak, same retain-cycle
         // discipline) and executes the op against the type's own ns. The
@@ -136,6 +155,32 @@ impl Realm {
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
+        // ctx.emit (ADR-0043 §2 — the 0011 half-bridge, landed): the
+        // script host fn rides the Ctx's own emit handle (Weak realm +
+        // type-name emitter captured at ctx_for — publishing is
+        // instance-free). Fire-and-forget beyond route resolution: the
+        // reply is always Null on success; a bad shape or a dropped
+        // realm is an error value, never a silent no-op.
+        if let Some(emit) = ctx.emit_handle() {
+            let h = handle.clone();
+            fns.insert(
+                "emit".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    let obj = arg
+                        .as_object()
+                        .ok_or_else(|| anyhow::anyhow!("ctx.emit expects an object"))?;
+                    let event = obj
+                        .get("event")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("ctx.emit: missing `event`"))?
+                        .to_string();
+                    let data = obj.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                    let emit = emit.clone();
+                    h.block_on(emit(event, data))?;
+                    Ok(serde_json::Value::Null)
+                }) as HostFn,
+            );
+        }
         // ADR-0034: the iterate host fns. The cursor loop lives on the
         // script side (the python wrapper is a native generator over
         // these three); each host call is one round trip through the

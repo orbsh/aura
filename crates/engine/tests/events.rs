@@ -645,3 +645,62 @@ async fn scan_route_fans_out_to_the_hit_rows() {
     assert!(mq::cursor_rows(&vs, eid, kid3).unwrap().is_empty(),
         "b@x's row matched nothing — no delivery, no cursor");
 }
+
+#[tokio::test]
+async fn ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish() {
+    // ADR-0043 §2 acceptance — the seam the external Realm::emit tests
+    // never crossed: the PUBLISHER is a handler. `relay.fire` calls
+    // ctx.emit; the event routes to a `pong` booth (key from the event
+    // data), whose counter observes the delivery. The emitter recorded
+    // in the audit signature is the TYPE name ("relay") — publishing is
+    // instance-free (0011's observation kept under the new placement).
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(BoothType::script(
+            "relay",
+            "steel",
+            r#"(define (interface_schema args) (hash "receives" (hash "fire" (hash) "fire_dead" (hash))))
+(define (fire args)
+  (ctx.emit (hash "event" "ping" "data" (hash "event" "ping" "user_id" "alice")))
+  "emitted")
+(define (fire_dead args)
+  (ctx.emit (hash "event" "nobody.listens" "data" (hash)))
+  "emitted-dead")"#,
+        ))
+        .await
+        .unwrap();
+    engine.register(counter_of("pong", &["ping"])).await.unwrap();
+    {
+        let mut r = engine.realm.try_lock().unwrap();
+        r.router.on("ping", "pong", "user_id");
+    }
+
+    let relay_id = InstanceId { booth_type: "relay".into(), key: BKey::Singleton };
+    let out = engine
+        .invoke(relay_id.clone(), "fire", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!("emitted"));
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let count = engine
+        .invoke(
+            InstanceId { booth_type: "pong".into(), key: BKey::Named("pong/alice".into()) },
+            "count",
+            serde_json::json!({ "user_id": "alice" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count, serde_json::json!({ "count": 1 }), "the handler-published event was consumed");
+
+    // Dead-ring boundary rides ctx.emit exactly as it rides Realm::emit
+    // (ADR-0012: no whitelist — an unrouted publish lands observable).
+    let dead_before = engine.realm.lock().await.dead_events.len();
+    engine
+        .invoke(relay_id, "fire_dead", serde_json::json!({}))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let dead_after = engine.realm.lock().await.dead_events.len();
+    assert_eq!(dead_after, dead_before + 1, "the unrouted publish landed in the dead ring");
+}

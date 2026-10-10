@@ -90,6 +90,17 @@ pub async fn resolve_host_call(
                 )),
             }
         }
+        // ctx.emit over the wire (ADR-0043 §2, remote shape): the event
+        // lands in the control plane's realm MQ. The frame hop stays
+        // request/response (reply pairing is protocol, the method's
+        // fire-and-forget is business); the answer is Null on success.
+        // The emitter records the remote instance's TYPE name.
+        HostOp::Emit { event, data } => {
+            aura_realm::Realm::emit(realm, Some(&instance.booth_type), event, data.clone())
+                .await
+                .map(|_| serde_json::Value::Null)
+                .map_err(|e| e.to_string())
+        }
     }
 }
 

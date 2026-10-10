@@ -270,6 +270,11 @@ pub struct Ctx {
     /// consumer. `None` only on the introspection ctx (no realm to
     /// dispatch against); a booth handler always has it.
     iterate: Option<iterate_handle::IterateHandle>,
+    /// Publish into the MQ plane (ADR-0043 §2): the realm injects a
+    /// closure that upgrades Weak (same retain discipline as dispatch)
+    /// and captures the emitter as this ctx's TYPE name — publishing is
+    /// instance-free. `None` on the introspection ctx.
+    emit: Option<emit_handle::EmitHandle>,
     /// Type-scoped storage executor (ADR-0026 §3): one entry carrying okm
     /// Collection ops as data (`ctx.store.emit(op)`). The runtime injects
     /// the handle bound to the OWNING TYPE's ns — cross-type access is not
@@ -363,6 +368,18 @@ pub mod iterate_handle {
     use super::*;
     pub type IterateHandle = Arc<
         dyn Fn(IterateOp) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
+            + Send
+            + Sync,
+    >;
+}
+
+pub mod emit_handle {
+    use super::*;
+    /// Publish one event into the MQ plane (ADR-0043 §2). Async like the
+    /// dispatch/iterate handles: route resolution awaits, sends are
+    /// fire-and-forget MPSC.
+    pub type EmitHandle = Arc<
+        dyn Fn(String, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>>
             + Send
             + Sync,
     >;
@@ -575,9 +592,17 @@ impl Ctx {
             self_id,
             invoke: Invoke { dispatch },
             iterate: Some(iterate),
+            emit: None,
             store_emit: None,
             interface_schema: None,
         }
+    }
+
+    /// Inject the MQ publish closure (realm-side assembly; same
+    /// Weak-realm discipline as dispatch/iterate).
+    pub fn with_emit(mut self, handle: emit_handle::EmitHandle) -> Self {
+        self.emit = Some(handle);
+        self
     }
 
     /// Inject the type-scoped storage executor (realm-side assembly;
@@ -614,6 +639,24 @@ impl Ctx {
     /// The single controlled call surface (ADR-0011).
     pub async fn invoke(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
         (self.invoke.dispatch.clone())(target, handler, args).await
+    }
+
+    /// Publish into the MQ plane (ADR-0043 §2): fire-and-forget beyond
+    /// route resolution; the emitter rides as this ctx's type name.
+    /// Error on the introspection ctx (no realm).
+    pub async fn emit(&self, event: &str, data: Value) -> anyhow::Result<()> {
+        let emit = self
+            .emit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ctx.emit: introspection ctx carries no realm"))?
+            .clone();
+        emit(event.to_string(), data).await
+    }
+
+    /// The emit handle, for the script ctx bridge (host fns drive the
+    /// same closure the Rust method rides).
+    pub fn emit_handle(&self) -> Option<emit_handle::EmitHandle> {
+        self.emit.clone()
     }
 
     /// The invoke dispatch handle, for sync wrappers around `invoke`.

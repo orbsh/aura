@@ -70,3 +70,19 @@ the single-entry rule: one interface, the instruction is data). The bounded
 list reads: **store / invoke / iterate(+dispose)** — the capability
 discipline (instance-bound, Host-controlled, registry-declared) is unchanged
 through both moves. `ctx.metadata` stays withdrawn (ADR-0025).
+
+## Update (2026-10-10, ADR-0043) — the placement regime retires
+
+The two-prong admission test (instance-bound + Host-controlled) is replaced
+by a single direction test: **booth→host = a method on the ctx object;
+host→booth = exports/return; deployment = off both planes.** ctx is read as
+the ambient execution context of one delivery, not an instance-identity
+token. Consequences for this ADR's rulings: `emit` lands as `ctx.emit`
+(its script-level home was decided here but never injected anywhere — the
+gap 0043 closes); `on` lands as phase-gated `ctx.on` (activation only —
+the dynamic-subscription rejection survives, re-expressed as a timing rule
+with the persisted `interface_schema.receives` still the one contract
+source); `interface_schema` becomes a ctx member (as data) alongside its
+export form; the flat `ctx_*` names retire without aliases. The **entry
+stays native** rule (no ctx.return, native failure, hooks are exports) is
+kept verbatim in force. See 0043 for the full surface and migration.

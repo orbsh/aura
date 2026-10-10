@@ -540,6 +540,12 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     compaction could eat their unconsumed backlog, violating "no silent drops".
     It is now a matching test.
 
+- [ ] **Phase 4.20 — The ctx object: one ambient execution context (ADR-0043, docs/adr/0043-ctx-object.md en+zh; Accepted 2026-10-10, breaking, no aliases)**
+  - Surface: `ctx.self/payload/invoke/iterate/store/emit/timer.*/queue.*/schema/on(phase-gated)` — the flat `ctx_*` injection table retires; the handler signature collapses to `(ctx)`.
+  - `ctx.emit` LANDS the 0011 half-bridge: publish into the MQ plane (host closure carries the type name as emitter); bgi gains the `emit` host arm (no reply, fire-and-forget).
+  - `ctx.on`: activation-only phase gate; the persisted `interface_schema.receives` remains the ONE contract source (decorators lower to it).
+  - Order of work: booth Ctx shape + realm ctx.rs (one object) → carrier bindings (python/steel/nu/bgi) → script/test-fixture renames → live test from INSIDE a handler (the external `Realm::emit` coverage does not count) → booth-api.md + wiki §5.3 rewrite.
+
 ## Milestone B — Agent base
 
 - [ ] Phase 6 — Turn-executor Booth hosting: Gravity as Booth type (partition key = session_id; same-session serial, cross-session parallel). Out of scope here — implemented in the gravity repo, hosted via this phase's contract.

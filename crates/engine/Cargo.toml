@@ -24,7 +24,6 @@ base64 = "0.22"
 default = []
 steel = ["aura-realm/steel"]
 python = ["aura-realm/python"]
-wasmtime = ["aura-realm/wasmtime"]
 fjall = ["aura-realm/fjall", "dep:okm-core", "dep:fjall"]
 
 [dependencies.okm-core]

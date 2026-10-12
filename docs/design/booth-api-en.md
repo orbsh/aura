@@ -62,9 +62,11 @@ assembly (`receives` from `@on` parameters, wildcards into
 `wildcard_receives`) and merges it field-wise with a partial explicit
 declaration the script writes — decorators own receives, the script
 contributes lifecycle and anything else the decorators cannot express.
-The single merged function is the only thing aura calls. rust/wasm get
-the same implicit function from `#[on(x)]` annotations; steel/nushell
-hand-write this one function.
+The single merged function is the only thing aura calls. Rust assembles
+it from the bgi-guest shim's `Guest` builder (the same registry its
+`.on`/`.hook` declarations feed — ADR-0043 §5, PLAN 4.21); steel/python
+via the carrier collectors; nushell/bgi child processes hand-write the
+reply.
 
 ## Common Contract (All Languages)
 
@@ -125,15 +127,15 @@ following — each takes one JSON argument and returns a JSON value:
 
 **Language capability matrix**:
 
-| | python | steel | nushell (bgi) | wasm | bgi (native child) |
-|---|---|---|---|---|---|
-| In-process | ✅ | ✅ | ❌ | ✅ VM | ❌ |
-| ctx host functions | ✅ ctx object | ✅ dotted symbols | frame up-call (fifo) | flat `aura_host.*` imports | typed host frames |
-| Resident (Phase 2.6) | ✅ | ✅ | ✅ (resident child) | ✅ | ✅ |
-| Registration entry | `@on` decorator / `ctx.on` | `on` builtin / `ctx.on` | hand-written schema (the interface_schema reply) | export convention | hand-written schema |
-| Lifecycle hooks | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` array | — (retired 4.21) | schema `hooks` array |
-| Phase gate (ADR-0043 §3) | ctx.on errors post-activation | on/ctx.on error post-activation | no runtime registration face | — | child-managed (load-time pass) |
-| Best for | business logic | AI-generated ops | pipeline/CLI shape | — (retired, Phase 4.21) | compiled languages (Rust/C/C++/Zig/Go…) |
+| | python | steel | nushell (bgi) | bgi (native child) |
+|---|---|---|---|---|
+| In-process | ✅ | ✅ | ❌ | ❌ |
+| ctx host functions | ✅ ctx object | ✅ dotted symbols | frame up-call (fifo) | typed host frames |
+| Resident (Phase 2.6) | ✅ | ✅ | ✅ (resident child) | ✅ |
+| Registration entry | `@on` decorator / `ctx.on` | `on` builtin / `ctx.on` | hand-written schema (the interface_schema reply) | bgi-guest builder / hand-written schema |
+| Lifecycle hooks | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` array | schema `hooks` array |
+| Phase gate (ADR-0043 §3) | ctx.on errors post-activation | on/ctx.on error post-activation | no runtime registration face | builder-closed (structural) |
+| Best for | business logic | AI-generated ops | pipeline/CLI shape | compiled languages (Rust/C/C++/Zig/Go…) |
 
 **`interface_schema` is transparent to the execution path**: the effector
 execution carrier only does "load source → call entry → serialize
@@ -275,77 +277,22 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
   same line as the branch's `}`, `$env` writes do not escape an `each`
   closure
 
-## Wasm (written in Rust) — retired with Phase 4.21
+## Wasm — retired (Phase 4.21)
 
-[中文](#wasm-rust-用-rust-编写)
+[中文](#wasm-rust-1)
 
-> **Retirement ruling (2026-10-12, PLAN Phase 4.21)**: the wasm channel is
-> being removed. The cross-language promise never materialized — C/C++/Zig
-> authors go native anyway (bgi, zero friction), Go's wasm target drags its
-> runtime while a native single binary is bgi's ideal shape, python-in-wasm
-> is an interpreter inside an interpreter; fine-grained import refusal is
-> not a security boundary here (script carriers already run
-> `SandboxPolicy::None`; isolation lives at deployment); and no real
-> consumer uses wasm. Order: build the **bgi guest shim** first (effector
-> repo, a typed ctx facade), then remove the wasmtime channel. This section
-> stays until the removal lands.
+> **Retired (2026-10-12)**: the wasm channel is REMOVED from the engine (no
+> wasmtime carrier in effector, the actor-guest crate deleted, the engine's
+> wasm e2e retired with it). Ruling and rationale: PLAN Phase 4.21 + ADR-0044 —
+> the cross-language promise never materialized, fine-grained import refusal is
+> not this system's security boundary (isolation lives at deployment), no real
+> consumer, wasmtime's binary weight. The channel for Rust booths is **bgi**
+> (a native child process speaking the frame protocol); the user face is the
+> **bgi-guest shim** (`Guest` builder + typed `Ctx`, zero aura deps). The
+> boundary ruling of ADR-0044 (never compile booths into the host — that
+> collapses the platform into a framework) stands; only the out-of-process
+> channel changed, wasm → bgi.
 
-The release form for Rust services WAS: compile to `.wasm` and upload at
-runtime (`set(lang="wasm", bytes)`), never into the host binary — compiling
-them in would fork the platform per app, collapsing the platform into a
-framework (that boundary ruling stands, now ADR-0044; Rust's out-of-process
-channel is bgi). Storage never enters the sandbox: the OKM schema compiles
-into the wasm unchanged, with the `VirtualStorage` implementation swapped
-for a frame up-call. Static OKM derives; no okm-dynamic needed. (Note: the
-general NestStorage executor was withdrawn with PLAN Phase 6.6 — after the
-k10r decoupling ruling no consumer needs hosted storage.)
-
-Convention (landed — CBOR over linear memory, no JSON debt):
-
-```rust
-// Build target wasm32-wasi. The module exports:
-//   - memory: the linear memory
-//   - aura_alloc(len: i32) -> i32: guest allocator (bump allocator is fine;
-//     module lifetime = session lifetime)
-//   - one function per handler, NAMED AFTER ITS EVENT, signature
-//     (ptr: i32, len: i32) -> i64
-#[no_mangle]
-pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
-    // args are CBOR bytes written by the host into guest memory at
-    // (args_ptr, args_len). Return (ptr: u32) << 32 | len: u32 pointing at
-    // the CBOR-encoded result the guest wrote (allocate via aura_alloc).
-    let result: Vec<u8> = cbor_encode(handle(add_to_cart_inner(args_ptr, args_len)));
-    let ptr = aura_alloc(result.len() as i32);
-    (ptr as u64) << 32 | result.len() as u64
-}
-```
-
-- Values cross the linear memory as **CBOR bytes** — the host serializes
-  the args, writes them through `aura_alloc`, calls the handler, and
-  unpacks the packed `(ptr, len)` return. JSON appears only at the host's
-  `ResidentSession` boundary, the same seam every carrier sits behind
-- Multi-entry export convention: each handler exports as a function named
-  after its event (`add_to_cart`) — the event name is the export name;
-  wildcard handlers export under the pattern (`order.*`)
-- `interface_schema` follows the same convention: exporting a function by
-  that name wins (called like a handler, JSON schema CBOR-encoded on the
-  wire); otherwise the receives half derives from the export list — every
-  function export except `aura_alloc`/`memory`/`interface_schema` is an
-  event handler
-- Host imports (the ctx bridge) register under the `aura_host` module
-  namespace, one import per host function, uniform signature
-  `(ptr: i32, len: i32) -> i64` with the same packed return: the guest
-  CBOR-encodes its argument into linear memory and calls the import; the
-  host runs the HostFn and writes the reply back through the guest's
-  `aura_alloc`. A module that imports an undeclared host function fails
-  instantiation (capability refusal, not a runtime error)
-- Host imports are deliberately minimal: no fs, no network — the
-  capability surface (Phase 5) decides what is granted
-- The aura engine ships **no in-process Rust booth** — framework
-  mechanics (the evictor class) are plain realm logic; Rust code becomes
-  an booth through exactly one channel: compile to wasm and upload
-
----
 
 ## Relationship to effector (restated)
 

@@ -26,7 +26,6 @@ default = []
 fjall = ["dep:fjall"]
 steel = ["effector-runtime/steel"]
 python = ["effector-runtime/python"]
-wasmtime = ["effector-runtime/wasmtime"]
 
 [dependencies.anyhow]
 workspace = true

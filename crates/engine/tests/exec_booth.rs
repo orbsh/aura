@@ -330,7 +330,7 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../effector/crates/actor-guest/examples/bgi_nu.nu"
+        "/../../../effector/crates/bgi-guest/examples/bgi_nu.nu"
     );
     assert!(std::path::Path::new(fixture).exists(), "nu bgi fixture missing: {fixture}");
     engine

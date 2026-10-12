@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 /// Booth body: a Rust closure, or a script executed by a effector carrier.
 ///
 /// The script form imports the effector runtime instead of reimplementing
-/// language execution: one set of carriers (steel/python/wasmtime embedded,
+/// language execution: one set of carriers (steel/python embedded,
 /// bgi/exec out-of-process)
 /// serves both the remote effector and embedded booths. Script booths are
 /// pure functions in this phase (args in, value out); the ctx bridge

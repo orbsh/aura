@@ -17,7 +17,7 @@
 
 ## 事件驱动模型（多入口）
 
-一个 Booth 类型是**多入口**的：`@on` 装饰器（steel 为 `on` 函数，wasm 为导出约定）声明每个 handler 监听的事件，事件名就是 handler 的寻址名。没有单一入口——单入口模型下 emits 是多出口而入口只有一个，不对称；多个 handler 的事件共享逻辑被迫拆成多个摊位复制底层代码。
+一个 Booth 类型是**多入口**的：`@on` 装饰器（steel 为 `on` 函数，bgi 为 schema 手写）声明每个 handler 监听的事件，事件名就是 handler 的寻址名。没有单一入口——单入口模型下 emits 是多出口而入口只有一个，不对称；多个 handler 的事件共享逻辑被迫拆成多个摊位复制底层代码。
 
 ```python
 @on("add_to_cart", key="user_id")   # instance key 在装饰器上声明
@@ -34,7 +34,7 @@ def audit(args): ...
 
 **emits 不声明、不收集、不校验（ADR-0012）**：事件的接收者集合是运行时事实——无订阅者的 emit 落入 dead-event ring，那是可观测的审计面。源码级 emit 收集推迟到有真实消费端再做（Windmill 判据：解析要驱动一个只有解析才能做对的动作时才解析）。
 
-**interface_schema 隐式生成 + 显式合并**：carrier 在模块组装时生成隐式的 `interface_schema`（`receives` 从 `@on` 参数收集、通配符入 `wildcard_receives`），与脚本显式声明的部分 schema 按字段合并——装饰器提供 receives，手写部分提供 lifecycle 等装饰器表达不了的元数据，两者共存不互斥。合并后的单一函数就是 aura 唯一调用的入口。rust/wasm 走 `#[on(x)]` 注解生成同样的隐式函数；steel/nushell 直接手写这一个函数。
+**interface_schema 隐式生成 + 显式合并**：carrier 在模块组装时生成隐式的 `interface_schema`（`receives` 从 `@on` 参数收集、通配符入 `wildcard_receives`），与脚本显式声明的部分 schema 按字段合并——装饰器提供 receives，手写部分提供 lifecycle 等装饰器表达不了的元数据，两者共存不互斥。合并后的单一函数就是 aura 唯一调用的入口。Rust 经 bgi-guest shim 的 Guest builder 从同一注册表装配（`.on`/`.hook` 声明即 schema——ADR-0043 §5，PLAN 4.21）；steel/python 由 carrier 收集器装配；nushell/bgi 原生子进程手写应答。
 
 ## 通用契约（所有语言）
 
@@ -62,15 +62,15 @@ def audit(args): ...
 
 **语言能力差异**：
 
-| | python | steel | nushell (bgi) | wasm | bgi（native 子进程） |
-|---|---|---|---|---|---|
-| 进程内 | ✅ | ✅ | ❌ | ✅ VM | ❌ |
-| ctx host 函数 | ✅ ctx 对象 | ✅ dotted 符号 | 帧上抛（fifo） | `aura_host.*` 平铺导入 | typed host 帧 |
-| VM 驻留（Phase 2.6） | ✅ | ✅ | ✅（子进程驻留） | ✅ | ✅ |
-| 注册入口 | `@on` 装饰器 / `ctx.on` | `on` 内建 / `ctx.on` | schema 手写（interface_schema 应答） | 导出约定 | schema 手写 |
-| 生命周期钩子 | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` 数组 | —（4.21 退役） | schema `hooks` 数组 |
-| 相位门（ADR-0043 §3） | 激活后 ctx.on 报错 | 激活后 on/ctx.on 报错 | 无运行时注册面 | — | 子进程自管（load-time pass） |
-| 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | —（Phase 4.21 退役） | 编译型语言（Rust/C/C++/Zig/Go…） |
+| | python | steel | nushell (bgi) | bgi（native 子进程） |
+|---|---|---|---|---|
+| 进程内 | ✅ | ✅ | ❌ | ❌ |
+| ctx host 函数 | ✅ ctx 对象 | ✅ dotted 符号 | 帧上抛（fifo） | typed host 帧 |
+| VM 驻留（Phase 2.6） | ✅ | ✅ | ✅（子进程驻留） | ✅ |
+| 注册入口 | `@on` 装饰器 / `ctx.on` | `on` 内建 / `ctx.on` | schema 手写（interface_schema 应答） | bgi-guest builder / schema 手写 |
+| 生命周期钩子 | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` 数组 | schema `hooks` 数组 |
+| 相位门（ADR-0043 §3） | 激活后 ctx.on 报错 | 激活后 on/ctx.on 报错 | 无运行时注册面 | builder 闭册（结构性） |
+| 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | 编译型语言（Rust/C/C++/Zig/Go…） |
 
 **`interface_schema` 对执行路径透明**：effector 的执行 carrier 只负责"加载源码 → 调 entry → 序列化结果"，从不触碰 `interface_schema`。声明收集（python `@on` 注入、steel `on` 内建）是语言形态，组装与合并语义在 `carrier::introspect` 一层——aura 上传时调用它一次并持久化。同一个脚本交给 effector 执行时，`interface_schema` 只是一个没人调用的函数；交给 aura 上传时，它成为类型定义的元数据来源。
 
@@ -174,39 +174,11 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
 - ctx 调用经 `ctx-invoke` / `ctx-store-emit` 等字面名 def（作者自带 helper；操作名是载体的固定词汇）——与其余 carrier 同操作集
 - 实测坑（勿重新发明，PLAN 2026-09-29 有档）：非 TTY stdin 不能阻塞读、`open` 在写方 EOF 交付、`else` 须与分支 `}` 同行、`$env` 写不出 `each` 闭包
 
-## Wasm（Rust 编写）——Phase 4.21 退役中
+## Wasm（已退役，Phase 4.21）
 
 [English](#wasm-rust-1)
 
-> **退役裁决（2026-10-12，PLAN Phase 4.21）**：wasm 通道将移除。跨语言承诺未兑现——C/C++/Zig 天然 native（bgi 零摩擦）、Go 的 wasm 目标被运行时拖累（native 单二进制恰是 bgi 的理想形态）、python 进 wasm 是解释器套解释器；细粒度 import 拒绝不是本系统的安全边界（脚本 carrier 本就 `SandboxPolicy::None`，隔离在部署层）；且无任何真实消费者在用 wasm。顺序：先建 **bgi guest shim**（effector 仓，typed ctx facade），再删 wasmtime 通道。本节保留至删除落地。
-
-Rust 服务的发布形态曾是编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架（该边界裁决保留，现为 ADR-0044；Rust 的进程外通道是 bgi，见下一节语义）。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛。静态 OKM derive，不需要 okm-dynamic。（注：通用 NestStorage 执行器作为 Phase 6.6 已出局——k10r 解耦裁决后没有消费者需要 hosted 存储。）
-
-约定（已落地——CBOR 过线性内存，无 JSON 债）：
-
-```rust
-// 编译目标 wasm32-wasi。模块导出：
-//   - memory：线性内存
-//   - aura_alloc(len: i32) -> i32：guest 分配器（bump allocator 即可；
-//     模块生命周期 = session 生命周期）
-//   - 每个 handler 一个函数，以事件命名，签名 (ptr: i32, len: i32) -> i64
-#[no_mangle]
-pub extern "C" fn add_to_cart(args_ptr: i32, args_len: i32) -> i64 {
-    // args 是 host 写入 guest 内存 (args_ptr, args_len) 处的 CBOR 字节。
-    // 返回 (ptr: u32) << 32 | len: u32，指向 guest 写好的 CBOR 结果
-    // （经 aura_alloc 分配）。
-    let result: Vec<u8> = cbor_encode(handle(add_to_cart_inner(args_ptr, args_len)));
-    let ptr = aura_alloc(result.len() as i32);
-    (ptr as u64) << 32 | result.len() as u64
-}
-```
-
-- 值以 **CBOR 字节**过线性内存——host 序列化 args、经 `aura_alloc` 写入、调用 handler、解包 `(ptr, len)` 打包返回。JSON 只出现在 host 侧 `ResidentSession` 边界，与所有 carrier 一致
-- 多入口导出约定：每个 handler 导出为以事件名命名的函数（`add_to_cart`）——事件名即导出名；通配 handler 以模式串导出（`order.*`）
-- `interface_schema` 同一约定：导出同名函数优先（按 handler 方式调用，schema JSON 以 CBOR 编码过线）；否则 receives 半边由导出清单推导——`aura_alloc`/`memory`/`interface_schema` 之外的每个函数导出都是事件 handler
-- Host imports（ctx bridge）注册在 `aura_host` 模块命名空间下，每个 host 函数一个 import，统一签名 `(ptr: i32, len: i32) -> i64`、同样打包返回：guest 把参数 CBOR 编码进线性内存后调用 import；host 跑 HostFn 并经 guest 的 `aura_alloc` 写回结果。import 了未声明 host 函数的模块实例化即失败（能力拒绝，不是运行时错误）
-- Host imports 刻意最小化：无 fs、无 network——能力面（Phase 5）决定授予什么
-- aura 引擎本身**不提供进程内 Rust 摊位**——框架机制（evictor 类）就是 realm 内的普通逻辑；Rust 代码要成为摊位只有一条路：编译为 wasm 上传
+> **已退役（2026-10-12）**：wasm 通道已从引擎移除（effector 无 wasmtime carrier、actor-guest 委托已删、引擎测试的 wasm e2e 随之退场）。裁决与理由见 PLAN Phase 4.21 与 ADR-0044：跨语言承诺未兑现、细粒度 import 拒绝不是本系统的安全边界（隔离在部署层）、无真实消费者、wasmtime 体积沉重。Rust 摊位的通道是 **bgi**（原生子进程讲帧协议），用户面是 **bgi-guest shim**（`Guest` builder + typed `Ctx`，零 aura 依赖）。「编译进 host 会让平台退化成框架」的边界裁决（ADR-0044）不变——只是进程外通道从 wasm 换成了 bgi。
 
 ---
 

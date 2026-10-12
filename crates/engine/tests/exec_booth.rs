@@ -389,7 +389,7 @@ async fn bgi_cbor_booth_store_emit_roundtrip() {
     engine
         .register(
             BoothType::script("bin-store-cbor", "bgi", bin("bgi_loop"))
-                .encoded(aura_booth::ChannelEncoding::Cbor),
+                .encoded(aura_booth::Encoding::Cbor),
         )
         .await
         .unwrap();

@@ -259,8 +259,8 @@ impl BoothDef {
                 idle_ttl_secs: def.idle_ttl_secs.unwrap_or(0),
                 // The codec's u64 wire form (ADR-0037 §2): 0 = json, 1 = cbor.
                 encoding: match def.encoding {
-                    aura_booth::ChannelEncoding::Json => 0,
-                    aura_booth::ChannelEncoding::Cbor => 1,
+                    aura_booth::Encoding::Json => 0,
+                    aura_booth::Encoding::Cbor => 1,
                 },
             },
             def.schema.as_ref().map(crate::value::json_to_dyn),
@@ -281,8 +281,8 @@ impl BoothDef {
                 source: String::new(), // filled by the blob hydrate below
                 encoding: match self.encoding {
                     // 0 (and any legacy row's decode default) = json.
-                    1 => aura_booth::ChannelEncoding::Cbor,
-                    _ => aura_booth::ChannelEncoding::Json,
+                    1 => aura_booth::Encoding::Cbor,
+                    _ => aura_booth::Encoding::Json,
                 },
                 idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
                 schema: schema.map(|v| crate::value::dyn_to_json(&v)),

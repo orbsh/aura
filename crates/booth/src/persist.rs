@@ -26,7 +26,7 @@ pub struct PersistedBooth {
     /// Declared frame codec of the process carriers (ADR-0037 §2);
     /// absent = Json (the default every older persisted row rides).
     #[serde(default)]
-    pub encoding: crate::ChannelEncoding,
+    pub encoding: crate::Encoding,
     /// Per-type idle TTL, seconds; absent = realm default.
     pub idle_ttl_secs: Option<u64>,
     /// Metadata extracted from `interface_schema()` introspection at

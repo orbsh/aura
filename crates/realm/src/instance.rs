@@ -317,7 +317,7 @@ impl Realm {
                     language,
                     // ADR-0037 §2: the declared codec crosses with the
                     // call — the node's process carriers speak it.
-                    encoding: map_encoding(encoding),
+                    encoding,
                     args: job.args.clone(),
                     code,
                 };
@@ -422,7 +422,6 @@ impl Realm {
                 // bare Start reply wraps to `{done:true,value}` AT THE
                 // CARRIER — `s.call` is no longer a dispatch arm).
                 let sjob = stream_op(&job);
-                let encoding = map_encoding(encoding);
                 tokio::task::spawn_blocking(move || {
                     sessions.with_session_encoded(
                         &instance_key,
@@ -622,7 +621,6 @@ impl Realm {
             aura_booth::HookBody::Declared => match body {
                 Some(aura_booth::Body::Script { language, source, encoding }) => {
                     let instance_key = format!("{}/{}", id.booth_type, id.key);
-                    let encoding = map_encoding(encoding);
                     let name = name.to_string();
                     let sessions = sessions.clone();
                     // The bridge rides like the delivery arm's: a
@@ -809,18 +807,6 @@ impl Realm {
 
     pub fn is_resident(&self, id: &InstanceId) -> bool {
         self.instances.contains_key(&(id.booth_type.clone(), id.key.clone()))
-    }
-}
-
-/// Map the declared booth codec (aura-booth's effector-free enum) onto the
-/// runtime's form (ADR-0037 §2 — the two crates keep their own types,
-/// the values are the same wire pair "json"/"cbor").
-pub(crate) fn map_encoding(
-    e: aura_booth::ChannelEncoding,
-) -> effector_protocol::ChannelEncoding {
-    match e {
-        aura_booth::ChannelEncoding::Json => effector_protocol::ChannelEncoding::Json,
-        aura_booth::ChannelEncoding::Cbor => effector_protocol::ChannelEncoding::Cbor,
     }
 }
 

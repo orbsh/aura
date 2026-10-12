@@ -153,7 +153,7 @@ pub async fn introspect_schema(booth: &aura_booth::BoothType) -> Option<serde_js
         // one call. No language branch in the host. ADR-0037 §2: the
         // throwaway child spawns in the DECLARED codec (a CBOR-declared
         // bgi booth's schema frame round trip rides CBOR).
-        let encoding = crate::instance::map_encoding(*encoding);
+        let encoding = *encoding;
         move || effector_runtime::carrier::introspect_encoded(&language, &source, encoding)
     })
     .await;

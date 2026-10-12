@@ -32,7 +32,7 @@ pub enum Body {
         /// carriers (steel/python/wasm) carry no channel — inert there.
         /// The realm maps this onto effector_runtime's codec enum; this
         /// crate stays effector-free (the same wire VALUES: "json"/"cbor").
-        encoding: ChannelEncoding,
+        encoding: Encoding,
     },
     /// Remote effector booth (Phase 3): the body lives on a effector node that
     /// dialed into THIS control plane. `node_alias` addresses the effector's
@@ -44,23 +44,19 @@ pub enum Body {
         source: String,
         /// The declared frame codec rides the ToolCall to the node's
         /// process carriers (ADR-0037 §2); inert for embedded carriers.
-        encoding: ChannelEncoding,
+        encoding: Encoding,
     },
 }
 
 /// The declared frame codec of a process-carrier booth (ADR-0037 §2,
-/// dual-protocol). Serde values match the effector protocol's enum
-/// ("json"/"cbor"); the realm maps this type onto the runtime's form —
-/// aura-booth stays effector-free.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelEncoding {
-    /// Newline-delimited JSON lines (the default, stdlib-reachable).
-    #[default]
-    Json,
-    /// CBOR documents, one self-delimited frame.
-    Cbor,
-}
+/// dual-protocol). The type is the pipe protocol's
+/// (`induction_protocol::Encoding`) — the crate that owns the frame
+/// vocabulary owns its codec declaration, so every host stores the same
+/// serde values ("json"/"cbor") instead of minting a lookalike enum
+/// (which is how three spellings of one contract happened). Re-exported so
+/// aura's crates keep naming it through this crate; the realm passes it
+/// straight through to the runtime, no mapping.
+pub use induction_protocol::Encoding;
 
 /// An Booth type definition. The handler is a Rust async function for now;
 /// embedded languages (Phase 2) wrap the same definition with a script body.
@@ -170,7 +166,7 @@ impl BoothType {
             body: Body::Script {
                 language: language.into(),
                 source: source.into(),
-                encoding: ChannelEncoding::default(),
+                encoding: Encoding::default(),
             },
             idle_ttl: None,
             max_exec: None,
@@ -185,7 +181,7 @@ impl BoothType {
     /// error, not a silent downgrade: the nushell fifo shape rejects a
     /// Cbor spec at spawn (nu has no CBOR codec). Inert for embedded
     /// carriers (they carry no channel).
-    pub fn encoded(mut self, encoding: ChannelEncoding) -> Self {
+    pub fn encoded(mut self, encoding: Encoding) -> Self {
         match &mut self.body {
             Body::Script { encoding: e, .. } | Body::RemoteProbe { encoding: e, .. } => *e = encoding,
             Body::Rust(_) => {}

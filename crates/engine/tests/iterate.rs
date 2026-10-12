@@ -6,6 +6,7 @@
 
 use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
 use aura_engine::Engine;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 // Producer: a python generator handler. The framework drives it — the
@@ -273,8 +274,7 @@ async fn rust_body_iterate_is_error_value() {
             body: Body::Rust(Arc::new(|_ctx, args| Box::pin(async move { Ok(args) }))),
             idle_ttl: None,
             max_exec: None,
-            on_sleep: None,
-            on_wake: None,
+            hooks: BTreeMap::new(),
             receives: Vec::new(),
         })
         .await

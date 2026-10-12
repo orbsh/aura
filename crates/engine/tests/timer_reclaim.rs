@@ -7,6 +7,7 @@
 use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 fn booth(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> BoothType {
@@ -17,8 +18,7 @@ fn booth(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> BoothTyp
         })),
         idle_ttl: Some(idle_ttl),
         max_exec,
-        on_sleep: None,
-        on_wake: None,
+        hooks: BTreeMap::new(),
         receives: Vec::new(),
     }
 }
@@ -34,8 +34,7 @@ fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64
         })),
         idle_ttl: Some(idle_ttl),
         max_exec,
-        on_sleep: None,
-        on_wake: None,
+        hooks: BTreeMap::new(),
         receives: Vec::new(),
     }
 }

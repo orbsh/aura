@@ -161,6 +161,16 @@ impl Engine {
                     booth = booth.on_wildcard(pattern);
                 }
             }
+            // Reserved lifecycle hooks (ADR-0043 §3): the introspected
+            // `hooks` array seeds Declared entries — the handler lives in
+            // the resident VM (bound under the reserved name at load); the
+            // realm's eviction/reactivation dispatch calls it through the
+            // session. Script `ctx.on("__sleep", h)` is the whole flow.
+            if let Some(hooks) = schema.get("hooks").and_then(|h| h.as_array()) {
+                for name in hooks.iter().filter_map(|n| n.as_str()) {
+                    booth = booth.hook_declared(name);
+                }
+            }
             // Keep the uploaded copy: it persists with the definition AND
             // seeds the ctx store plan + `ctx.interface_schema` read.
             introspected = Some(schema);

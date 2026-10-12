@@ -58,8 +58,7 @@ async fn hot_call_parks_and_returns() {
 #[tokio::test]
 async fn hot_timeout_is_failure_value() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let mut slow = slow_echo();
-    slow.on_wake = None;
+    let slow = slow_echo();
     engine.register(slow).await.unwrap();
     // 50ms deadline vs 500ms handler: the caller gets a failure value at
     // ~50ms, not the result at 500ms.
@@ -86,12 +85,11 @@ async fn hot_timeout_is_failure_value() {
 #[tokio::test]
 async fn cold_call_returns_pending_without_parking() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let mut approval = BoothType::script(
+    let approval = BoothType::script(
         "approval",
         "steel",
         ECHO,
     );
-    approval.on_wake = None;
     engine.register(approval).await.unwrap();
     engine
         .realm
@@ -139,8 +137,7 @@ async fn resolve_unknown_call_is_noop() {
 #[tokio::test]
 async fn deadline_scan_fails_expired_hot_calls() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let mut slow = slow_echo();
-    slow.on_wake = None;
+    let slow = slow_echo();
     engine.register(slow).await.unwrap();
     engine
         .realm

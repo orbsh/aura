@@ -4,6 +4,7 @@
 
 use aura_booth::{BoothType, InstanceId, InstanceKey, Body};
 use aura_engine::{Engine, effectors};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[tokio::test]
@@ -47,8 +48,7 @@ async fn remote_effector_roundtrip() {
         },
         idle_ttl: Some(Duration::from_secs(60)),
         max_exec: None,
-        on_sleep: None,
-        on_wake: None,
+        hooks: BTreeMap::new(),
         receives: vec![],
     })
     .await.unwrap();
@@ -207,8 +207,7 @@ async fn remote_code_travels_as_reference() {
             },
             idle_ttl: None,
             max_exec: None,
-            on_sleep: None,
-            on_wake: None,
+            hooks: BTreeMap::new(),
             receives: vec![],
         })
         .await
@@ -279,8 +278,7 @@ def tokens(args):
             },
             idle_ttl: Some(Duration::from_secs(60)),
             max_exec: None,
-            on_sleep: None,
-            on_wake: None,
+            hooks: BTreeMap::new(),
             receives: vec![],
         })
         .await
@@ -379,8 +377,7 @@ def consume(args):
             },
             idle_ttl: Some(Duration::from_secs(60)),
             max_exec: None,
-            on_sleep: None,
-            on_wake: None,
+            hooks: BTreeMap::new(),
             receives: vec![],
         })
         .await

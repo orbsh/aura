@@ -50,10 +50,13 @@ impl Realm {
         let key = (id.booth_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
             let inst = Instance::new(id.clone(), self.queue_capacity);
-            // on_wake: fresh residency. Runs on first activation too —
-            // symmetric with on_sleep; a first-time wake is still a wake.
+            // __wake: fresh residency. Runs on first activation too —
+            // symmetric with __sleep; a first-time wake is still a wake.
+            // ADR-0043 §3: the hook lives in the type's hook table —
+            // Compiled runs directly, Declared rides the resident session
+            // (the handler VM executed ctx.on at load).
             if let Some(booth) = self.types.get(&id.booth_type) {
-                if let Some(on_wake) = booth.on_wake.clone() {
+                if let Some(hook) = booth.hooks.get("__wake").cloned() {
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -61,7 +64,7 @@ impl Realm {
                         self.schema_of(&id.booth_type).cloned().flatten(),
                         id,
                     );
-                    on_wake(&ctx, serde_json::Value::Null).await?;
+                    Self::run_hook(self_arc.clone(), id, &hook, &ctx, "__wake").await?;
                 }
             }
             // Subscribe to the event queues this type's @on declarations
@@ -511,7 +514,7 @@ impl Realm {
         let Some(_inst) = locked.instances.remove(&key) else { return };
         locked.timers.cancel_target(id);
         if let Some(booth) = locked.types.get(&id.booth_type) {
-            if let Some(on_sleep) = booth.on_sleep.clone() {
+            if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                 let ctx = Self::ctx_for(
                     realm.clone(),
                     locked.mq.clone(),
@@ -519,8 +522,8 @@ impl Realm {
                     locked.schema_of(&id.booth_type).cloned().flatten(),
                     id,
                 );
-                if let Err(e) = on_sleep(&ctx).await {
-                    eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);
+                if let Err(e) = Self::run_hook(realm.clone(), id, &hook, &ctx, "__sleep").await {
+                    eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
                 }
             }
         }
@@ -529,6 +532,61 @@ impl Realm {
 
     pub async fn watchdog_expiry(realm: SharedRealm, id: &InstanceId) {
         Self::evict_instance(realm, id).await;
+    }
+
+    /// One lifecycle hook dispatch (ADR-0043 §3): a Compiled hook runs the
+    /// Rust handler directly; a Declared hook rides the instance's resident
+    /// session — the handler the script bound at load under the reserved
+    /// name, called with the payload the runtime chooses (Null; the hook
+    /// reads its situation from ctx, not from a per-delivery payload).
+    /// Script sessions wrap a plain return to the terminal envelope
+    /// (ADR-0036 §2) — the value is discarded, failures surface as errors
+    /// (eviction proceeds regardless: the hook is advisory, state lives in
+    /// the type's collections).
+    async fn run_hook(
+        self_arc: SharedRealm,
+        id: &InstanceId,
+        hook: &aura_booth::HookBody,
+        ctx: &aura_booth::Ctx,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        match hook {
+            aura_booth::HookBody::Compiled(h) => h(ctx, serde_json::Value::Null).await.map(|_| ()),
+            aura_booth::HookBody::Declared => {
+                let body = {
+                    let realm = self_arc.lock().await;
+                    realm.types.get(&id.booth_type).map(|b| b.body.clone())
+                };
+                match body {
+                    Some(aura_booth::Body::Script { language, source, encoding }) => {
+                        let sessions = {
+                            let realm = self_arc.lock().await;
+                            realm.sessions.clone()
+                        };
+                        let instance_key = format!("{}/{}", id.booth_type, id.key);
+                        let encoding = map_encoding(encoding);
+                        let name = name.to_string();
+                        tokio::task::spawn_blocking(move || {
+                            sessions.with_session_encoded(
+                                &instance_key,
+                                &language,
+                                &source,
+                                None,
+                                &effector_runtime::sandbox::SandboxPolicy::None,
+                                encoding,
+                                move |s| s.call(&name, &serde_json::Value::Null),
+                            )
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(anyhow::anyhow!("hook task join: {e}")))
+                        .map(|_v| ())
+                    }
+                    _ => anyhow::bail!(
+                        "hook {name}: Declared body but the type carries no script source"
+                    ),
+                }
+            }
+        }
     }
 
     pub async fn deliver_timer(realm: SharedRealm, target: InstanceId, tag: String) {
@@ -629,7 +687,7 @@ impl Realm {
         for key in keys {
             let Some(inst) = self.instances.remove(&key) else { continue };
             if let Some(booth) = self.types.get(&key.0) {
-                if let Some(on_sleep) = booth.on_sleep.clone() {
+                if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -637,10 +695,10 @@ impl Realm {
                         self.schema_of(&key.0).cloned().flatten(),
                         &inst.id,
                     );
-                    if let Err(e) = on_sleep(&ctx).await {
+                    if let Err(e) = Self::run_hook(self_arc.clone(), &inst.id, &hook, &ctx, "__sleep").await {
                         // Eviction proceeds regardless: the hook is
                         // advisory; state is already in the store.
-                        eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);
+                        eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
                     }
                 }
             }

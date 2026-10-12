@@ -5,7 +5,7 @@
 //! off ctx (realm-level or static contract concerns).
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -65,9 +65,14 @@ pub enum ChannelEncoding {
 /// An Booth type definition. The handler is a Rust async function for now;
 /// embedded languages (Phase 2) wrap the same definition with a script body.
 ///
-/// Lifecycle hooks (`on_sleep` / `on_wake`) are Host → Booth calls (ADR-0011,
-/// off ctx): optional, declared on the type, invoked by the runtime around
-/// eviction and reactivation.
+/// Lifecycle hooks are Host → Booth calls around eviction and reactivation.
+/// ADR-0043 §3 fold-in: they are RESERVED NAMES (`__sleep` / `__wake`) in the
+/// one registration vocabulary — Rust bodies register through the
+/// construction-side `.hook(name, handler)` builder (a `Compiled` entry);
+/// script bodies declare `ctx.on("__sleep", h)` at load, the introspected
+/// schema carries the names, and the realm executes them through the
+/// instance's session (`Declared` entries). Not MQ routes: the hook table
+/// never enters `receives`.
 #[derive(Clone)]
 pub struct BoothType {
     /// Registered type name, e.g. "echo".
@@ -83,15 +88,11 @@ pub struct BoothType {
     /// single job runs longer than this — maximum-duration control, not
     /// idleness. Declared as `lifecycle.max_exec` in interface_schema.
     pub max_exec: Option<Duration>,
-    /// Optional on_sleep: called by the Host before the instance is
-    /// evicted (scale-to-zero). Return value is ignored; state flushing is
-    /// the store's job, not the hook's.
-    #[allow(clippy::type_complexity)]
-    pub on_sleep: Option<Arc<SleepHook>>,
-    /// Optional on_wake: called after reactivation with a fresh ctx, before
-    /// the first job of the new residency is delivered.
-    #[allow(clippy::type_complexity)]
-    pub on_wake: Option<Arc<Handler>>,
+    /// Reserved-name lifecycle hooks (ADR-0043 §3): `__sleep` runs before
+    /// eviction (return ignored — state flushing is the store's job),
+    /// `__wake` after reactivation before the first job. See the struct
+    /// doc for the Compiled/Declared split.
+    pub hooks: BTreeMap<String, HookBody>,
     /// Event subscriptions declared on the type (Phase 4.5: one declaration
     /// surface per type). Filled three ways: `.on()` / `.on_wildcard()`
     /// builders (Rust-side declaration), introspection at register (script
@@ -141,9 +142,20 @@ pub type Handler = dyn for<'a> Fn(&'a Ctx, Value) -> futures_boxed::BoxFuture<'a
     + Send
     + Sync;
 
-pub type SleepHook = dyn for<'a> Fn(&'a Ctx) -> futures_boxed::BoxFuture<'a, anyhow::Result<()>>
-    + Send
-    + Sync;
+/// One lifecycle hook's body (ADR-0043 §3): a Rust body's compiled
+/// handler, or a script body's DECLARED name — the handler lives in the
+/// resident VM and the realm calls it through the session by the same
+/// reserved name.
+#[derive(Clone)]
+pub enum HookBody {
+    Compiled(Arc<Handler>),
+    Declared,
+}
+
+/// The reserved lifecycle names (ADR-0043 §3): the only hook names the
+/// construction-side builder and the script `ctx.on` face accept — the
+/// same family as the timer plane's `__on_timer`.
+pub const RESERVED_HOOKS: &[&str] = &["__sleep", "__wake"];
 
 impl BoothType {
     /// Define a script type executed by a effector carrier (JSON-lines
@@ -162,8 +174,7 @@ impl BoothType {
             },
             idle_ttl: None,
             max_exec: None,
-            on_sleep: None,
-            on_wake: None,
+            hooks: BTreeMap::new(),
             receives: Vec::new(),
         }
     }
@@ -238,13 +249,29 @@ impl BoothType {
         self
     }
 
-    pub fn with_on_sleep(mut self, hook: Arc<SleepHook>) -> Self {
-        self.on_sleep = Some(hook);
+    /// Register a lifecycle hook by its RESERVED name (ADR-0043 §3): the
+    /// construction-side equivalent of the script's `ctx.on("__sleep", h)`.
+    /// An unknown name is a declaration error, never a silent entry.
+    pub fn hook(mut self, name: impl Into<String>, handler: Arc<Handler>) -> Self {
+        let name = name.into();
+        assert!(
+            RESERVED_HOOKS.contains(&name.as_str()),
+            "hook name `{name}` is not reserved (allowed: {RESERVED_HOOKS:?})"
+        );
+        self.hooks.insert(name, HookBody::Compiled(handler));
         self
     }
 
-    pub fn with_on_wake(mut self, hook: Arc<Handler>) -> Self {
-        self.on_wake = Some(hook);
+    /// Seed a DECLARED hook (script body): the name crossed the introspected
+    /// schema; the handler lives in the resident VM (engine.register seeds
+    /// these — not a user surface).
+    pub fn hook_declared(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        assert!(
+            RESERVED_HOOKS.contains(&name.as_str()),
+            "hook name `{name}` is not reserved (allowed: {RESERVED_HOOKS:?})"
+        );
+        self.hooks.insert(name, HookBody::Declared);
         self
     }
 }

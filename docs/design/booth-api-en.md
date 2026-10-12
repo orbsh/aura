@@ -83,6 +83,17 @@ values — never a panic.
 **Host functions** (the ctx bridge, Phase 2.5): scripts may call the
 following — each takes one JSON argument and returns a JSON value:
 
+- `ctx.emit({"event": ..., "data": ...})` → publishes an event into the MQ
+  plane (ADR-0043 §2; the emitter is the TYPE name, instance-free;
+  fire-and-forget — success answers Null, a bad shape or a dropped realm
+  is an error value)
+- `ctx.on(event, handler)` → the registration primitive (ADR-0043 §3;
+  `@on` / `on` are its sugar): **legal during activation only** (the body
+  run); a handler-phase call is an error value. A `__`-prefixed event is
+  a reserved lifecycle hook (`__sleep`/`__wake` only) — it lands in the
+  schema's `hooks` array, never in receives
+- `ctx.receives` → the activation registry (read-only, readable any
+  phase — the "what did I bind" introspection)
 - `ctx.store(op)` → the operation's result (one storage instruction:
   collection name + operation + arguments, over **the type's declared
   collections** — ADR-0026 §3; storage addressing is bound to the type's
@@ -114,13 +125,15 @@ following — each takes one JSON argument and returns a JSON value:
 
 **Language capability matrix**:
 
-| | python | steel | nushell | wasm |
-|---|---|---|---|---|
-| In-process | ✅ | ✅ | ❌ subprocess | ✅ VM |
-| ctx host functions | ✅ | ✅ | ❌ (explicit error) | via frame up-call (Phase 6.6) |
-| Resident VM (Phase 2.6) | ✅ | ✅ | ❌ one-shot | ✅ |
-| `@on` multi-entry | ✅ decorator | `on` fn | one handler for now (direct calls declare the handler name) | export convention |
-| Best for | business logic | AI-generated ops | pipeline/CLI shape | heavily-isolated 3rd-party code |
+| | python | steel | nushell (bgi) | wasm | bgi (native child) |
+|---|---|---|---|---|---|
+| In-process | ✅ | ✅ | ❌ | ✅ VM | ❌ |
+| ctx host functions | ✅ ctx object | ✅ dotted symbols | frame up-call (fifo) | flat `aura_host.*` imports | typed host frames |
+| Resident (Phase 2.6) | ✅ | ✅ | ✅ (resident child) | ✅ | ✅ |
+| Registration entry | `@on` decorator / `ctx.on` | `on` builtin / `ctx.on` | hand-written schema (the interface_schema reply) | export convention | hand-written schema |
+| Lifecycle hooks | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` array | — (retired 4.21) | schema `hooks` array |
+| Phase gate (ADR-0043 §3) | ctx.on errors post-activation | on/ctx.on error post-activation | no runtime registration face | — | child-managed (load-time pass) |
+| Best for | business logic | AI-generated ops | pipeline/CLI shape | — (retired, Phase 4.21) | compiled languages (Rust/C/C++/Zig/Go…) |
 
 **`interface_schema` is transparent to the execution path**: the effector
 execution carrier only does "load source → call entry → serialize
@@ -155,6 +168,10 @@ def remove(args):
 def audit(args):
     return None
 
+# lifecycle hooks (ADR-0043 §3): ctx.on's reserved-name form — the decorator
+# and ctx.on are ONE primitive; __ names land in the schema's hooks array
+ctx.on("__sleep", lambda args: None)
+
 # optional explicit partial declaration: merged field-wise with the
 # decorator-derived receives (decorators own receives; this adds lifecycle etc.)
 def interface_schema(args=None):
@@ -168,7 +185,10 @@ Notes:
   are already native dicts (no `json.loads` needed)
 - the `@on` decorator is injected by the carrier; scripts never define
   `on` themselves; the decorator is an identity transform — decorated
-  functions remain directly callable
+  functions remain directly callable. `ctx.on(event, handler)` is the SAME
+  primitive's alias (decorators are its sugar) — **legal during the body
+  run (activation) only**; a handler-phase call is an error value (the
+  ADR-0043 §3 phase gate)
 - wildcards are prefix-only (`prefix.*`, etcd-style), matching
   `order.created` but not `order`; wildcard-declared handlers route to
   the singleton instance
@@ -195,7 +215,11 @@ Notes:
       (hash "visits" (hash-ref got "visits")
             "echo" (hash-ref echoed "x")))))
 
-(on "order.*" "" (lambda (args) #t))   ;; wildcard → wildcard_receives
+(on "order.*" "" (lambda (args) #t))
+
+;; lifecycle hooks: ctx.on is the alias of the `on` builtin (ONE primitive,
+;; ADR-0043 §3); __ reserved names land in the hooks array, not receives
+(ctx.on "__sleep" "" (lambda (args) #t))   ;; wildcard → wildcard_receives
 
 ;; Optional explicit partial declaration: merged field-wise with the
 ;; collector-derived receives (collector owns receives; this adds lifecycle)
@@ -251,21 +275,30 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
   same line as the branch's `}`, `$env` writes do not escape an `each`
   closure
 
-## Wasm (written in Rust)
+## Wasm (written in Rust) — retired with Phase 4.21
 
 [中文](#wasm-rust-用-rust-编写)
 
-The only release form for Rust services: compile to `.wasm` and upload at
-runtime (`set(lang="wasm", bytes)`), not into the host binary — compiling
+> **Retirement ruling (2026-10-12, PLAN Phase 4.21)**: the wasm channel is
+> being removed. The cross-language promise never materialized — C/C++/Zig
+> authors go native anyway (bgi, zero friction), Go's wasm target drags its
+> runtime while a native single binary is bgi's ideal shape, python-in-wasm
+> is an interpreter inside an interpreter; fine-grained import refusal is
+> not a security boundary here (script carriers already run
+> `SandboxPolicy::None`; isolation lives at deployment); and no real
+> consumer uses wasm. Order: build the **bgi guest shim** first (effector
+> repo, a typed ctx facade), then remove the wasmtime channel. This section
+> stays until the removal lands.
+
+The release form for Rust services WAS: compile to `.wasm` and upload at
+runtime (`set(lang="wasm", bytes)`), never into the host binary — compiling
 them in would fork the platform per app, collapsing the platform into a
-framework. Storage never enters the sandbox: the OKM schema compiles into
-the wasm unchanged, with the `VirtualStorage` implementation swapped for
-a frame up-call — the host-side NestStorage executor carries the physical
-store under a registry-allocated app ns prefix. Static OKM derives; no
-okm-dynamic needed. (Note: the general NestStorage executor was withdrawn
-with PLAN Phase 6.6 — after the k10r decoupling ruling no consumer needs
-hosted storage; wasm booths' storage up-calls are consumed by their own
-Booth type declarations.)
+framework (that boundary ruling stands, now ADR-0044; Rust's out-of-process
+channel is bgi). Storage never enters the sandbox: the OKM schema compiles
+into the wasm unchanged, with the `VirtualStorage` implementation swapped
+for a frame up-call. Static OKM derives; no okm-dynamic needed. (Note: the
+general NestStorage executor was withdrawn with PLAN Phase 6.6 — after the
+k10r decoupling ruling no consumer needs hosted storage.)
 
 Convention (landed — CBOR over linear memory, no JSON debt):
 

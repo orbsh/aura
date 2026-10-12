@@ -49,6 +49,9 @@ def audit(args): ...
 
 **Host 函数**（ctx bridge，Phase 2.5）：脚本内可调用以下名字的函数——每个接受一个 JSON 参数，返回 JSON 值：
 
+- `ctx.emit({"event": ..., "data": ...})` → 发布事件进 MQ 面（ADR-0043 §2；emitter = 类型名，实例无关；fire-and-forget——成功返回 Null，坏形状/引擎已停是错误值）
+- `ctx.on(event, handler)` → 注册原语（ADR-0043 §3；`@on`/`on` 是它的糖）：**仅激活期合法**（body 运行期），handler 相位调用 = 错误值。`__` 前缀事件是保留 lifecycle 钩子（仅 `__sleep`/`__wake`），入 schema 的 `hooks` 数组、不进 receives
+- `ctx.receives` → 激活注册表（只读，任意相位可读——"我绑了什么"的自省）
 - `ctx.store(op)` → 操作结果（一条存储指令：collection 名 + 操作 + 参数，作用于**本类型声明的 collection**——ADR-0026 §3；存储寻址绑定类型的 ns，跨类型访问不可表达；类型未声明 storage schema 时报错——没有 ctx.store 面）
 - `ctx.schema(arg)` → 本类型持久化的 interface_schema 副本（handler 对自身声明形状的反射）
 - `ctx.invoke({"type": ..., "key": ..., "handler": ..., "args": ...})` → 目标摊位的返回值（阻塞等待，走统一调用模型，超时=失败值）
@@ -59,13 +62,15 @@ def audit(args): ...
 
 **语言能力差异**：
 
-| | python | steel | nushell | wasm |
-|---|---|---|---|---|
-| 进程内 | ✅ | ✅ | ❌ 子进程 | ✅ VM |
-| ctx host 函数 | ✅ | ✅ | ❌（显式报错） | 经帧上抛（Phase 6.6） |
-| VM 驻留（Phase 2.6） | ✅ | ✅ | ❌ one-shot | ✅ |
-| `@on` 多入口 | ✅ 装饰器 | `on` 函数 | 暂单 handler（直接调用声明 handler 名） | 导出约定 |
-| 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | 重隔离三方代码 |
+| | python | steel | nushell (bgi) | wasm | bgi（native 子进程） |
+|---|---|---|---|---|---|
+| 进程内 | ✅ | ✅ | ❌ | ✅ VM | ❌ |
+| ctx host 函数 | ✅ ctx 对象 | ✅ dotted 符号 | 帧上抛（fifo） | `aura_host.*` 平铺导入 | typed host 帧 |
+| VM 驻留（Phase 2.6） | ✅ | ✅ | ✅（子进程驻留） | ✅ | ✅ |
+| 注册入口 | `@on` 装饰器 / `ctx.on` | `on` 内建 / `ctx.on` | schema 手写（interface_schema 应答） | 导出约定 | schema 手写 |
+| 生命周期钩子 | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` 数组 | —（4.21 退役） | schema `hooks` 数组 |
+| 相位门（ADR-0043 §3） | 激活后 ctx.on 报错 | 激活后 on/ctx.on 报错 | 无运行时注册面 | — | 子进程自管（load-time pass） |
+| 适用 | 业务逻辑 | AI 生成操作 | 管道/CLI 形态 | —（Phase 4.21 退役） | 编译型语言（Rust/C/C++/Zig/Go…） |
 
 **`interface_schema` 对执行路径透明**：effector 的执行 carrier 只负责"加载源码 → 调 entry → 序列化结果"，从不触碰 `interface_schema`。声明收集（python `@on` 注入、steel `on` 内建）是语言形态，组装与合并语义在 `carrier::introspect` 一层——aura 上传时调用它一次并持久化。同一个脚本交给 effector 执行时，`interface_schema` 只是一个没人调用的函数；交给 aura 上传时，它成为类型定义的元数据来源。
 
@@ -93,6 +98,10 @@ def remove(args):
 def audit(args):
     return None
 
+# 生命周期钩子（ADR-0043 §3）：ctx.on 的保留名形态——装饰器与 ctx.on 是
+# 同一原语；__ 前缀入 schema 的 hooks 数组，不进 receives
+ctx.on("__sleep", lambda args: None)
+
 # 可选的显式部分声明：与 @on 装饰器推导的 receives 按字段合并
 # （装饰器管 receives，这里管 lifecycle 等其它元数据）
 def interface_schema(args=None):
@@ -102,7 +111,7 @@ def interface_schema(args=None):
 注意：
 
 - host 函数的参数是**一个 JSON 字符串**（carrier 边界解码），脚本内用 `json.dumps(...)` 构造；返回值已是原生 dict（无需再 `json.loads`）
-- `@on` 装饰器由 carrier 注入，脚本不需要（也不应该）自己定义 `on`；装饰器是恒等变换，函数照常可直接调用
+- `@on` 装饰器由 carrier 注入，脚本不需要（也不应该）自己定义 `on`；装饰器是恒等变换，函数照常可直接调用。`ctx.on(event, handler)` 是同一原语的别名（装饰器就是它的糖）——**仅 body 运行期（激活期）合法**，handler 相位调用是错误值（ADR-0043 §3 相位门）
 - 通配符只有前缀形态 `prefix.*`（与 etcd 一致），匹配 `order.created` 不匹配 `order`；声明了通配符的 handler 路由到单例实例
 - **直接调用要声明调哪个函数**：`ctx.invoke` 载荷必须带 `handler` 字段（函数名），engine `invoke(target, handler, args)` 同理——没有保留函数名，没有隐式入口；无 entry 注册时源码顶层 `result` 变量亦可
 
@@ -123,6 +132,10 @@ def interface_schema(args=None):
             "echo" (hash-ref echoed "x")))))
 
 (on "order.*" "" (lambda (args) #t))   ;; 通配符 → wildcard_receives
+
+;; 生命周期钩子：ctx.on 是 on 内建的别名（同一原语，ADR-0043 §3）；
+;; __ 保留名入 hooks 数组，不进 receives
+(ctx.on "__sleep" "" (lambda (args) #t))
 
 ;; 可选的显式部分声明：与 on 收集的 receives 按字段合并
 ;; （收集器管 receives，这里管 lifecycle 等其它元数据）
@@ -161,11 +174,13 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
 - ctx 调用经 `ctx-invoke` / `ctx-store-emit` 等字面名 def（作者自带 helper；操作名是载体的固定词汇）——与其余 carrier 同操作集
 - 实测坑（勿重新发明，PLAN 2026-09-29 有档）：非 TTY stdin 不能阻塞读、`open` 在写方 EOF 交付、`else` 须与分支 `}` 同行、`$env` 写不出 `each` 闭包
 
-## Wasm（Rust 编写）
+## Wasm（Rust 编写）——Phase 4.21 退役中
 
 [English](#wasm-rust-1)
 
-Rust 服务的唯一发布形态：编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛，host 侧 NestStorage 执行器在 registry 分配的 app ns 前缀下承载物理存储。静态 OKM derive，不需要 okm-dynamic。（注：通用 NestStorage 执行器作为 Phase 6.6 已出局——k10r 解耦裁决后没有消费者需要 hosted 存储；wasm 摊位的存储上抛由各 Booth type 自行声明消费。）
+> **退役裁决（2026-10-12，PLAN Phase 4.21）**：wasm 通道将移除。跨语言承诺未兑现——C/C++/Zig 天然 native（bgi 零摩擦）、Go 的 wasm 目标被运行时拖累（native 单二进制恰是 bgi 的理想形态）、python 进 wasm 是解释器套解释器；细粒度 import 拒绝不是本系统的安全边界（脚本 carrier 本就 `SandboxPolicy::None`，隔离在部署层）；且无任何真实消费者在用 wasm。顺序：先建 **bgi guest shim**（effector 仓，typed ctx facade），再删 wasmtime 通道。本节保留至删除落地。
+
+Rust 服务的发布形态曾是编译为 `.wasm` 运行时上传（`set(lang="wasm", bytes)`），不编译进 host——编译进 host 会让每个应用 fork 一份 aura，平台退化成框架（该边界裁决保留，现为 ADR-0044；Rust 的进程外通道是 bgi，见下一节语义）。存储不进沙箱：OKM schema 原样编译进 wasm，`VirtualStorage` 实现替换为帧上抛。静态 OKM derive，不需要 okm-dynamic。（注：通用 NestStorage 执行器作为 Phase 6.6 已出局——k10r 解耦裁决后没有消费者需要 hosted 存储。）
 
 约定（已落地——CBOR 过线性内存，无 JSON 债）：
 

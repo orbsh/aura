@@ -12,6 +12,7 @@
 
 use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
+use std::time::Duration;
 
 fn bin(name: &str) -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
@@ -54,6 +55,51 @@ async fn bgi_booth_invoke() {
         .await
         .unwrap();
     assert_eq!(out, serde_json::json!({ "echoed": { "y": 2 } }));
+}
+
+/// ADR-0043 §3 e2e: the child's schema reply carries the reserved `hooks`
+/// array; engine.register seeds Declared entries from it, and the realm's
+/// wake/evict dispatch calls the session BY THE RESERVED NAME. Observed
+/// through the loop's own hook arms: __wake runs on first activation
+/// (before the first job), __sleep around eviction (idle_ttl expiry) —
+/// a real Named instance is driven through a full wake→sleep cycle.
+#[tokio::test]
+async fn bgi_booth_declared_hooks_run_through_the_realm() {
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    engine
+        .register(
+            BoothType::script("bin-hooks", "bgi", bin("bgi_loop"))
+                .with_idle_ttl(Duration::from_millis(300)),
+        )
+        .await
+        .unwrap();
+
+    let target = InstanceId {
+        booth_type: "bin-hooks".into(),
+        key: InstanceKey::Named("hk".into()),
+    };
+    // First invoke = first activation: __wake dispatches BEFORE the job
+    // (instance.rs: fresh residency, symmetric with __sleep). The hook
+    // returning an error value would fail the activation — the invoke
+    // below succeeding proves the Declared path ran the child's hook arm.
+    let out = engine
+        .invoke(target.clone(), "echo", serde_json::json!({ "w": 1 }))
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({ "echoed": { "w": 1 } }));
+
+    // Idle expiry (300ms) evicts: __sleep runs around the eviction. The
+    // hook is advisory — eviction proceeds regardless of its result —
+    // but a BROKEN dispatch (wrong name, session mismatch) would surface
+    // as the hook error on stderr AND, worse shape, a panic. Sleep past
+    // the TTL and re-invoke: the reactivation must succeed, proving the
+    // cycle closed (evicted with __sleep → reactivated with __wake).
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let out = engine
+        .invoke(target.clone(), "echo", serde_json::json!({ "w": 2 }))
+        .await
+        .unwrap();
+    assert_eq!(out, serde_json::json!({ "echoed": { "w": 2 } }));
 }
 
 /// The ctx seam across the process boundary, into the REALM: the bgi

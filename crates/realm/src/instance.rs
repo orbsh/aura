@@ -57,6 +57,8 @@ impl Realm {
             // (the handler VM executed ctx.on at load).
             if let Some(booth) = self.types.get(&id.booth_type) {
                 if let Some(hook) = booth.hooks.get("__wake").cloned() {
+                    let body = booth.body.clone();
+                    let sessions = self.sessions.clone();
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -64,7 +66,8 @@ impl Realm {
                         self.schema_of(&id.booth_type).cloned().flatten(),
                         id,
                     );
-                    Self::run_hook(self_arc.clone(), id, &hook, &ctx, "__wake").await?;
+                    let host = self.delivery_bridge_for(&ctx, id);
+                    Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__wake").await?;
                 }
             }
             // Subscribe to the event queues this type's @on declarations
@@ -515,6 +518,8 @@ impl Realm {
         locked.timers.cancel_target(id);
         if let Some(booth) = locked.types.get(&id.booth_type) {
             if let Some(hook) = booth.hooks.get("__sleep").cloned() {
+                let body = booth.body.clone();
+                let sessions = locked.sessions.clone();
                 let ctx = Self::ctx_for(
                     realm.clone(),
                     locked.mq.clone(),
@@ -522,7 +527,8 @@ impl Realm {
                     locked.schema_of(&id.booth_type).cloned().flatten(),
                     id,
                 );
-                if let Err(e) = Self::run_hook(realm.clone(), id, &hook, &ctx, "__sleep").await {
+                let host = locked.delivery_bridge_for(&ctx, id);
+                if let Err(e) = Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__sleep").await {
                     eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
                 }
             }
@@ -532,6 +538,59 @@ impl Realm {
 
     pub async fn watchdog_expiry(realm: SharedRealm, id: &InstanceId) {
         Self::evict_instance(realm, id).await;
+    }
+
+    /// The delivery-arm host bridge, assembled for a hook dispatch (the
+    /// verbatim run_job Script-arm assembly, extracted): a hook-spawned
+    /// resident session must carry the SAME ctx face later deliveries
+    /// reuse — the slot is shared.
+    fn delivery_bridge_for(
+        &self,
+        ctx: &aura_booth::Ctx,
+        id: &InstanceId,
+    ) -> Option<effector_runtime::carrier::HostBridge> {
+        let realm_plan = self.plan_of(&id.booth_type).cloned();
+        let wasm_raw = realm_plan
+            .as_ref()
+            .map(|p| (p.ns, self.mq.clone()));
+        let fns = Self::host_bridge_for(ctx, wasm_raw, &self.mq, &self.timers);
+        let storage = realm_plan.as_ref().map(|plan| {
+            use okm_core::storage::VirtualStorage;
+            use effector_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
+            let store = self.mq.clone();
+            let engine = std::sync::Arc::new(StorageEngineFns {
+                put: std::sync::Arc::new(move |k, v| store.put(k, v)),
+                get: std::sync::Arc::new({
+                    let store = self.mq.clone();
+                    move |k| store.get(k)
+                }),
+                del: std::sync::Arc::new({
+                    let store = self.mq.clone();
+                    move |k| store.del(k)
+                }),
+                scan_range: std::sync::Arc::new({
+                    let store = self.mq.clone();
+                    move |b, e| store.scan_range(b, e)
+                }),
+            });
+            let collections = plan
+                .entries
+                .iter()
+                .map(|(name, entry)| StorageCollection {
+                    name: name.clone(),
+                    entry: entry.clone(),
+                })
+                .collect();
+            std::sync::Arc::new(StorageSlot {
+                ns: plan.ns,
+                collections,
+                engine,
+            })
+        });
+        Some(effector_runtime::carrier::HostBridge {
+            functions: fns,
+            storage,
+        })
     }
 
     /// One lifecycle hook dispatch (ADR-0043 §3): a Compiled hook runs the
@@ -544,48 +603,52 @@ impl Realm {
     /// (eviction proceeds regardless: the hook is advisory, state lives in
     /// the type's collections).
     async fn run_hook(
-        self_arc: SharedRealm,
-        id: &InstanceId,
         hook: &aura_booth::HookBody,
+        body: Option<aura_booth::Body>,
+        sessions: &effector_runtime::carrier::session::Sessions,
+        host: Option<effector_runtime::carrier::HostBridge>,
+        id: &InstanceId,
         ctx: &aura_booth::Ctx,
         name: &str,
     ) -> anyhow::Result<()> {
+        // NO realm lock here: every call site holds the realm mutex (the
+        // activation path runs inside `instance()`, awaited under the
+        // caller's guard) — re-locking inline deadlocks. The caller
+        // captures body + sessions BEFORE awaiting; the blocking session
+        // work runs in spawn_blocking against the (lock-free per-op)
+        // sessions registry.
         match hook {
             aura_booth::HookBody::Compiled(h) => h(ctx, serde_json::Value::Null).await.map(|_| ()),
-            aura_booth::HookBody::Declared => {
-                let body = {
-                    let realm = self_arc.lock().await;
-                    realm.types.get(&id.booth_type).map(|b| b.body.clone())
-                };
-                match body {
-                    Some(aura_booth::Body::Script { language, source, encoding }) => {
-                        let sessions = {
-                            let realm = self_arc.lock().await;
-                            realm.sessions.clone()
-                        };
-                        let instance_key = format!("{}/{}", id.booth_type, id.key);
-                        let encoding = map_encoding(encoding);
-                        let name = name.to_string();
-                        tokio::task::spawn_blocking(move || {
-                            sessions.with_session_encoded(
-                                &instance_key,
-                                &language,
-                                &source,
-                                None,
-                                &effector_runtime::sandbox::SandboxPolicy::None,
-                                encoding,
-                                move |s| s.call(&name, &serde_json::Value::Null),
-                            )
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(anyhow::anyhow!("hook task join: {e}")))
-                        .map(|_v| ())
-                    }
-                    _ => anyhow::bail!(
-                        "hook {name}: Declared body but the type carries no script source"
-                    ),
+            aura_booth::HookBody::Declared => match body {
+                Some(aura_booth::Body::Script { language, source, encoding }) => {
+                    let instance_key = format!("{}/{}", id.booth_type, id.key);
+                    let encoding = map_encoding(encoding);
+                    let name = name.to_string();
+                    let sessions = sessions.clone();
+                    // The bridge rides like the delivery arm's: a
+                    // hook-spawned session IS the resident session later
+                    // deliveries reuse — spawning it host-less would
+                    // poison the slot (its bridge would lack every ctx
+                    // method the booth's handlers call).
+                    tokio::task::spawn_blocking(move || {
+                        sessions.with_session_encoded(
+                            &instance_key,
+                            &language,
+                            &source,
+                            host.as_ref(),
+                            &effector_runtime::sandbox::SandboxPolicy::None,
+                            encoding,
+                            move |s| s.call(&name, &serde_json::Value::Null),
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("hook task join: {e}")))
+                    .map(|_v| ())
                 }
-            }
+                _ => anyhow::bail!(
+                    "hook {name}: Declared body but the type carries no script source"
+                ),
+            },
         }
     }
 
@@ -688,6 +751,8 @@ impl Realm {
             let Some(inst) = self.instances.remove(&key) else { continue };
             if let Some(booth) = self.types.get(&key.0) {
                 if let Some(hook) = booth.hooks.get("__sleep").cloned() {
+                    let body = booth.body.clone();
+                    let sessions = self.sessions.clone();
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -695,7 +760,8 @@ impl Realm {
                         self.schema_of(&key.0).cloned().flatten(),
                         &inst.id,
                     );
-                    if let Err(e) = Self::run_hook(self_arc.clone(), &inst.id, &hook, &ctx, "__sleep").await {
+                    let host = self.delivery_bridge_for(&ctx, &inst.id);
+                    if let Err(e) = Self::run_hook(&hook, Some(body), &sessions, host, &inst.id, &ctx, "__sleep").await {
                         // Eviction proceeds regardless: the hook is
                         // advisory; state is already in the store.
                         eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);

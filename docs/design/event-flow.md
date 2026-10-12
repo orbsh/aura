@@ -285,7 +285,7 @@ emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass �
 
 一个 realm 的持久面 = 一个 okm 实例；框架低位块分两段（ADR-0040）：**事件面 ns 20–29**、
 **meta 面 ns 30–39**（段内表序是概念序：词汇 → 数据 → 位置 → 注册表）；**摊位类型 ns**
-运行时从 100 起分配；空段 `24`（ADR-0041 撤 MqHead 后腾出）与 `26–29`（事件面空段）、
+运行时从 100 起分配；空段 `24`（ADR-0041 撤 MqHead 后腾出）与 `27–29`（事件面空段；26 自 2026-10-12 起为 PlaneVersion 标记行）、
 `33–99` 预留。
 
 框架低位块（ADR-0040，已落）。**键/值完整布局——字段顺序、宽度、哨兵与索引/reduce 形态
@@ -299,6 +299,7 @@ emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass �
 | 23 | MqCursor | `[event_id u32][instance_key_id u32][booth_id u32]` | 订阅游标：最后消费 seq，单调不回卷；第三段 = ns 30 的 booth id；另增 `last_active_ms`（ADR-0039 §2）；无物理分区（ADR-0041 §4） | mq.rs |
 | 24 | —（空） | | 写头随 MqHead 撤销，改由 MqData 的 `HighWater(seq)` 承载（ADR-0041 §3） | | 
 | 25 | EventRoute | `[event_id u32][booth_id u32]` | 持久订阅注册表（`by_booth` 索引）；通配同行形态存模式串；`booth_id` = ns 30 的 booth id | mq.rs |
+| 26 | PlaneVersion | `b"plane-version"` | 数据面布局版本标记（ADR-0040 Update，2026-10-12）：单行原始键值，非表（无 derive——它是标记不是 collection）；首 boot 种子、此后每 boot 校验，不匹配 = boot error 带清除指引。旧布局存储把旧行解码成新表（新 meta 段落在旧事件面号上）的静默失败，由此变成节点拒绝启动 | meta.rs |
 | 30 | **BoothName**（原 TypeName；改名 dbc5d60、改号 Phase 4.18） | `id u32` | 摊位类型唯一字典：`by_name` 索引 + `HighWater(id)` preset + 数据 ns 分配（`100+id`）；双向解析（名→id `resolve_booth_id`、id→名 `booth_name_of`） | meta.rs |
 | 31 | BoothDef | `booth_id u32` | 摊位定义行：name/language/encoding/idle_ttl + `code_sha256` 指针；introspected schema 走动态段 nTLV | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | 代码字节内容寻址（ADR-0027）：纯内容行，构造性不可变 | meta.rs |

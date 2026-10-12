@@ -74,7 +74,27 @@ impl Engine {
                         .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?;
                     let mq_store = okm_core::FjallStore::from_db(db, "aura_mq")
                         .map_err(|e| anyhow::anyhow!("fjall mq keyspace {path:?}: {e}"))?;
-                    Ok(aura_realm::mq::MqStore::fjall(mq_store))
+                    let mq_store = aura_realm::mq::MqStore::fjall(mq_store);
+                    // The plane-version gate (ADR-0040 Update): a store
+                    // written by an older layout decodes its old rows as
+                    // the NEW low-block tables (the renumbering placed the
+                    // new meta band on the old event plane's numbers) —
+                    // the silent-decode failure mode the number-reuse
+                    // discipline exists to prevent. Refuse the boot with
+                    // the wipe instruction instead.
+                    match aura_realm::meta::plane_version_of(&mq_store) {
+                        None => aura_realm::meta::write_plane_version(&mq_store),
+                        Some(v) if v == aura_realm::meta::PLANE_VERSION => {}
+                        Some(v) => anyhow::bail!(
+                            "data-plane layout mismatch: store at {path:?} was written by plane version {v}, \
+                             this binary expects {} — the low-block renumbering (ADR-0040/0041) retired the old \
+                             bands, and the persisted booth definitions + code blobs are invalid with them. \
+                             WIPE the store (delete the data directory) and re-register the booth types; \
+                             durable state rides the type's collections, which the wipe also resets.",
+                            aura_realm::meta::PLANE_VERSION
+                        ),
+                    }
+                    Ok(mq_store)
                 }
                 #[cfg(not(feature = "fjall"))]
                 {

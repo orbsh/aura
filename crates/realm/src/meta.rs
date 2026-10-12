@@ -26,6 +26,45 @@ use okm_core::document::Collection;
 use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 // ---------------------------------------------------------------------------
+// The plane-version marker (ADR-0040 Update, 2026-10-12): one raw row in the
+// event-plane band's reserved ns 26 — NOT a table (no derive, no schema): the
+// data plane writes it at first boot and checks it at every boot after. A
+// keyspace written by an OLDER layout (the ADR-0040 renumbering retired the
+// old low block, and the NEW meta band 30-32 lands exactly on the old event
+// plane's numbers) decodes old rows as new tables — the failure mode the
+// number-reuse discipline exists to prevent. The marker turns that silent
+// decode into a LOUD boot error with the wipe instruction: the operational
+// low-block wipe (A3) stops depending on the operator's memory.
+// ---------------------------------------------------------------------------
+
+/// The current data-plane layout version: the low-block renumbering's date
+/// stamp. BUMP on any `#[ok_ns]`/key-width/table-shape change that an old
+/// store cannot decode (the number is semantic — an operator reading the
+/// error should be able to date the incompatibility).
+pub const PLANE_VERSION: u32 = 20_261_012;
+
+/// The marker's raw key (ns 26's whole content is this one row; the ns is
+/// otherwise reserved — ADR-0040's free-band discipline).
+pub const PLANE_VERSION_KEY: &[u8] = &[0, 26, b'p', b'l', b'a', b'n', b'e', b'-', b'v', b'e', b'r', b's', b'i', b'o', b'n'];
+
+/// Read the stored plane version. `None` = a fresh store (no marker yet —
+/// the caller writes it after the check passes).
+pub fn plane_version_of(store: &MqStore) -> Option<u32> {
+    use okm_core::storage::VirtualStorage;
+    let raw = store.get(PLANE_VERSION_KEY)?;
+    if raw.len() != 4 {
+        return None; // not a marker row we understand — treat as absent
+    }
+    Some(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+/// Write the plane-version marker (first boot on a fresh store).
+pub fn write_plane_version(store: &MqStore) {
+    use okm_core::storage::VirtualStorage;
+    store.put(PLANE_VERSION_KEY.to_vec(), PLANE_VERSION.to_be_bytes().to_vec());
+}
+
+// ---------------------------------------------------------------------------
 // The registry: open-ended type name → id.
 // ---------------------------------------------------------------------------
 

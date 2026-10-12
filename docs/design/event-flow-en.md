@@ -405,7 +405,7 @@ One realm's persistent plane = one okm instance; the framework low block has two
 bands (ADR-0040): **the event plane, ns 20–29**, and **the meta plane, ns 30–39**
 (inside a band, table order is conceptual — vocabulary → data → positions →
 registry); **booth type nss** allocate at runtime from 100; `24` (vacated when
-ADR-0041 retired MqHead) and `26–29` (the event plane's empty middle), plus `33–99`,
+ADR-0041 retired MqHead) and `27–29` (the event plane's empty middle; 26 is the PlaneVersion marker row since 2026-10-12), plus `33–99`,
 stay reserved.
 
 The framework low block (ADR-0040, landed). **Full key/value layouts — field order,
@@ -421,6 +421,7 @@ this table is the index, and the authoritative definition lives in the code
 | 23 | MqCursor | `[event_id u32][instance_key_id u32][booth_id u32]` | subscription cursor: last consumed seq, monotonic; the third segment is the ns 30 booth id; `last_active_ms` joins the row (ADR-0039 §2); no physical partition (ADR-0041 §4) | mq.rs |
 | 24 | — (empty) | | the write head retired with MqHead; MqData's `HighWater(seq)` carries it (ADR-0041 §3) | |
 | 25 | EventRoute | `[event_id u32][booth_id u32]` | persisted subscription registry (`by_booth` index); wildcards ride the same row shape storing the PATTERN; `booth_id` = the ns 30 booth id | mq.rs |
+| 26 | PlaneVersion | `b"plane-version"` | the data-plane layout version marker (ADR-0040 Update, 2026-10-12): ONE raw key/value row, not a table (no derive — a marker, not a collection); seeded at first boot, checked at every boot after, a mismatch is a boot error carrying the wipe instruction. The silent-decode failure (an old-layout store decodes its rows as the new tables — the new meta band sits on the old event plane's numbers) becomes the node refusing to start | meta.rs |
 | 30 | **BoothName** (was TypeName; renamed dbc5d60, renumbered Phase 4.18) | `id u32` | the unique booth-TYPE dictionary: `by_name` index + `HighWater(id)` preset + data-ns allocation (`100+id`); resolves BOTH ways (name→id `resolve_booth_id`, id→name `booth_name_of`) | meta.rs |
 | 31 | BoothDef | `booth_id u32` | booth definition row per type: name/language/encoding/idle_ttl + the `code_sha256` pointer; the introspected schema rides the dynamic segment (structured nTLV, never opaque text) | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | content-addressed code bytes (ADR-0027): pure content rows, immutable by construction — same key different bytes is a hash collision, not a state | meta.rs |

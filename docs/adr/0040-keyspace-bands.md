@@ -89,3 +89,28 @@ Reserved: `26–29` (the event plane's empty middle) and `33–99`. `BOOTH_NS_BA
   numbers where they name one.
 - **`ns-layout.md`/`ns-layout-en.md`**: pointers, no change (they name no
   numbers).
+
+## Update — the plane-version marker (2026-10-12)
+
+The operational low-block wipe depended on the operator's memory: nothing in
+the store said which layout wrote it, so an un-migrated deployment silently
+decoded old rows as the new tables (the renumbering placed the new meta band
+30–32 on the old event plane's numbers — exactly the read-old-as-new failure
+the number-reuse discipline exists to prevent). The wipe is now GATED:
+
+- One raw row at **ns 26** (`b"plane-version"` → `u32` BE date-stamp; ns 26
+  was an empty reserved band, the row is a MARKER, not a table — no derive,
+  no schema, the ns carries nothing else).
+- Seeded at first boot on a fresh store; checked at every boot after. A
+  mismatch is a **boot error** naming both versions and the wipe instruction
+  (delete the data directory; persisted booth definitions and code blobs are
+  invalid with the old bands — re-register the types; state rides the type's
+  collections, which the wipe also resets).
+- `PLANE_VERSION` bumps with any `#[ok_ns]`/key-width/table-shape change an
+  old store cannot decode — the same discipline as the §7 table sync, one
+  more line to edit in the same commit.
+
+Trade-off recorded: a marker row costs one point-read per boot and reserves
+one ns; it converts "remember to wipe" into "the node refuses to start until
+you wipe". The A3 operational act survives as the error message's
+instruction, executable by whoever sees the boot fail.

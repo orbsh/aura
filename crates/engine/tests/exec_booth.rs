@@ -1,5 +1,5 @@
 //! ADR-0035 exec/BGI carriers through the realm path: a framed resident
-//! booth registers with `language = "bgi"` (source = the spawn spec —
+//! booth registers with `language = "induction"` (source = the spawn spec —
 //! the `bgi_loop` fixture speaking the line protocol), and a bare
 //! one-shot booth registers with `language = "exec"` (the `one_shot`
 //! fixture: one JSON in, one JSON out, nothing survives). Both run
@@ -30,7 +30,7 @@ fn bin(name: &str) -> String {
 async fn bgi_booth_invoke() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "bgi", bin("bgi_loop")))
+        .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
         .await
         .unwrap();
 
@@ -68,7 +68,7 @@ async fn bgi_booth_declared_hooks_run_through_the_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
-            BoothType::script("bin-hooks", "bgi", bin("bgi_loop"))
+            BoothType::script("bin-hooks", "induction", bin("induction_loop"))
                 .with_idle_ttl(Duration::from_millis(300)),
         )
         .await
@@ -114,7 +114,7 @@ async fn bgi_booth_declared_hooks_run_through_the_realm() {
 async fn bgi_booth_invoke_to_sibling() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "bgi", bin("bgi_loop")))
+        .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
         .await
         .unwrap();
     engine
@@ -150,7 +150,7 @@ def handle(args):
 async fn bgi_booth_iterate_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-prod", "bgi", bin("bgi_loop")))
+        .register(BoothType::script("bin-prod", "induction", bin("induction_loop")))
         .await
         .unwrap();
 
@@ -195,7 +195,7 @@ async fn bgi_booth_eviction_reaps_the_child() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
-            BoothType::script("bin-echo", "bgi", bin("bgi_loop"))
+            BoothType::script("bin-echo", "induction", bin("induction_loop"))
                 .with_idle_ttl(std::time::Duration::from_millis(200)),
         )
         .await
@@ -289,7 +289,7 @@ async fn exec_oneshot_booth_through_realm() {
 async fn bgi_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
-        .register(BoothType::script("bin-store", "bgi", bin("bgi_loop")))
+        .register(BoothType::script("bin-store", "induction", bin("induction_loop")))
         .await
         .unwrap();
 
@@ -330,11 +330,11 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../effector/crates/runtime/examples/bgi_nu.nu"
+        "/../../../effector/crates/runtime/examples/induction_nu.nu"
     );
     assert!(std::path::Path::new(fixture).exists(), "nu bgi fixture missing: {fixture}");
     engine
-        .register(BoothType::script("nu-store", "bgi", format!("nu {fixture}")))
+        .register(BoothType::script("nu-store", "induction", format!("nu {fixture}")))
         .await
         .unwrap();
 
@@ -388,7 +388,7 @@ async fn bgi_cbor_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
-            BoothType::script("bin-store-cbor", "bgi", bin("bgi_loop"))
+            BoothType::script("bin-store-cbor", "induction", bin("induction_loop"))
                 .encoded(aura_booth::Encoding::Cbor),
         )
         .await

@@ -22,10 +22,10 @@ fn echo() -> BoothType {
 
 fn bgi_bin() -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
-    let full = format!("{path}bgi_loop");
+    let full = format!("{path}induction_loop");
     assert!(
         std::path::Path::new(&full).exists(),
-        "bgi_loop missing — build it in ~/world/effector: cargo build -p effector-runtime --examples"
+        "induction_loop missing — build it in ~/world/effector: cargo build -p effector-runtime --examples"
     );
     full
 }
@@ -34,7 +34,7 @@ fn bgi_bin() -> String {
 // 500ms sleep) — the shape is feature-free: bgi spawns by exec, no
 // embedded interpreter gate.
 fn slow_echo() -> BoothType {
-    BoothType::script("slow_echo", "bgi", bgi_bin())
+    BoothType::script("slow_echo", "induction", bgi_bin())
 }
 
 #[tokio::test]

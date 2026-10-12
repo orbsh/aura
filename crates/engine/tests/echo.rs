@@ -152,12 +152,12 @@ async fn nu_bgi_script_booth_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../effector/crates/runtime/examples/bgi_nu.nu"
+        "/../../../effector/crates/runtime/examples/induction_nu.nu"
     );
     engine
         .register(aura_booth::BoothType::script(
             "nu-op",
-            "bgi",
+            "induction",
             format!("nu {fixture}"),
         ))
         .await
@@ -555,12 +555,12 @@ async fn bgi_nu_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../effector/crates/runtime/examples/bgi_nu.nu"
+        "/../../../effector/crates/runtime/examples/induction_nu.nu"
     );
     engine
         .register(aura_booth::BoothType::script(
             "nu-dweller",
-            "bgi",
+            "induction",
             format!("nu {fixture}"),
         ))
         .await

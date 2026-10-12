@@ -664,7 +664,7 @@ Deferred gates:
 | 项 | 状态 |
 |---|---|
 | A3 既有部署清低位块 | **关闭**（2026-10-12，plane-version 闸门）：本机核实无既有 aura 部署存储（唯一 fjall 实例是 mudra 自己的 ns 1–8，非 aura 部署；prism 测试全用 tempdir），无需清除动作。工程化收口 = 数据面版本标记（ns 26 单行，meta.rs）：首 boot 种子、每 boot 校验，旧布局存储 → boot error 带清除指引——运维动作从「记得清」变成「节点拒绝带病启动」。测试 `plane_version.rs` 2/2（fjall feature 门）；event-flow §7 双语表加 ns 26 行；ADR-0040 双语 Update note |
-| A4 effector USAGE 双语帧形同步 | 开放——范围待定（4.16c 帧形批次文档扫尾） |
+| A4 effector USAGE 双语帧形同步 | **关闭**（2026-10-12，effector `f94ad9c`）：USAGE en+zh 对照现状——host 映射表补 `ctx.emit` 臂（远程形状：业务 fire-and-forget、帧层保留应答配对）；远程面范围注记记录尚无线上臂的成员（timer/queue/schema 仅进程内，远程调用 = 未绑定名，以 emit 模式上线）；wasmtime 调用示例改 bgi（4.21）。协议 enum 的 `StoreEmit` 判别名保留（远程 WS 面自有词汇，0043 改名只覆盖 ctx 桥键） |
 | A5 pyo3 / python 载体 | **关闭**（本节） |
 | A6/A7 | 已关闭（2026-10-08） |
 | P1 nushell feature | **关闭**（`de07db0`） |

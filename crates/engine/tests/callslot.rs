@@ -25,7 +25,7 @@ fn bgi_bin() -> String {
     let full = format!("{path}bgi_loop");
     assert!(
         std::path::Path::new(&full).exists(),
-        "bgi_loop missing — build it in ~/world/effector: cargo build -p actor-guest --examples"
+        "bgi_loop missing — build it in ~/world/effector: cargo build -p effector-runtime --examples"
     );
     full
 }

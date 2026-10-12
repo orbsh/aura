@@ -541,10 +541,18 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     It is now a matching test.
 
 - [ ] **Phase 4.20 — The ctx object: one ambient execution context (ADR-0043, docs/adr/0043-ctx-object.md en+zh; Accepted 2026-10-10, breaking, no aliases)**
-  - Surface: `ctx.self/payload/invoke/iterate/store/emit/timer.*/queue.*/schema/on(phase-gated)` — the flat `ctx_*` injection table retires; the handler signature collapses to `(ctx)`.
-  - `ctx.emit` LANDS the 0011 half-bridge: publish into the MQ plane (host closure carries the type name as emitter); bgi gains the `emit` host arm (no reply, fire-and-forget).
-  - `ctx.on`: activation-only phase gate; the persisted `interface_schema.receives` remains the ONE contract source (decorators lower to it).
-  - Order of work: booth Ctx shape + realm ctx.rs (one object) → carrier bindings (python/steel/nu/bgi) → script/test-fixture renames → live test from INSIDE a handler (the external `Realm::emit` coverage does not count) → booth-api.md + wiki §5.3 rewrite.
+  - [x] rename wave — aura `8a2b85b` + effector `fdb9507`/`1c6fbdc` (2026-10-10): the flat `ctx_*` bridge keys become dotted method paths (`invoke | store | schema | store.frame | timer.register/cancel | queue.depth/skip_to_head | iterate.start/next/dispose`); python injects ONE `ctx` object (SimpleNamespace tree, two-pass assembly — `store` is both leaf and `store.frame`'s group, double-role prefixes become callable `AuraCtxNode`s); steel binds literal dotted symbols; bgi arms mirror the callable set; wasm ABI stays flat under `aura_host.*`; nu shim renamed. Gates: aura workspace green + clippy 0; effector `-p effector-runtime --features python,wasmtime` 52/52.
+  - [x] emit wave — aura `4635a60` + effector `badcccd` (2026-10-10): `ctx.emit` end-to-end (Weak-realm publish closure injected at `ctx_for`, emitter = TYPE name, instance-free); bgi `Emit` arm answers NOTHING by contract (fire-and-forget is the method; the WS `HostOp::Emit` hop keeps frame-level reply pairing — pairing is protocol, not business). Acceptance publishes FROM INSIDE a handler + dead-ring boundary (`events.rs::ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish`).
+  - Surface (final form): `ctx.self/invoke/iterate/store/emit/timer.*/queue.*/schema/on(phase-gated)/receives` — payload rides the handler argument (script `(args)`, Rust `Fn(&Ctx, Value)`); `ctx.return` never exists; entry-native failure unchanged.
+  - [ ] `ctx.on` wave (§3): registration primitive + activation-only phase gate (handler-phase call = error value; `ctx.receives` readable any phase); lifecycle fold-in (`BoothType.on_sleep/on_wake` fields retire → reserved `__sleep`/`__wake` bindings in the registry; realm eviction/reactivation dispatch reads the hook table); decorator lowering (`@on` → same registry); bgi hello frame carries the assembled registry (no runtime on/receives arms).
+  - [ ] Rust signature wave (§4): `Handler = Fn(Ctx, Value)` → `Fn(&Ctx, Value)` with the future lifetime FOLLOWING the borrow — `dyn for<'a> Fn(&'a Ctx, Value) -> BoxFuture<'a, Result<Value>>` (a `'static` future cannot hold `&Ctx`; the clone-every-handle alternative is per-handler boilerplate; all call sites await immediately on a local ctx, so the HRTB is object-safe). Scope: framework-internal (booth trait, hooks, engine test scaffolding) — user booths are out-of-process per ADR-0044.
+  - [ ] docs sync: `docs/design/booth-api.md`(+`-en`) host-fn table and language table against the final surface; wiki `~/.hermes/wiki/aura-architecture.md` §5.3; mudra `docs/ADR-extension-protocol.md` aligns its host-arm list when the bgi arm set freezes (mudra currently ships `invoke` only).
+- [ ] **Phase 4.21 — wasm channel retirement (compiled languages go bgi-first)**
+  - Ruling (2026-10-12): retire the wasm carrier. The cross-language promise never materialized: C/C++/Zig authors go native anyway (bgi zero friction), Go's wasm target drags its runtime while a native single binary is bgi's ideal shape, python-in-wasm is an interpreter inside an interpreter (the embedded python carrier already serves it). First-class multi-language waits on wasm-gc + WASI + component model — and even landed, those govern a wire contract aura already has (the frame vocabulary); the component model adds nothing the bgi shim does not.
+  - The one differential (fine-grained import refusal) is not a security boundary here: script carriers already run `SandboxPolicy::None`; isolation lives at deployment (effector containers, no data-plane credentials, control-plane credential gates `set`). A bgi child process gives the same fault isolation.
+  - Consumption check: no real consumer uses wasm — prism rides steel + bgi(nu), mudra is a bgi-vocabulary extension host, k10r is HTTP-only (ADR-0007 revised), gravity is pre-code.
+  - Bonus: the effector binary shrinks materially — wasmtime is a heavyweight dependency.
+  - Order: (1) bgi guest shim in effector — a typed ctx facade over the frame protocol, the Rust user face (build it BEFORE removing wasm so the channel is never missing); (2) then remove in one wave: effector `carrier/wasmtime.rs` + `actor-guest` + the okm-wire in-module storage kit + the wasmtime feature; the rebuild-guest-fixtures rule dies with the carrier; PLAN 4.9 wasm residue closes. ADR-0044 already names carriers a roster question — this is the roster change, not a boundary change.
 
 ## Milestone B — Agent base
 
@@ -576,6 +584,30 @@ Deferred gates:
 
 - MQ decomposition: no standalone queue component — boundary-queue needs (external delivery, audit log, consumer retry) via S3-as-truth + KV metadata.
 - invoke.toml external HTTP endpoints: only after realm-internal calls are complete (address vs program judgment — program/embedded is the default extension unit).
+
+# HANDOFF（英文孪生）内容并入本节与 Phase 4.20 条目；两个 HANDOFF 文件于本会话删除，
+# 待办以 PLAN 各 Phase 条目 + 会话记录为准。
+
+## 会话记录（2026-10-12，ADR-0044 正式化 + HANDOFF 清账 + wasm 退役裁决 + wave 2）
+
+> 吸收 `docs/HANDOFF.md`（2026-10-10 写的 0043/4.20 交接简报）；本节之后待办只认
+> PLAN 条目。同会话裁决：**引擎不内置 booth 正式化为 ADR-0044**（双语；Phase 4.5/4.5a
+> 的 2026-09-25 边界裁决升格，此前只活在 PLAN checklist 与 booth-api 一行里）；
+> **wasm 通道退役裁决**落 Phase 4.21（跨语言承诺未兑现：C/C++/Zig 天然 native、
+> Go 的 wasm 目标被运行时拖累、python 套解释器；细粒度 import 拒绝不是本系统的
+> 安全边界——隔离在部署层；顺序 = 先建 bgi guest shim 再删 wasmtime 通道；
+> 附带收益：effector 二进制显著缩体——wasmtime 是重依赖）。随本节落地：
+>
+> - wave 2（Rust 签名）：`Handler`/`SleepHook` 由 `Fn(Ctx, …) -> BoxFuture<'static, …>`
+>   改为 `Fn(&Ctx, …) -> BoxFuture<'a, …>`（future 生命周期跟随借用；'static 装不下
+>   &Ctx；全部调用点立即 await 局部 ctx，HRTB 对象安全）。范围 = 框架内部（闭包
+>   trait、hooks、engine 测试脚手架）；用户 booth 按 ADR-0044 全部进程外，ctx 对
+>   用户是线上契约。Rust 侧无 static/无模块/无生成 init——注册是构造期 builder
+>   数据，汇合点 `register_type`（脚本内省与 Rust 声明进同一装配）。
+> - Phase 4.20 条目改写：rename/emit 两波打勾并引用落地提交；剩余三块
+>   （ctx.on 波、Rust 签名波、docs sync）以终态 surface 重述。
+> - HANDOFF.md（英文）中"内置 booth"相关内容并入 ADR-0044 与本节；已完成的
+>   条目按上文打勾。
 
 ## 会话记录（2026-10-09b，HANDOFF 合并入 PLAN：pyo3 0.29 / effector 改名 / prism P1-P5）
 

@@ -84,5 +84,8 @@ the dynamic-subscription rejection survives, re-expressed as a timing rule
 with the persisted `interface_schema.receives` still the one contract
 source); `interface_schema` becomes a ctx member (as data) alongside its
 export form; the flat `ctx_*` names retire without aliases. The **entry
-stays native** rule (no ctx.return, native failure, hooks are exports) is
-kept verbatim in force. See 0043 for the full surface and migration.
+stays native** rule (no ctx.return, native failure) is kept verbatim in
+force; the lifecycle-hook placement (on_sleep/on_wake as Host→Booth
+exports) is superseded — the fold-in of ADR-0043 §3 makes them reserved
+names in the one registration primitive. See 0043 for the full surface
+and migration.

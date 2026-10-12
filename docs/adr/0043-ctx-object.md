@@ -18,12 +18,17 @@ Weak-realm publish closure injected at ctx_for (emitter = type name),
 bgi `Emit` arm answers NOTHING by contract (fire-and-forget is the
 method; the WS hop keeps frame-level reply pairing — pairing is
 protocol, not business), nu shim helper, dead-ring boundary verified.
-Remaining: `ctx.on` (§3), payload-on-ctx (the carrier-wide
-single-argument signature change — its own wave, same scale as the
-rename).
-Supersedes ADR-0011's placement decisions in full while keeping its
-direction rule (entry stays native) and its rejection of dynamic-runtime
-subscription (re-expressed as a phase gate). User ruling (2026-10-10):
+Remaining: `ctx.on` (§3, incl. the lifecycle-hook fold-in), Rust
+`Fn(Ctx,Value)`→`Fn(&Ctx,Value)`.
+**Form corrected (2026-10-10)**: ctx is a GLOBAL namespace object bound
+once at load, not a handler parameter — this retracted the original §4
+(payload-on-ctx, one-argument handler) before that half landed; the
+payload rides the handler's argument position, Rust receives `&Ctx`.
+Supersedes ADR-0011's placement decisions in full; keeps its entry-native
+return/failure rule and its rejection of dynamic-runtime subscription
+(re-expressed as a phase gate), but the admission criterion it judged by
+— instance identity + host control, later re-read as "direction" — is
+replaced by the provider split (§1). User ruling (2026-10-10):
 **full rename, no compatibility layer** — the flat `ctx_*` names retire.
 
 ## Context
@@ -46,39 +51,63 @@ each name lived. And the one structural gap in the whole surface (script
 because it had no ctx home to fall into.
 
 The user's reframe: `ctx` is not "the instance-identity object" — it is
-the **ambient execution context the host grants one delivery** (the
-gRPC `context.Context` / web-framework Request-object shape). Under that
-reading, identity-binding is not an admission test; it is optional
-content of specific members. What survives as the real boundary is the
-**direction** rule 0011 already used for `return` and hooks.
+the **global namespace of host-provided names**, bound once per session
+(the gRPC `context.Context` shape, read correctly: the context object is
+ambient and the request rides the parameter). Under that reading,
+identity-binding is not an admission test; it is optional content of
+specific members, and the real membership rule is **provider** (host→
+script names live in ctx; script→host definitions live in the module
+namespace, reaching ctx only through the registration primitive).
 
 ## Decision
 
-### 1. The boundary: exit plane vs entry contract
+### 1. The boundary: a global namespace of host-provided names
 
-**ctx = the booth→host exit capability plane.** Everything the booth
-calls outward lives as a method on one object. **Entry stays
-language-native** (0011's rule, kept verbatim in force): the handler's
-`return` fills the reply envelope (no `ctx.return` ever exists), failure
-is the native exception/error surfaced as the outer error value,
-`on_sleep`/`on_wake` are Host→Booth exports, `set(lang, script)` is
-deployment-plane and never visible to an executing booth.
+**ctx is one GLOBAL object the carrier binds once at load — the namespace
+of every name the HOST provides to the script.** Membership rule, which
+replaces 0011's two-prong test: **a name the host offers the script lives
+in ctx; a definition the script offers the host (handlers — including
+lifecycle handlers — and the explicit `interface_schema`) lives in the
+module namespace, reaching ctx only through the registration primitive
+(`@on` / `ctx.on`).** This is the "散装函数/对象收进统一命名空间" move:
+one place to look (`dir(ctx)` in python introspects the whole API face),
+no scattered bare globals.
 
-### 2. The surface (one object, grouped methods)
+ctx is a NAMESPACE, not a caller-supplied object: it does not appear in
+the handler's signature as data the handler must thread around. The
+host↔script split is by **provider**, not by message direction — the
+`on_` prefix trap is exactly this confusion: `ctx.on(...)` is a host
+name (the verb "register"); `on_sleep`/`on_wake` were script handlers
+(the noun "what to run on sleep"), i.e. definitions — so §3 folds the
+lifecycle hooks into `ctx.on` (reserved event names) rather than giving
+them a ctx slot.
+
+Two things stay off ctx, for a shared reason (both are per-delivery
+entry data, not host-provided names): **the handler's `return`** fills
+the reply envelope at the carrier (no `ctx.return`), and **the payload**
+rides the handler's argument position (§4). Entry-native failure
+(native exception → outer error value) is unchanged from 0011.
+`set(lang, script)` — today's `register(BoothType::script(name, lang,
+source))` — is deployment-plane and never visible to an executing booth.
+
+### 2. The surface (one global object, grouped methods)
+
+Bound ONCE at load (the session's life); handlers reference it by the
+bare name `ctx`, never through their signature:
 
 ```
 ctx.self                      # InstanceId (struct key: Singleton|Named)
-ctx.payload                   # the call's input, read-only (§4)
 ctx.invoke(target, handler, args) -> Value          # the one controlled call
 ctx.iterate(target, handler, args) -> Cursor        # start/pull/dispose
 ctx.store(op) -> Value        # one okm Collection instruction as data (ADR-0026 §3)
-ctx.emit(event, data)         # LANDS the 0011 half-bridge: publish into the MQ plane
+ctx.emit(event, data)         # publish into the MQ plane (LANDED, emit wave)
 ctx.timer.register(at_ms, tag) -> id                # ADR-0016 §3b
 ctx.timer.cancel(id)          # idempotent
 ctx.queue.depth(event)        # backlog point-read
 ctx.queue.skip_to_head(event) # relief valve (`to_head` is load-bearing: directional discard, not filler)
 ctx.schema                    # the persisted interface_schema copy, as data (reflection)
 ctx.on(event, handler)        # phase-gated: activation only (§3)
+ctx.receives                # the activation registry, readable (introspection: "what did I bind" — §3)
 ```
 
 The `store`/`emit` collision disappears with the flat names: storage is
@@ -95,40 +124,76 @@ backlog never revives), it is not filler.)
 (never an instance id — publishing is instance-free per 0011's own
 observation; the audit line still reads who published).
 
-### 3. `ctx.on`: the declarative schema stays the contract's home
+### 3. `ctx.on`: one registration primitive, activation-gated, and the lifecycle fold-in
 
 0011 rejected dynamic subscription and it stays rejected — re-expressed
 sharper: **`ctx.on` is legal during load/activation only; called inside
 a message handler it is an error value** (the phase gate matches the
 system's existing "no silent no-op" discipline). This is not a new
-registration channel competing with introspection: the
-`interface_schema.receives` data remains the ONE persisted contract
-source (route registry, depth/skip governance, mudra's hello-schema all
-read it). Decorators (`@on`) are syntax sugar **lowering to** `ctx.on`;
-static languages (Rust booths, bgi binaries) may write `ctx.on` directly
-as the low-level form — the schema is assembled from the same activation
-registry either way. Placement of `on` on ctx changes the data flow:
-registration happens by executing the load-time entry once (already the
-carrier's job for decorator collection) instead of a separate static
-scan.
+registration channel competing with introspection: the assembled
+registry IS the `interface_schema.receives` data — the one persisted
+contract source (route registry, depth/skip governance, mudra's
+hello-schema all read it). Decorators (`@on`) are syntax sugar **lowering
+to** `ctx.on`; static languages (Rust booths, bgi binaries) write
+`ctx.on` directly as the low-level form. Registration happens by
+executing the load-time entry once (already the carrier's job for
+decorator collection) instead of a separate static scan. The registry is
+readable during the same phase as **`ctx.receives`** — a handler that
+wants to reflect "what did I bind" asks the global object; a
+message-phase call to `ctx.on` fails, a message-phase read of
+`ctx.receives` answers the frozen registry (reads are never gated).
 
-### 4. Payload rides the context; the handler signature collapses to one parameter
+**Lifecycle hooks fold in as reserved event names.** Today `on_sleep`/
+`on_wake` are Rust-side `BoothType` fields — scripts cannot declare them
+at all (every script fixture carries `None`); the field model made
+lifecycle a second registration path with a language gap. Under the one
+primitive they become `ctx.on("__sleep", h)` / `ctx.on("__wake", h)`
+(matching the timer plane's `__on_timer` reserved-name style): the
+host's eviction/reactivation dispatch looks up the reserved binding in
+the same registry the route table reads. `BoothType.on_sleep/on_wake`
+retire (Rust booths register through the equivalent construction-side
+call). The `on_` prefix trap dissolves: `ctx.on` is the verb, `__sleep`
+is data — the JS-style `on_sleep` NAME is gone from the surface entirely.
 
-`ctx.payload` is the most literal member of an execution context — the
-data of this delivery. Consequence: handler signatures unify to
-`(ctx)` across every carrier (Rust: `Handler = Fn(Ctx)` — today
-`Fn(Ctx, Value)`; python/steel/nu/bgi: one parameter). The typed-input
-convenience in statically-typed languages moves from signature position
-to body (`let p = ctx.payload().into_value::<T>()?`): compile-time to
-run-time, accepted.
+### 4. Payload rides the argument; ctx is never a parameter
 
-### 5. bgi: the host-frame arm set becomes a 1:1 map of ctx methods
+(The original ruling here — payload onto ctx, handlers collapsing to one
+`(ctx)` parameter — was retracted the same day before landing. Two
+independent reasons, recorded because the ADR's §1 now stands on them.)
 
-The out-of-process carrier's `host: {type: …}` arms mirror the object
-(`invoke | iterate | store | emit | timer.register | timer.cancel |
-queue.depth | queue.skip_to_head | schema` — `self`/`payload`
-are host-pushed at call time, `on` lives in the hello schema, no frame).
-`emit` is fire-and-forget: the arm carries **no reply** (same shape as
+1. **Provider split (§1)**: the payload is per-delivery entry data the
+   host pushes to the handler — the most literally "argument" thing in
+   the system. Making it a ctx MEMBER meant a session-lifetime global
+   object carrying a value that changes under every call: either
+   per-delivery rebinding of a global attribute (visible staleness for
+   any handler that saved the reference) or a rebuilt object per call
+   (killing the global). The argument position has exactly this
+   per-call-scope semantics built in — why invent it.
+2. **The gRPC analogy, read correctly, agrees**: `func Foo(ctx
+   context.Context, req *Req)` — the ctx carries deadlines/values, the
+   REQ rides the parameter. Web frameworks the same: Request is the
+   argument, the DI container is not.
+
+Signature ruling: script handlers `(args)`; **Rust `Handler = Fn(&Ctx,
+Value)`** (from `Fn(Ctx, Value)` — the context is a borrow of a long-
+lived global, not a value the handler owns or threads). No typed
+`ctx.payload_as::<T>()` is needed or added; `from_value::<T>(args)` in
+the body was always the Rust idiom. Typed-input ergonomics stay exactly
+where 0011 left them.
+
+### 5. bgi: callable ctx methods map 1:1 onto host-frame arms
+
+The out-of-process carrier's `host: {type: …}` arms mirror the object's
+CALLABLE members (`invoke | iterate | store | emit | timer.register |
+timer.cancel | queue.depth | queue.skip_to_head | schema`) — the runtime
+round-trip set. Non-callable members have no arm: `self` is host-pushed
+into the guest's shim at spawn (session-stable), the payload rides the
+request frame (§4: the argument, and out-of-process the frame IS the
+argument channel), and `on`/`receives` live in the child's own load-time
+pass — the hello frame carries the assembled registry, there is no
+runtime on/receives frame (a child calling ctx.on after load fails its
+own shim-side phase gate, mirror-consistent). `emit` is fire-and-forget:
+the arm carries **no reply** (same shape as
 its script-level twin; a hung extension stalls the session only if it
 also stalls reading stdout — the pipe timeout already governs that).
 The mudra extension protocol (its ADR-extension-protocol) rides the same
@@ -146,7 +211,9 @@ ruling is unchanged).
   three-call shape **under the grouped names** `ctx.iterate.start` etc.
   — grouping is naming, cursor is the Rust form).
 - The flat `ctx_*` injection table retires; every language environment
-  receives one object (python: a module-level `ctx` bound per delivery;
+  receives one GLOBAL object bound at load and living for the session
+  (python: a module-level `ctx` bound ONCE at session load — not a
+  per-delivery parameter, handlers reference the name;
   steel: `ctx` global, the `ctx_*` names in today's steel docs retire;
   wasm: host fns keep a flat ABI — the object is the SOURCE-level shape,
   the `aura_alloc`-style ABI is allowed to be flat (the ABI is wire, not
@@ -160,20 +227,35 @@ ruling is unchanged).
 
 ## Consequences
 
-- One admission test replaces the two-prong one: **is it booth→host?**
-  If yes it is a ctx method; if it is host→booth it is an export or a
-  return value; if it is deployment it is off both planes.
+- One admission test replaces the two-prong one: **did the host provide
+  the name?** If yes it is a ctx member; a name the script defines (any
+  handler, the explicit schema) lives in the module namespace and meets
+  ctx only through the registration primitive; per-delivery entry data
+  (payload) and the reply channel (return) stay on the call path, which
+  is where "per-call scope" lives natively.
 - The last structural gap in the event model (`emit` never landing)
   gains a natural home — the fix that was going to add a fifth placement
   mechanism instead adds one method.
 - 0011's "On ctx" table entries that retired since (ctx.state,
-  ctx.metadata) and its bare-script-function rulings are superseded in
-  one move instead of piecewise errata.
-- Accepted costs: typed-arg ergonomics shift runtime-ward in Rust; the
+  ctx.metadata), its bare-script-function rulings, AND its
+  off-ctx/lifecycle-hook placement (the `on_sleep`/`on_wake` field
+  model — scripts never reached it) are superseded in one move instead
+  of piecewise errata; lifecycle folds into `ctx.on` reserved names.
+- Python gets a real introspection surface: `dir(ctx)` answers "what
+  API does the host offer" — impossible under scattered globals, and
+  the precondition that made §3's `ctx.receives` reflectable.
+- Accepted costs: Rust `Handler` signature shifts `Ctx` → `&Ctx` (all
+  registrations are in-tree: the booth trait, hooks, test fixtures); the
   load-time execution of `ctx.on` means registration is runtime work
   (bounded: activation already executes the entry to collect decorator
   bindings); every existing script/test fixture renames (small — the
   surface is young, which is why the user could rule no-compat).
+- The one place the global reads as a LIE: out-of-process booths have no
+  shared memory — bgi's "global ctx" is a shim-side construct (§5: arms
+  mirror 1:1, self pushed at spawn, payload on the frame). Consistency
+  is kept at the CONTRACT level, not the runtime-object level; a guest
+  cannot `dir()` the host, only read its own registry. Recorded, not
+  fixed — wire is wire.
 - Deferred, unchanged: timer durability (ADR-0016's durable half), the
   0012 source-level emit collection (the Windmill criterion still gates
   it — ctx.emit does not create that consumer).

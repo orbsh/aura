@@ -669,7 +669,7 @@ Deferred gates:
 | A6/A7 | 已关闭（2026-10-08） |
 | P1 nushell feature | **关闭**（`de07db0`） |
 | P2 python in default | **关闭**（不解决） |
-| P3 prism Phase 1 收尾 | 进行中——logout 已落地；revocation 开放；turn verbs/streaming 阻塞于 gravity |
+| P3 prism Phase 1 收尾 | **大幅推进**（2026-10-10，prism `4f6a065`/`2d7ba0c`/`fcfbaf7`）：revocation 已落地（`Registry::revoke_device` 信任戳 + `Gateway::revoke_device` 踢在线 + `POST /admin/revoke`）；turn verbs + streaming 已落地（gateway 驱动 `Realm::iterate`，stub executor 站位）；turn executor 已接 gravity 真身形态（stub retired，e2e 重接线）。Phase 1 剩：gravity 侧 executor 本体 + `/effector/<alias>` mount（1.8 step 2） |
 | P4 dev store | 降级注记 |
 | P5 InstanceKey 构造面 | **关闭**（`de07db0`） |
 

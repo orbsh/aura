@@ -224,3 +224,16 @@ typed.
   whole-channel upgrade this file first sketched but as the declared
   dual codec (user ruling 2026-09-30): nu's stdlib wall measured the
   single-upgrade plan dead.
+
+## Update — one home for the codec declaration (2026-10-12)
+
+`ChannelEncoding` is no longer defined in effector-protocol or in this
+crate: it is `induction_protocol::Encoding` — the extension protocol that owns
+the pipe frame vocabulary (ADR-0001 in the `induction` repo), which now carries
+the serde spellings a persisted row stores (`"json"`/`"cbor"`, the rule
+unchanged). `aura-booth` re-exports it, so §2's ruling stands — the crate stays
+effector-free: the new dependency is the serde-only protocol crate, not
+effector's product line. The realm's `map_encoding` conversion is deleted (it
+was identity by then); the declaration passes straight through to the runtime.
+Three copies of one enum were exactly the drift class the extraction exists to
+end.

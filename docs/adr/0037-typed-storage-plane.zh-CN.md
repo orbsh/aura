@@ -174,3 +174,13 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   §2（类型化帧 + 声明式双编码，4.16c）。CBOR 一半到达的形态**不是**
   本文最初勾勒的整通道升级，而是声明式双编码（用户裁决 2026-09-30）：
   nu 的 stdlib 墙把单升级计划实测判死。
+
+## Update —— 编码声明只留一处（2026-10-12）
+
+`ChannelEncoding` 不再定义于 effector-protocol 或本 crate：它是
+`induction_protocol::Encoding`——拥有管道帧词汇表的扩展协议（`induction` 仓的
+ADR-0001），并承载持久化行存的 serde 值（`"json"`/`"cbor"`，规则未变）。
+`aura-booth` 重导出它，故 §2 的裁决依然成立——crate 保持 effector-free：新依赖是
+纯 serde 的协议 crate，不是 effector 产品线。realm 的 `map_encoding` 转换已删
+（彼时它已是恒等）；声明直通 runtime。同一个枚举三份拷贝，正是这次抽取要终结的
+漂移类别。

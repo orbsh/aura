@@ -130,12 +130,20 @@ pub enum RouteResolution {
     Scan { collection: String, index: String, probe_field: String },
 }
 
-pub type Handler = dyn Fn(Ctx, Value) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
+/// ADR-0043 §4: the handler receives the ctx as a BORROW of the realm's
+/// long-lived projection — the context is never a value the handler owns or
+/// threads (the payload rides the argument position). The future's lifetime
+/// FOLLOWS the borrow: a `'static` future cannot hold `&Ctx`, and cloning
+/// every handle at handler entry would be per-handler boilerplate. All call
+/// sites await the future immediately on a local ctx, so the HRTB is
+/// object-safe and the borrow provably outlives the await.
+pub type Handler = dyn for<'a> Fn(&'a Ctx, Value) -> futures_boxed::BoxFuture<'a, anyhow::Result<Value>>
     + Send
     + Sync;
 
-pub type SleepHook =
-    dyn Fn(Ctx) -> futures_boxed::BoxFuture<'static, anyhow::Result<()>> + Send + Sync;
+pub type SleepHook = dyn for<'a> Fn(&'a Ctx) -> futures_boxed::BoxFuture<'a, anyhow::Result<()>>
+    + Send
+    + Sync;
 
 impl BoothType {
     /// Define a script type executed by a effector carrier (JSON-lines

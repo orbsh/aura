@@ -61,7 +61,7 @@ impl Realm {
                         self.schema_of(&id.booth_type).cloned().flatten(),
                         id,
                     );
-                    on_wake(ctx, serde_json::Value::Null).await?;
+                    on_wake(&ctx, serde_json::Value::Null).await?;
                 }
             }
             // Subscribe to the event queues this type's @on declarations
@@ -335,7 +335,7 @@ impl Realm {
                 // never a silent single-shot fallback.
                 match job.kind {
                     aura_booth::JobKind::Start => {
-                        handler(ctx, job.args.clone()).await.map(|v| {
+                        handler(&ctx, job.args.clone()).await.map(|v| {
                             aura_booth::Envelope::terminal(Some(v))
                         })
                     }
@@ -519,7 +519,7 @@ impl Realm {
                     locked.schema_of(&id.booth_type).cloned().flatten(),
                     id,
                 );
-                if let Err(e) = on_sleep(ctx).await {
+                if let Err(e) = on_sleep(&ctx).await {
                     eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);
                 }
             }
@@ -637,7 +637,7 @@ impl Realm {
                         self.schema_of(&key.0).cloned().flatten(),
                         &inst.id,
                     );
-                    if let Err(e) = on_sleep(ctx).await {
+                    if let Err(e) = on_sleep(&ctx).await {
                         // Eviction proceeds regardless: the hook is
                         // advisory; state is already in the store.
                         eprintln!("on_sleep failed for {}/{}: {e}", key.0, key.1);

@@ -11,7 +11,7 @@
 //! the real fns in the resident session.
 #![cfg(feature = "steel")]
 
-use aura_booth::{BoothType, InstanceId};
+use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 
 const SCRIPT: &str = r#"
@@ -57,7 +57,8 @@ async fn steel_binding_face_and_ctx_store_share_one_keyspace() {
         .await
         .unwrap();
 
-    let target = |key: &str| InstanceId { booth_type: "steel-inject".into(), key: key.into() };
+    let target =
+        |key: &str| InstanceId { booth_type: "steel-inject".into(), key: InstanceKey::Named(key.into()) };
 
     // Binding write → ctx.store read (same session instance).
     let out = engine

@@ -51,25 +51,37 @@ const SCRIPT: &str = r#"
 
 #[tokio::test]
 async fn steel_binding_face_and_ctx_store_share_one_keyspace() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("steel-inject", "steel", SCRIPT))
         .await
         .unwrap();
 
-    let target =
-        |key: &str| InstanceId { booth_type: "steel-inject".into(), key: InstanceKey::Named(key.into()) };
+    let target = |key: &str| InstanceId {
+        booth_type: "steel-inject".into(),
+        key: InstanceKey::Named(key.into()),
+    };
 
     // Binding write → ctx.store read (same session instance).
     let out = engine
-        .invoke(target("k"), "bind_write_emit_read", serde_json::json!({"user_id": "a"}))
+        .invoke(
+            target("k"),
+            "bind_write_emit_read",
+            serde_json::json!({"user_id": "a"}),
+        )
         .await
         .expect("bind_write_emit_read");
     assert_eq!(out["count"], 41);
 
     // ctx.store write → binding read.
     let out = engine
-        .invoke(target("k"), "emit_write_bind_read", serde_json::json!({"user_id": "a"}))
+        .invoke(
+            target("k"),
+            "emit_write_bind_read",
+            serde_json::json!({"user_id": "a"}),
+        )
         .await
         .expect("emit_write_bind_read");
     assert_eq!(out["count"], 42);

@@ -37,8 +37,8 @@ pub struct Route {
 pub struct EventRouter {
     exact: HashMap<String, Vec<Route>>,
     wildcard: Vec<(String, Route)>, // prefix (without trailing `*`)
-    // ADR-0012: no emits whitelist — the receiver set is a runtime fact;
-    // the dead-event ring is the audit surface.
+                                    // ADR-0012: no emits whitelist — the receiver set is a runtime fact;
+                                    // the dead-event ring is the audit surface.
 }
 
 use std::collections::HashMap;
@@ -121,15 +121,17 @@ impl EventRouter {
             .flatten()
             .filter(|r| r.booth_type == booth_type)
             .cloned()
-            .chain(self.wildcard.iter().filter(|(_, r)| r.booth_type == booth_type).map(|(_, r)| r.clone()))
+            .chain(
+                self.wildcard
+                    .iter()
+                    .filter(|(_, r)| r.booth_type == booth_type)
+                    .map(|(_, r)| r.clone()),
+            )
             .collect()
     }
 
     pub fn matches(&self, event: &str) -> Vec<Route> {
-        let mut out: Vec<Route> = self
-            .exact
-            .get(event).cloned()
-            .unwrap_or_default();
+        let mut out: Vec<Route> = self.exact.get(event).cloned().unwrap_or_default();
         for (prefix, route) in &self.wildcard {
             if event.starts_with(prefix.as_str()) {
                 out.push(route.clone());
@@ -164,7 +166,11 @@ pub struct DeadEvents {
 
 impl DeadEvents {
     pub fn new(capacity: usize) -> Self {
-        Self { ring: Default::default(), capacity, dropped: 0 }
+        Self {
+            ring: Default::default(),
+            capacity,
+            dropped: 0,
+        }
     }
 
     pub fn push(&mut self, event: &str, data: Value, reason: DeadReason) {

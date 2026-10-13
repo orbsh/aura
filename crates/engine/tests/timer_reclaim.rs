@@ -4,18 +4,16 @@
 //! and the execution watchdog (max_exec budget: expiry = evict). Rust
 //! bodies keep the tests carrier-independent (exact sleep control).
 
-use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
+use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
-use std::sync::Arc;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn booth(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> BoothType {
     BoothType {
         name: name.into(),
-        body: Body::Rust(Arc::new(|_ctx, args| {
-            Box::pin(async move { Ok(args) })
-        })),
+        body: Body::Rust(Arc::new(|_ctx, args| Box::pin(async move { Ok(args) }))),
         idle_ttl: Some(idle_ttl),
         max_exec,
         hooks: BTreeMap::new(),
@@ -40,7 +38,10 @@ fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64
 }
 
 fn id(name: &str) -> InstanceId {
-    InstanceId { booth_type: name.into(), key: InstanceKey::Named("k".into()) }
+    InstanceId {
+        booth_type: name.into(),
+        key: InstanceKey::Named("k".into()),
+    }
 }
 
 // Idle entry arms at job COMPLETION: after a job whose execution alone
@@ -48,13 +49,21 @@ fn id(name: &str) -> InstanceId {
 // after the TTL elapses from completion.
 #[tokio::test]
 async fn idle_is_measured_from_completion() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     // TTL (500ms) shorter than this job's own execution (2s): the
     // pre-revision evictor would have expired the instance mid-job.
-    engine.register(sleeper("slow", Duration::from_millis(500), None, 2)).await.unwrap();
+    engine
+        .register(sleeper("slow", Duration::from_millis(500), None, 2))
+        .await
+        .unwrap();
 
     let target = id("slow");
-    engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+    engine
+        .invoke(target.clone(), "execute", serde_json::json!(null))
+        .await
+        .unwrap();
 
     // Immediately after completion: the idle entry (500ms) is pending —
     // the instance must still be resident.
@@ -68,11 +77,23 @@ async fn idle_is_measured_from_completion() {
 // Watchdog: a job exceeding max_exec gets its instance evicted.
 #[tokio::test]
 async fn watchdog_evicts_on_budget_exceeded() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(sleeper("hog", Duration::from_secs(60), Some(Duration::from_millis(300)), 2)).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(sleeper(
+            "hog",
+            Duration::from_secs(60),
+            Some(Duration::from_millis(300)),
+            2,
+        ))
+        .await
+        .unwrap();
 
     let target = id("hog");
-    let _ = engine.invoke(target.clone(), "execute", serde_json::json!(null)).await;
+    let _ = engine
+        .invoke(target.clone(), "execute", serde_json::json!(null))
+        .await;
 
     // Budget (300ms) far below execution (2s): the watchdog fired.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -84,11 +105,19 @@ async fn watchdog_evicts_on_budget_exceeded() {
 // at least until the new TTL elapses.
 #[tokio::test]
 async fn completion_rearm_survives_first_ttl_half() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(booth("echo", Duration::from_millis(400), None)).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(booth("echo", Duration::from_millis(400), None))
+        .await
+        .unwrap();
 
     let target = id("echo");
-    engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
+    engine
+        .invoke(target.clone(), "execute", serde_json::json!(null))
+        .await
+        .unwrap();
 
     // Half the TTL after completion: must still be resident (the entry
     // was armed AT completion, not at job start).

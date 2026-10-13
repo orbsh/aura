@@ -45,7 +45,9 @@ pub const PLANE_VERSION: u32 = 20_261_012;
 
 /// The marker's raw key (ns 26's whole content is this one row; the ns is
 /// otherwise reserved — ADR-0040's free-band discipline).
-pub const PLANE_VERSION_KEY: &[u8] = &[0, 26, b'p', b'l', b'a', b'n', b'e', b'-', b'v', b'e', b'r', b's', b'i', b'o', b'n'];
+pub const PLANE_VERSION_KEY: &[u8] = &[
+    0, 26, b'p', b'l', b'a', b'n', b'e', b'-', b'v', b'e', b'r', b's', b'i', b'o', b'n',
+];
 
 /// Read the stored plane version. `None` = a fresh store (no marker yet —
 /// the caller writes it after the check passes).
@@ -61,7 +63,10 @@ pub fn plane_version_of(store: &MqStore) -> Option<u32> {
 /// Write the plane-version marker (first boot on a fresh store).
 pub fn write_plane_version(store: &MqStore) {
     use okm_core::storage::VirtualStorage;
-    store.put(PLANE_VERSION_KEY.to_vec(), PLANE_VERSION.to_be_bytes().to_vec());
+    store.put(
+        PLANE_VERSION_KEY.to_vec(),
+        PLANE_VERSION.to_be_bytes().to_vec(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +127,12 @@ pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
         t.store(),
         <BoothName as Document>::NS_PREFIX,
         &BoothNameKey { id: 0 },
-        &BoothName { name: String::new(), id: 0, ns: 0, global: 0 },
+        &BoothName {
+            name: String::new(),
+            id: 0,
+            ns: 0,
+            global: 0,
+        },
     )
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
@@ -233,7 +243,13 @@ pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<(
     if t.get(&CodeBlobKey { sha256: sha }).is_some() {
         return Ok(());
     }
-    t.put(&CodeBlobKey { sha256: sha }, &CodeBlob { sha256: sha, data: Bytes(bytes.to_vec()) });
+    t.put(
+        &CodeBlobKey { sha256: sha },
+        &CodeBlob {
+            sha256: sha,
+            data: Bytes(bytes.to_vec()),
+        },
+    );
     Ok(())
 }
 
@@ -338,7 +354,10 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
 /// ctx bridge's store-executor assembly input (ns from the type registry,
 /// schema from the BoothDef's dynamic segment — the uploaded copy).
 /// `schema: None` = the type declared no storage (no ctx.store surface).
-pub fn ns_and_schema_of(meta: &MqStore, name: &str) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
+pub fn ns_and_schema_of(
+    meta: &MqStore,
+    name: &str,
+) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
     let ns = ns_of(meta, name)?;
     let booth_id = resolve_booth_id(meta, name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
@@ -375,14 +394,14 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
         // engine). A missing blob is corruption, not an empty program.
         match get_blob(meta, &sha) {
             Some(bytes) => {
-                def.source = String::from_utf8(bytes)
-                    .map_err(|_| anyhow::anyhow!(
-                        "booth `{}`: code blob is not valid UTF-8", def.name
-                    ))?;
+                def.source = String::from_utf8(bytes).map_err(|_| {
+                    anyhow::anyhow!("booth `{}`: code blob is not valid UTF-8", def.name)
+                })?;
             }
             None => anyhow::bail!(
                 "booth `{}`: no code blob under sha256 {} (definition without content)",
-                def.name, code_hex(&sha)
+                def.name,
+                code_hex(&sha)
             ),
         }
         out.push(def);
@@ -403,13 +422,21 @@ mod ns_schema_tests {
             source: "x".into(),
             encoding: Default::default(),
             idle_ttl_secs: None,
-            schema: Some(serde_json::json!({"storage": {"collections": {"notes": {"schema": {"key_len": 8}}}}})),
+            schema: Some(
+                serde_json::json!({"storage": {"collections": {"notes": {"schema": {"key_len": 8}}}}}),
+            ),
         };
         persist(&meta, &def).unwrap();
         let (ns, schema) = ns_and_schema_of(&meta, "sc").unwrap();
         assert!(ns > 0);
-        assert!(schema.is_some(), "schema must come back from the dynamic segment");
-        assert_eq!(schema.unwrap()["storage"]["collections"]["notes"]["schema"]["key_len"], 8);
+        assert!(
+            schema.is_some(),
+            "schema must come back from the dynamic segment"
+        );
+        assert_eq!(
+            schema.unwrap()["storage"]["collections"]["notes"]["schema"]["key_len"],
+            8
+        );
     }
 
     #[test]
@@ -428,7 +455,14 @@ mod ns_schema_tests {
             serde_json::json!({"a": [1, 2, 3]}),
             serde_json::json!({"a": {"b": 0}}),
         ] {
-            let def = PersistedBooth { name: "p".into(), language: "steel".into(), source: "x".into(), encoding: Default::default(), idle_ttl_secs: None, schema: Some(effector.clone()) };
+            let def = PersistedBooth {
+                name: "p".into(),
+                language: "steel".into(),
+                source: "x".into(),
+                encoding: Default::default(),
+                idle_ttl_secs: None,
+                schema: Some(effector.clone()),
+            };
             let m2 = MqStore::mem();
             persist(&m2, &def).unwrap();
             let all = load_all(&m2).unwrap();

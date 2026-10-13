@@ -2,10 +2,10 @@
 //! eviction, timer glue, the evictor driver. Split out of lib.rs per
 //! ADR-0029.
 
-use super::{next_seq, Realm, SharedRealm, RemotePending};
-use crate::{event, mq, timer};
+use super::{next_seq, Realm, RemotePending, SharedRealm};
 use crate::mq::InstanceKey;
 use crate::DEFAULT_CURSOR_TTL;
+use crate::{event, mq, timer};
 use aura_booth::{Instance, InstanceId, Job};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,7 +46,11 @@ impl Realm {
         }
     }
 
-    pub(crate) async fn instance(&mut self, self_arc: SharedRealm, id: &InstanceId) -> anyhow::Result<&mut Instance> {
+    pub(crate) async fn instance(
+        &mut self,
+        self_arc: SharedRealm,
+        id: &InstanceId,
+    ) -> anyhow::Result<&mut Instance> {
         let key = (id.booth_type.clone(), id.key.clone());
         if !self.instances.contains_key(&key) {
             let inst = Instance::new(id.clone(), self.queue_capacity);
@@ -130,9 +134,7 @@ impl Realm {
                 // pass — new concrete names join automatically).
                 let mut queues: Vec<(String, InstanceKey, bool, Vec<String>)> = subs
                     .into_iter()
-                    .map(|(event, part, is_wildcard)| {
-                        (event, part, is_wildcard, Vec::new())
-                    })
+                    .map(|(event, part, is_wildcard)| (event, part, is_wildcard, Vec::new()))
                     .collect();
                 // An instance with no bound queue has nothing to drain —
                 // exit (releasing the realm Arc) instead of spinning the
@@ -162,8 +164,8 @@ impl Realm {
                             let batch = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let after = mq::cursor(&vs, concrete, part, &booth_type)
-                                    .unwrap_or(0);
+                                let after =
+                                    mq::cursor(&vs, concrete, part, &booth_type).unwrap_or(0);
                                 mq::backlog(&vs, concrete, part, after).unwrap_or_default()
                             };
                             for (seq, payload) in batch {
@@ -171,7 +173,8 @@ impl Realm {
                                     handler: concrete.clone(),
                                     args: payload,
                                 };
-                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job).await;
+                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job)
+                                    .await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
                                 let _ = mq::advance(&vs, concrete, part, &booth_type, seq);
@@ -210,7 +213,10 @@ impl Realm {
         };
         // Drop the receiver: no one observes the reply.
         let mut realm = self_arc.lock().await;
-        if let Some(i) = realm.instances.get_mut(&(id.booth_type.clone(), id.key.clone())) {
+        if let Some(i) = realm
+            .instances
+            .get_mut(&(id.booth_type.clone(), id.key.clone()))
+        {
             i.last_activity = std::time::Instant::now();
         }
         drop(realm);
@@ -219,7 +225,10 @@ impl Realm {
 
     pub(crate) async fn run_job(self_arc: SharedRealm, id: &InstanceId, job: Job) {
         let mut realm = self_arc.lock().await;
-        if let Some(i) = realm.instances.get_mut(&(id.booth_type.clone(), id.key.clone())) {
+        if let Some(i) = realm
+            .instances
+            .get_mut(&(id.booth_type.clone(), id.key.clone()))
+        {
             i.last_activity = Instant::now();
         }
         // ADR-0016 revised: the instance's pending idle-reclaim entry is
@@ -232,12 +241,15 @@ impl Realm {
         let watchdog_ttl = realm.types.get(&id.booth_type).and_then(|a| a.max_exec);
         realm.timers.cancel_reclaim_target(id);
         if let Some(budget) = watchdog_ttl {
-            realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Watchdog, budget);
+            realm
+                .timers
+                .register_reclaim(id.clone(), timer::ReclaimKind::Watchdog, budget);
         }
         let Some(booth) = realm.types.get(&id.booth_type) else {
-            let _ = job
-                .reply
-                .send(Err(anyhow::anyhow!("unknown booth type: {}", id.booth_type)));
+            let _ = job.reply.send(Err(anyhow::anyhow!(
+                "unknown booth type: {}",
+                id.booth_type
+            )));
             return;
         };
         let body = booth.body.clone();
@@ -256,16 +268,21 @@ impl Realm {
         let realm_timers = realm.timers.clone();
         drop(realm);
         let mut result = match body {
-            aura_booth::Body::RemoteProbe { node_alias, language, source, encoding } => {
+            aura_booth::Body::RemoteProbe {
+                node_alias,
+                language,
+                source,
+                encoding,
+            } => {
                 // Remote effector execution (Phase 3): find the effector's live
                 // outbound connection, send Frame::Call (inline payload),
                 // await the correlated reply. The effector's resident
                 // sessions own the VM; no ctx bridge crosses the wire yet
                 // (host functions over WS arrive with the frame path).
                 let Some(conn) = effectors.get(&node_alias) else {
-                    let _ = job
-                        .reply
-                        .send(Err(anyhow::anyhow!("effector '{node_alias}' not connected")));
+                    let _ = job.reply.send(Err(anyhow::anyhow!(
+                        "effector '{node_alias}' not connected"
+                    )));
                     return;
                 };
                 // Code travels by reference (ADR-0027): the bytes were
@@ -274,7 +291,11 @@ impl Realm {
                 let sha = crate::meta::code_hash(&source);
                 let code = match effectors_base_url {
                     Some(base) => effector_protocol::CodeRef {
-                        url: format!("{}/{}", base.trim_end_matches('/'), crate::meta::code_hex(&sha)),
+                        url: format!(
+                            "{}/{}",
+                            base.trim_end_matches('/'),
+                            crate::meta::code_hex(&sha)
+                        ),
                         sha256: crate::meta::code_hex(&sha),
                     },
                     None => {
@@ -290,7 +311,10 @@ impl Realm {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self_arc.lock().await.pending_remote.insert(
                     call_id.clone(),
-                    RemotePending { reply: tx, instance: id.clone() },
+                    RemotePending {
+                        reply: tx,
+                        instance: id.clone(),
+                    },
                 );
                 // Residency identity = this booth INSTANCE (type/key), not the handler:
                 // two instances of one remote type must never share the effector's
@@ -352,7 +376,11 @@ impl Realm {
                     }
                 }
             }
-            aura_booth::Body::Script { language, source, encoding } => {
+            aura_booth::Body::Script {
+                language,
+                source,
+                encoding,
+            } => {
                 // Resident sessions (Phase 2.6): one VM/child per booth
                 // instance, loaded once, called per event. Cross-call
                 // state lives in the session (module globals / the child's
@@ -364,9 +392,7 @@ impl Realm {
                     // Wasm full-power raw surface: the type's resolved
                     // plan carries its ns; the raw engine handle rides
                     // the mq clone the ctx already holds.
-                    let wasm_raw = realm_plan
-                        .as_ref()
-                        .map(|p| (p.ns, realm_mq.clone()));
+                    let wasm_raw = realm_plan.as_ref().map(|p| (p.ns, realm_mq.clone()));
                     let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq, &realm_timers);
                     // Python injection slot (ADR-0037 4.16a): the byte
                     // face rides the SAME realm-mq handle the ctx
@@ -376,8 +402,10 @@ impl Realm {
                     // handle keeps the two paths byte-identical
                     // (realm-prefixed [realm][ns][slot]...).
                     let storage = realm_plan.as_ref().map(|plan| {
+                        use effector_runtime::carrier::{
+                            StorageCollection, StorageEngineFns, StorageSlot,
+                        };
                         use okm_core::storage::VirtualStorage;
-                        use effector_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
                         let store = realm_mq.clone();
                         let engine = std::sync::Arc::new(StorageEngineFns {
                             put: std::sync::Arc::new(move |k, v| store.put(k, v)),
@@ -502,8 +530,13 @@ impl Realm {
                 .get(&id.booth_type)
                 .and_then(|a| a.idle_ttl)
                 .unwrap_or(realm.idle_ttl);
-            realm.timers.register_reclaim(id.clone(), timer::ReclaimKind::Idle, idle);
-            if let Some(i) = realm.instances.get_mut(&(id.booth_type.clone(), id.key.clone())) {
+            realm
+                .timers
+                .register_reclaim(id.clone(), timer::ReclaimKind::Idle, idle);
+            if let Some(i) = realm
+                .instances
+                .get_mut(&(id.booth_type.clone(), id.key.clone()))
+            {
                 i.last_activity = Instant::now();
             }
         }
@@ -513,7 +546,9 @@ impl Realm {
     pub async fn evict_instance(realm: SharedRealm, id: &InstanceId) {
         let mut locked = realm.lock().await;
         let key = (id.booth_type.clone(), id.key.clone());
-        let Some(_inst) = locked.instances.remove(&key) else { return };
+        let Some(_inst) = locked.instances.remove(&key) else {
+            return;
+        };
         locked.timers.cancel_target(id);
         if let Some(booth) = locked.types.get(&id.booth_type) {
             if let Some(hook) = booth.hooks.get("__sleep").cloned() {
@@ -527,7 +562,9 @@ impl Realm {
                     id,
                 );
                 let host = locked.delivery_bridge_for(&ctx, id);
-                if let Err(e) = Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__sleep").await {
+                if let Err(e) =
+                    Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__sleep").await
+                {
                     eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
                 }
             }
@@ -549,13 +586,11 @@ impl Realm {
         id: &InstanceId,
     ) -> Option<effector_runtime::carrier::HostBridge> {
         let realm_plan = self.plan_of(&id.booth_type).cloned();
-        let wasm_raw = realm_plan
-            .as_ref()
-            .map(|p| (p.ns, self.mq.clone()));
+        let wasm_raw = realm_plan.as_ref().map(|p| (p.ns, self.mq.clone()));
         let fns = Self::host_bridge_for(ctx, wasm_raw, &self.mq, &self.timers);
         let storage = realm_plan.as_ref().map(|plan| {
-            use okm_core::storage::VirtualStorage;
             use effector_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
+            use okm_core::storage::VirtualStorage;
             let store = self.mq.clone();
             let engine = std::sync::Arc::new(StorageEngineFns {
                 put: std::sync::Arc::new(move |k, v| store.put(k, v)),
@@ -619,7 +654,11 @@ impl Realm {
         match hook {
             aura_booth::HookBody::Compiled(h) => h(ctx, serde_json::Value::Null).await.map(|_| ()),
             aura_booth::HookBody::Declared => match body {
-                Some(aura_booth::Body::Script { language, source, encoding }) => {
+                Some(aura_booth::Body::Script {
+                    language,
+                    source,
+                    encoding,
+                }) => {
                     let instance_key = format!("{}/{}", id.booth_type, id.key);
                     let name = name.to_string();
                     let sessions = sessions.clone();
@@ -740,13 +779,13 @@ impl Realm {
         let keys: Vec<(String, aura_booth::InstanceKey)> = self
             .instances
             .iter()
-            .filter(|(k, inst)| {
-                inst.last_activity.elapsed() > ttl_of(&k.0)
-            })
+            .filter(|(k, inst)| inst.last_activity.elapsed() > ttl_of(&k.0))
             .map(|(k, _)| k.clone())
             .collect();
         for key in keys {
-            let Some(inst) = self.instances.remove(&key) else { continue };
+            let Some(inst) = self.instances.remove(&key) else {
+                continue;
+            };
             if let Some(booth) = self.types.get(&key.0) {
                 if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                     let body = booth.body.clone();
@@ -759,7 +798,17 @@ impl Realm {
                         &inst.id,
                     );
                     let host = self.delivery_bridge_for(&ctx, &inst.id);
-                    if let Err(e) = Self::run_hook(&hook, Some(body), &sessions, host, &inst.id, &ctx, "__sleep").await {
+                    if let Err(e) = Self::run_hook(
+                        &hook,
+                        Some(body),
+                        &sessions,
+                        host,
+                        &inst.id,
+                        &ctx,
+                        "__sleep",
+                    )
+                    .await
+                    {
                         // Eviction proceeds regardless: the hook is
                         // advisory; state is already in the store.
                         eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
@@ -806,7 +855,8 @@ impl Realm {
     }
 
     pub fn is_resident(&self, id: &InstanceId) -> bool {
-        self.instances.contains_key(&(id.booth_type.clone(), id.key.clone()))
+        self.instances
+            .contains_key(&(id.booth_type.clone(), id.key.clone()))
     }
 }
 
@@ -825,11 +875,15 @@ pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::session::Stream
             handler: job.handler.clone(),
             args: job.args.clone(),
         },
-        aura_booth::JobKind::Next => {
-            StreamOp::Next { stream_id, handler: job.handler.clone(), args: job.args.clone() }
-        }
-        aura_booth::JobKind::Dispose => {
-            StreamOp::Dispose { stream_id, handler: job.handler.clone(), args: job.args.clone() }
-        }
+        aura_booth::JobKind::Next => StreamOp::Next {
+            stream_id,
+            handler: job.handler.clone(),
+            args: job.args.clone(),
+        },
+        aura_booth::JobKind::Dispose => StreamOp::Dispose {
+            stream_id,
+            handler: job.handler.clone(),
+            args: job.args.clone(),
+        },
     }
 }

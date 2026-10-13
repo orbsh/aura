@@ -67,12 +67,20 @@ impl Realm {
                         // non-empty by the route rule.)
                         _ => {
                             let mut realm = self_arc.lock().await;
-                            realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
+                            realm.dead_events.push(
+                                event,
+                                data.clone(),
+                                DeadReason::MissingKeyField,
+                            );
                             continue;
                         }
                     }
                 }
-                RouteResolution::Scan { collection, index, probe_field } => {
+                RouteResolution::Scan {
+                    collection,
+                    index,
+                    probe_field,
+                } => {
                     // The effector comes from the payload; missing = malformed
                     // (the same class as a missing key field). The scan
                     // itself resolves against the OWNING TYPE's plan —
@@ -81,7 +89,9 @@ impl Realm {
                     // backlog write, and there is no slice to write).
                     let Some(effector) = data.get(probe_field) else {
                         let mut realm = self_arc.lock().await;
-                        realm.dead_events.push(event, data.clone(), DeadReason::MissingKeyField);
+                        realm
+                            .dead_events
+                            .push(event, data.clone(), DeadReason::MissingKeyField);
                         continue;
                     };
                     let plan = {
@@ -90,10 +100,18 @@ impl Realm {
                     };
                     let Some(plan) = plan else {
                         let mut realm = self_arc.lock().await;
-                        realm.dead_events.push(event, data.clone(), DeadReason::NoRoute);
+                        realm
+                            .dead_events
+                            .push(event, data.clone(), DeadReason::NoRoute);
                         continue;
                     };
-                    match store_exec::resolve_scan_targets(&self_arc.lock().await.mq, &plan, collection, index, effector) {
+                    match store_exec::resolve_scan_targets(
+                        &self_arc.lock().await.mq,
+                        &plan,
+                        collection,
+                        index,
+                        effector,
+                    ) {
                         Ok(rows) => rows.into_iter().map(InstanceKey::Named).collect(),
                         Err(e) => {
                             // A broken reference (undeclared collection/index)
@@ -101,7 +119,9 @@ impl Realm {
                             // route: recorded, never silent.
                             eprintln!("scan resolve failed for {event}: {e}");
                             let mut realm = self_arc.lock().await;
-                            realm.dead_events.push(event, data.clone(), DeadReason::NoRoute);
+                            realm
+                                .dead_events
+                                .push(event, data.clone(), DeadReason::NoRoute);
                             continue;
                         }
                     }
@@ -121,7 +141,10 @@ impl Realm {
                 };
                 {
                     let realm = self_arc.lock().await;
-                    if !realm.instances.contains_key(&(route.booth_type.clone(), target.key.clone())) {
+                    if !realm
+                        .instances
+                        .contains_key(&(route.booth_type.clone(), target.key.clone()))
+                    {
                         drop(realm);
                         let mut r = self_arc.lock().await;
                         r.instance(self_arc.clone(), &target).await?;
@@ -147,7 +170,9 @@ impl Realm {
             let store = realm.mq.clone();
             if let Err(e) = mq::append(&store, &event_name, &part, &data) {
                 eprintln!("mq append failed for {event_name}/{part:?}: {e}");
-                realm.dead_events.push(event, data.clone(), DeadReason::AppendFailed);
+                realm
+                    .dead_events
+                    .push(event, data.clone(), DeadReason::AppendFailed);
                 continue;
             }
             // Retention (step 2b follow-up + ADR-0039 §2): min-watermark
@@ -159,7 +184,8 @@ impl Realm {
             // mq-data below the watermark. Runs on the emit path (write-path
             // compaction per the ruling); the scan cost is bounded by the
             // subscriber count.
-            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &part, &store).await {
+            if let Err(e) = Self::compact_queue_locked(&mut realm, &event_name, &part, &store).await
+            {
                 eprintln!("mq compaction failed for {event_name}/{part:?}: {e}");
             }
         }

@@ -41,7 +41,12 @@ struct IndexSpecData {
 
 impl IndexSpecData {
     fn access_method(&self) -> AccessMethod {
-        AccessMethod { slot: self.slot, fields: self.fields.clone(), includes: self.includes.clone(), kind: okm_dynamic::AccessMethodKind::Plain }
+        AccessMethod {
+            slot: self.slot,
+            fields: self.fields.clone(),
+            includes: self.includes.clone(),
+            kind: okm_dynamic::AccessMethodKind::Plain,
+        }
     }
 }
 
@@ -74,10 +79,13 @@ impl StorePlan {
         let mut indexes: BTreeMap<String, BTreeMap<String, u16>> = BTreeMap::new();
         let mut reduces: BTreeMap<String, BTreeMap<String, (u16, Vec<String>)>> = BTreeMap::new();
         if let Some(block) = schema.get("storage").and_then(|s| s.get("collections")) {
-            let map = block.as_object().ok_or_else(|| anyhow::anyhow!("interface_schema.storage.collections must be an object"))?;
+            let map = block.as_object().ok_or_else(|| {
+                anyhow::anyhow!("interface_schema.storage.collections must be an object")
+            })?;
             for (name, raw) in map {
-                let cs: okm_core::schema::CollectionSchema = serde_json::from_value(raw.get("schema").cloned().unwrap_or(raw.clone()))
-                    .map_err(|e| anyhow::anyhow!("collection `{name}` schema parse: {e}"))?;
+                let cs: okm_core::schema::CollectionSchema =
+                    serde_json::from_value(raw.get("schema").cloned().unwrap_or(raw.clone()))
+                        .map_err(|e| anyhow::anyhow!("collection `{name}` schema parse: {e}"))?;
                 collections.insert(name.clone(), cs);
                 // Keep the RAW entry verbatim for the injection face
                 // (ADR-0037 4.16a): it is already the `{schema, indexes,
@@ -87,24 +95,42 @@ impl StorePlan {
                 if let Some(list) = raw.get("indexes").and_then(|x| x.as_array()) {
                     let mut specs = INDEX_SPECS.lock().unwrap();
                     for e in list {
-                        let (n, am) = build_access_method(e).map_err(|e| anyhow::anyhow!("collection `{name}` index: {e}"))?;
+                        let (n, am) = build_access_method(e)
+                            .map_err(|e| anyhow::anyhow!("collection `{name}` index: {e}"))?;
                         idx.insert(n.clone(), am.slot);
-                        specs.insert((name.clone(), n), IndexSpecData { slot: am.slot, fields: am.fields, includes: am.includes });
+                        specs.insert(
+                            (name.clone(), n),
+                            IndexSpecData {
+                                slot: am.slot,
+                                fields: am.fields,
+                                includes: am.includes,
+                            },
+                        );
                     }
                 }
                 indexes.insert(name.clone(), idx);
                 let mut red = BTreeMap::new();
                 if let Some(list) = raw.get("reduces").and_then(|x| x.as_array()) {
                     for e in list {
-                        let (n, spec, kind) = build_reduce(e).map_err(|e| anyhow::anyhow!("collection `{name}` reduce: {e}"))?;
+                        let (n, spec, kind) = build_reduce(e)
+                            .map_err(|e| anyhow::anyhow!("collection `{name}` reduce: {e}"))?;
                         red.insert(n.clone(), (spec.slot, spec.group_fields.clone()));
-                        REDUCE_SPECS.lock().unwrap().insert((name.clone(), n.clone()), (spec.slot, spec.group_fields.clone(), kind));
+                        REDUCE_SPECS.lock().unwrap().insert(
+                            (name.clone(), n.clone()),
+                            (spec.slot, spec.group_fields.clone(), kind),
+                        );
                     }
                 }
                 reduces.insert(name.clone(), red);
             }
         }
-        Ok(Self { ns, collections, entries, indexes, reduces })
+        Ok(Self {
+            ns,
+            collections,
+            entries,
+            indexes,
+            reduces,
+        })
     }
 }
 
@@ -128,7 +154,14 @@ fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
             // All-byte arrays are the JSON view of FixedBytes key fields;
             // anything else is a heterogeneous composite (legitimate in
             // the dynamic segment — schema-declared paths reject it).
-            let bytes: Result<Vec<u8>, _> = items.iter().map(|i| i.as_u64().map(|x| x as u8).ok_or_else(|| "not a byte".to_string())).collect();
+            let bytes: Result<Vec<u8>, _> = items
+                .iter()
+                .map(|i| {
+                    i.as_u64()
+                        .map(|x| x as u8)
+                        .ok_or_else(|| "not a byte".to_string())
+                })
+                .collect();
             match bytes {
                 Ok(b) => Value::Bytes(b),
                 Err(_) => {
@@ -153,7 +186,9 @@ fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
 }
 
 fn json_map(v: &serde_json::Value, what: &str) -> Result<ValueMap, String> {
-    let obj = v.as_object().ok_or_else(|| format!("{what} must be an object"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{what} must be an object"))?;
     let mut m = ValueMap::new();
     for (k, v) in obj {
         m.insert(k.clone(), json_to_value(v)?);
@@ -171,7 +206,9 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::F64(x) => serde_json::json!(x),
         Value::Bool(x) => serde_json::json!(x),
         Value::Null => serde_json::Value::Null,
-        Value::Bytes(b) => serde_json::Value::Array(b.iter().map(|&x| serde_json::json!(x)).collect()),
+        Value::Bytes(b) => {
+            serde_json::Value::Array(b.iter().map(|&x| serde_json::json!(x)).collect())
+        }
         Value::Str(s) => serde_json::json!(s),
         Value::Obj(m) => map_to_json(m),
         Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
@@ -213,12 +250,18 @@ pub fn resolve_scan_targets(
     }
     let key_field = &schema.key_fields[0].name;
     let specs = INDEX_SPECS.lock().unwrap();
-    let am = specs.get(&(collection.to_string(), index.to_string())).ok_or_else(|| {
-        format!("resolve: index `{index}` is not declared on collection `{collection}`")
-    })?.access_method();
+    let am = specs
+        .get(&(collection.to_string(), index.to_string()))
+        .ok_or_else(|| {
+            format!("resolve: index `{index}` is not declared on collection `{collection}`")
+        })?
+        .access_method();
     drop(specs);
     let mut key_values = ValueMap::new();
-    key_values.insert(am.fields[0].clone(), json_to_value(effector).map_err(|e| format!("resolve: effector: {e}"))?);
+    key_values.insert(
+        am.fields[0].clone(),
+        json_to_value(effector).map_err(|e| format!("resolve: effector: {e}"))?,
+    );
     let encoded = okm_dynamic::encode_fields(schema, &am.fields, &key_values)
         .map_err(|e| format!("resolve: effector encode: {e}"))?;
     let ns_prefix = plan.ns.to_be_bytes().to_vec();
@@ -228,7 +271,9 @@ pub fn resolve_scan_targets(
     // field, so exactly one entry; rendered in its canonical string form.
     rows.into_iter()
         .map(|pk| {
-            let v = pk.get(key_field).ok_or_else(|| format!("resolve: hit row key missing `{key_field}`"))?;
+            let v = pk
+                .get(key_field)
+                .ok_or_else(|| format!("resolve: hit row key missing `{key_field}`"))?;
             Ok(value_to_key_string(v))
         })
         .collect()
@@ -261,7 +306,11 @@ pub fn execute(
     op: &StoreOp,
 ) -> Result<serde_json::Value, String> {
     let schema = plan.collections.get(&op.collection).ok_or_else(|| {
-        format!("collection `{}` is not declared by this type (declared: {:?})", op.collection, plan.collections.keys().collect::<Vec<_>>())
+        format!(
+            "collection `{}` is not declared by this type (declared: {:?})",
+            op.collection,
+            plan.collections.keys().collect::<Vec<_>>()
+        )
     })?;
     let indexes: Vec<AccessMethod> = plan
         .indexes
@@ -269,7 +318,11 @@ pub fn execute(
         .map(|m| {
             let specs = INDEX_SPECS.lock().unwrap();
             m.keys()
-                .filter_map(|n| specs.get(&(op.collection.clone(), n.clone())).map(IndexSpecData::access_method))
+                .filter_map(|n| {
+                    specs
+                        .get(&(op.collection.clone(), n.clone()))
+                        .map(IndexSpecData::access_method)
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -280,29 +333,38 @@ pub fn execute(
             let specs = REDUCE_SPECS.lock().unwrap();
             m.keys()
                 .filter_map(|n| {
-                    specs.get(&(op.collection.clone(), n.clone()))
-                        .map(|(slot, group, kind)| ReduceSpec { slot: *slot, group_fields: group.clone(), logic: Box::new(PresetLogic { kind: kind.clone() }) })
+                    specs
+                        .get(&(op.collection.clone(), n.clone()))
+                        .map(|(slot, group, kind)| ReduceSpec {
+                            slot: *slot,
+                            group_fields: group.clone(),
+                            logic: Box::new(PresetLogic { kind: kind.clone() }),
+                        })
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let mut coll = DynamicCollection::with_reduces(store.clone(), plan.ns, schema.clone(), indexes, reduces);
+    let mut coll =
+        DynamicCollection::with_reduces(store.clone(), plan.ns, schema.clone(), indexes, reduces);
     match &op.op {
         StoreOpKind::PutDocument { key, doc } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             let d = json_map(doc, "doc")?;
             coll.put(&k, &d)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetDocument { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             match coll.get(&k)? {
                 Some(m) => Ok(map_to_json(&m)),
                 None => Ok(serde_json::Value::Null),
             }
         }
         StoreOpKind::DeleteDocument { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             coll.delete(&k)?;
             Ok(serde_json::json!({ "ok": true }))
         }
@@ -311,12 +373,14 @@ pub fn execute(
         // declared vocabulary, whole-map replace on write. Scalar values
         // only — an object is a document, not a field value.
         StoreOpKind::PutFields { key, fields } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             coll.put_fields(&k, &json_map(fields, "fields")?)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetFields { key, fields } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             match coll.get_fields(&k)? {
                 Some(m) => {
                     if fields.is_empty() {
@@ -336,20 +400,37 @@ pub fn execute(
             }
         }
         StoreOpKind::DeleteFields { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?).map_err(|e| e.to_string())?;
+            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+                .map_err(|e| e.to_string())?;
             coll.delete_fields(&k);
             Ok(serde_json::json!({ "ok": true }))
         }
-        StoreOpKind::Scan { index, value, limit } => {
-            let slots = plan.indexes.get(&op.collection).ok_or_else(|| format!("collection `{}` declares no indexes", op.collection))?;
-            let _slot = *slots.get(index).ok_or_else(|| format!("index `{index}` is not declared (declared: {:?})", slots.keys().collect::<Vec<_>>()))?;
+        StoreOpKind::Scan {
+            index,
+            value,
+            limit,
+        } => {
+            let slots = plan
+                .indexes
+                .get(&op.collection)
+                .ok_or_else(|| format!("collection `{}` declares no indexes", op.collection))?;
+            let _slot = *slots.get(index).ok_or_else(|| {
+                format!(
+                    "index `{index}` is not declared (declared: {:?})",
+                    slots.keys().collect::<Vec<_>>()
+                )
+            })?;
             // The encoded prefix: the indexed fields' values, in the
             // access method's field order, encoded by the schema
             // (fixed-width fields only — key or hot).
-            let vals = value.as_array().ok_or("scan value must be an array (one value per indexed field, in order)")?;
+            let vals = value
+                .as_array()
+                .ok_or("scan value must be an array (one value per indexed field, in order)")?;
             let (index_fields, _index_slot) = {
                 let specs = INDEX_SPECS.lock().unwrap();
-                let am = specs.get(&(op.collection.clone(), index.clone())).ok_or_else(|| format!("index `{index}` spec missing"))?;
+                let am = specs
+                    .get(&(op.collection.clone(), index.clone()))
+                    .ok_or_else(|| format!("index `{index}` spec missing"))?;
                 (am.fields.clone(), am.slot)
             };
             let mut key_values = ValueMap::new();
@@ -359,33 +440,61 @@ pub fn execute(
             let encoded = okm_dynamic::encode_fields(schema, &index_fields, &key_values)
                 .map_err(|e| format!("scan prefix encode: {e}"))?;
             let ns_prefix = plan.ns.to_be_bytes().to_vec();
-            let am = INDEX_SPECS.lock().unwrap().get(&(op.collection.clone(), index.clone())).ok_or("index spec missing")?.access_method();
-            let mut rows = okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)?;
+            let am = INDEX_SPECS
+                .lock()
+                .unwrap()
+                .get(&(op.collection.clone(), index.clone()))
+                .ok_or("index spec missing")?
+                .access_method();
+            let mut rows =
+                okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)?;
             if let Some(_n) = limit {
                 rows.truncate(limit.unwrap_or(u64::MAX) as usize);
             }
-            Ok(serde_json::Value::Array(rows.iter().map(map_to_json).collect()))
+            Ok(serde_json::Value::Array(
+                rows.iter().map(map_to_json).collect(),
+            ))
         }
         StoreOpKind::ReduceGet { reduce, group } => {
-            let slots = plan.reduces.get(&op.collection).ok_or_else(|| format!("collection `{}` declares no reduces", op.collection))?;
-            let (slot, spec_group) = slots.get(reduce).ok_or_else(|| format!("reduce `{reduce}` is not declared (declared: {:?})", slots.keys().collect::<Vec<_>>()))?.clone();
+            let slots = plan
+                .reduces
+                .get(&op.collection)
+                .ok_or_else(|| format!("collection `{}` declares no reduces", op.collection))?;
+            let (slot, spec_group) = slots
+                .get(reduce)
+                .ok_or_else(|| {
+                    format!(
+                        "reduce `{reduce}` is not declared (declared: {:?})",
+                        slots.keys().collect::<Vec<_>>()
+                    )
+                })?
+                .clone();
             let g = json_map(group, "group")?;
             // Entry key: [ns 2B][slot u16 BE][group fields in declaration order].
 
             let mut key_values = ValueMap::new();
             for fname in &spec_group {
-                let v = g.get(fname.as_str()).ok_or_else(|| format!("group value `{fname}` missing"))?;
+                let v = g
+                    .get(fname.as_str())
+                    .ok_or_else(|| format!("group value `{fname}` missing"))?;
                 key_values.insert(fname.clone(), v.clone());
             }
             let mut entry = plan.ns.to_be_bytes().to_vec();
             entry.extend_from_slice(&slot.to_be_bytes());
-            entry.extend_from_slice(&okm_dynamic::encode_fields(schema, &spec_group, &key_values).map_err(|e| e.to_string())?);
+            entry.extend_from_slice(
+                &okm_dynamic::encode_fields(schema, &spec_group, &key_values)
+                    .map_err(|e| e.to_string())?,
+            );
             match okm_dynamic::reduce_get(store, &entry) {
                 Some(bytes) => {
                     if bytes.len() == 8 {
-                        Ok(serde_json::json!(u64::from_be_bytes(bytes.try_into().unwrap())))
+                        Ok(serde_json::json!(u64::from_be_bytes(
+                            bytes.try_into().unwrap()
+                        )))
                     } else {
-                        Ok(serde_json::Value::Array(bytes.iter().map(|&b| serde_json::json!(b)).collect()))
+                        Ok(serde_json::Value::Array(
+                            bytes.iter().map(|&b| serde_json::json!(b)).collect(),
+                        ))
                     }
                 }
                 None => Ok(serde_json::Value::Null),
@@ -420,9 +529,12 @@ mod tests {
     #[test]
     fn put_get_roundtrip_through_emit() {
         let store = MqStore::mem();
-        let plan = StorePlan::from_schema(700, &serde_json::json!({
-            "storage": { "collections": { "counters": schema_json() } }
-        }))
+        let plan = StorePlan::from_schema(
+            700,
+            &serde_json::json!({
+                "storage": { "collections": { "counters": schema_json() } }
+            }),
+        )
         .unwrap();
         let op = StoreOp {
             collection: "counters".into(),
@@ -434,14 +546,19 @@ mod tests {
         execute(&store, &plan, &op).unwrap();
         let get = StoreOp {
             collection: "counters".into(),
-            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 7 }) },
+            op: StoreOpKind::GetDocument {
+                key: serde_json::json!({ "id": 7 }),
+            },
         };
         let out = execute(&store, &plan, &get).unwrap();
         assert_eq!(out["count"], 42);
         // Distinct ns = no cross-talk.
-        let other = StorePlan::from_schema(701, &serde_json::json!({
-            "storage": { "collections": { "counters": schema_json() } }
-        }))
+        let other = StorePlan::from_schema(
+            701,
+            &serde_json::json!({
+                "storage": { "collections": { "counters": schema_json() } }
+            }),
+        )
         .unwrap();
         let out = execute(&store, &other, &get).unwrap();
         assert!(out.is_null());
@@ -453,7 +570,9 @@ mod tests {
         let plan = StorePlan::from_schema(700, &serde_json::json!({})).unwrap();
         let op = StoreOp {
             collection: "ghost".into(),
-            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 1 }) },
+            op: StoreOpKind::GetDocument {
+                key: serde_json::json!({ "id": 1 }),
+            },
         };
         assert!(execute(&store, &plan, &op).is_err());
     }
@@ -471,29 +590,65 @@ mod tests {
 // objects (python/steel callables) register through the bindings, not
 // through schema data.
 
-
 fn build_access_method(v: &serde_json::Value) -> Result<(String, AccessMethod), String> {
     let obj = v.as_object().ok_or("index entry must be an object")?;
-    let name = obj.get("name").and_then(|x| x.as_str()).ok_or("index missing name")?.to_string();
-    let slot = obj.get("slot").and_then(|x| x.as_u64()).ok_or("index missing slot")? as u16;
-    let fields = obj.get("fields").and_then(|x| x.as_array()).ok_or("index missing fields")?
-        .iter().map(|x| x.as_str().map(String::from).ok_or_else(|| "index field not a string".to_string())).collect::<Result<Vec<_>, _>>()?;
+    let name = obj
+        .get("name")
+        .and_then(|x| x.as_str())
+        .ok_or("index missing name")?
+        .to_string();
+    let slot = obj
+        .get("slot")
+        .and_then(|x| x.as_u64())
+        .ok_or("index missing slot")? as u16;
+    let fields = obj
+        .get("fields")
+        .and_then(|x| x.as_array())
+        .ok_or("index missing fields")?
+        .iter()
+        .map(|x| {
+            x.as_str()
+                .map(String::from)
+                .ok_or_else(|| "index field not a string".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let includes = match obj.get("includes").and_then(|x| x.as_array()) {
-        Some(a) => a.iter().map(|x| x.as_str().map(String::from).ok_or_else(|| "includes field not a string".to_string())).collect::<Result<Vec<_>, _>>()?,
+        Some(a) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| "includes field not a string".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         None => Vec::new(),
     };
     let kind = match obj.get("kind").and_then(|x| x.as_str()).unwrap_or("plain") {
         "plain" => okm_dynamic::AccessMethodKind::Plain,
         other => return Err(format!("unsupported index kind `{other}`")),
     };
-    Ok((name, AccessMethod { slot, fields, includes, kind }))
+    Ok((
+        name,
+        AccessMethod {
+            slot,
+            fields,
+            includes,
+            kind,
+        },
+    ))
 }
 
 /// Preset reduce logics over the u64 BE accumulator.
 #[derive(Clone)]
-enum PresetKind { Count, HighWater(String), LowWater(String) }
+enum PresetKind {
+    Count,
+    HighWater(String),
+    LowWater(String),
+}
 
-struct PresetLogic { kind: PresetKind }
+struct PresetLogic {
+    kind: PresetKind,
+}
 
 impl PresetLogic {
     fn field_u64(doc: &ValueMap, field: &str) -> Result<u64, String> {
@@ -522,7 +677,12 @@ impl okm_dynamic::ReduceLogic for PresetLogic {
         *acc = cur.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
+    fn unfold(
+        &self,
+        acc: &mut Vec<u8>,
+        _key: &ValueMap,
+        _document: &ValueMap,
+    ) -> Result<(), String> {
         match &self.kind {
             PresetKind::Count => {
                 let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
@@ -538,10 +698,24 @@ impl okm_dynamic::ReduceLogic for PresetLogic {
 
 fn build_reduce(v: &serde_json::Value) -> Result<(String, ReduceSpec, PresetKind), String> {
     let obj = v.as_object().ok_or("reduce entry must be an object")?;
-    let name = obj.get("name").and_then(|x| x.as_str()).ok_or("reduce missing name")?.to_string();
-    let slot = obj.get("slot").and_then(|x| x.as_u64()).ok_or("reduce missing slot")? as u16;
+    let name = obj
+        .get("name")
+        .and_then(|x| x.as_str())
+        .ok_or("reduce missing name")?
+        .to_string();
+    let slot = obj
+        .get("slot")
+        .and_then(|x| x.as_u64())
+        .ok_or("reduce missing slot")? as u16;
     let group_fields = match obj.get("group").and_then(|x| x.as_array()) {
-        Some(a) => a.iter().map(|x| x.as_str().map(String::from).ok_or_else(|| "group field not a string".to_string())).collect::<Result<Vec<_>, _>>()?,
+        Some(a) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| "group field not a string".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         None => Vec::new(),
     };
     let kind_v = obj.get("kind").ok_or("reduce missing kind")?;
@@ -555,14 +729,20 @@ fn build_reduce(v: &serde_json::Value) -> Result<(String, ReduceSpec, PresetKind
     } else {
         return Err(format!("unsupported reduce kind `{kind_name}`"));
     };
-    let spec = ReduceSpec { slot, group_fields: group_fields.clone(), logic: Box::new(PresetLogic { kind: logic.clone() }) };
+    let spec = ReduceSpec {
+        slot,
+        group_fields: group_fields.clone(),
+        logic: Box::new(PresetLogic {
+            kind: logic.clone(),
+        }),
+    };
     Ok((name, spec, logic))
 }
 
 #[cfg(test)]
 mod scan_tests {
     use super::*;
-    
+
     use super::tests::schema_json;
     #[test]
     fn scan_and_reduce_through_emit() {
@@ -577,26 +757,53 @@ mod scan_tests {
         }))
         .unwrap();
         for (id, count) in [(1u64, 10u64), (2, 20)] {
-            execute(&store, &plan, &StoreOp {
-                collection: "orders".into(),
-                op: StoreOpKind::PutDocument {
-                    key: serde_json::json!({ "id": id }),
-                    doc: serde_json::json!({ "count": count }),
+            execute(
+                &store,
+                &plan,
+                &StoreOp {
+                    collection: "orders".into(),
+                    op: StoreOpKind::PutDocument {
+                        key: serde_json::json!({ "id": id }),
+                        doc: serde_json::json!({ "count": count }),
+                    },
                 },
-            }).unwrap();
+            )
+            .unwrap();
         }
         // Index scan by count value.
-        let scan = execute(&store, &plan, &StoreOp {
-            collection: "orders".into(),
-            op: StoreOpKind::Scan { index: "by_count".into(), value: serde_json::json!([20]), limit: None },
-        }).unwrap();
+        let scan = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "orders".into(),
+                op: StoreOpKind::Scan {
+                    index: "by_count".into(),
+                    value: serde_json::json!([20]),
+                    limit: None,
+                },
+            },
+        )
+        .unwrap();
         assert_eq!(scan.as_array().unwrap().len(), 1, "one order with count=20");
-        assert_eq!(scan[0]["id"], 2, "scan results are KEY maps (the id of the count=20 order)");
+        assert_eq!(
+            scan[0]["id"], 2,
+            "scan results are KEY maps (the id of the count=20 order)"
+        );
         // Preset reduce: count = 1 per group; high_water = the count.
-        let rg = |name: &str, id: u64| execute(&store, &plan, &StoreOp {
-            collection: "orders".into(),
-            op: StoreOpKind::ReduceGet { reduce: name.into(), group: serde_json::json!({ "id": id }) },
-        }).unwrap();
+        let rg = |name: &str, id: u64| {
+            execute(
+                &store,
+                &plan,
+                &StoreOp {
+                    collection: "orders".into(),
+                    op: StoreOpKind::ReduceGet {
+                        reduce: name.into(),
+                        group: serde_json::json!({ "id": id }),
+                    },
+                },
+            )
+            .unwrap()
+        };
         assert_eq!(rg("n", 1), serde_json::json!(1u64));
         assert_eq!(rg("peak", 2), serde_json::json!(20u64));
         // Absent group → null.
@@ -606,9 +813,12 @@ mod scan_tests {
     #[test]
     fn field_level_ops_through_emit() {
         let store = MqStore::mem();
-        let plan = StorePlan::from_schema(720, &serde_json::json!({
-            "storage": { "collections": { "notes": schema_json() } }
-        }))
+        let plan = StorePlan::from_schema(
+            720,
+            &serde_json::json!({
+                "storage": { "collections": { "notes": schema_json() } }
+            }),
+        )
         .unwrap();
         let put = |id: u64| StoreOp {
             collection: "notes".into(),
@@ -620,97 +830,165 @@ mod scan_tests {
         execute(&store, &plan, &put(1)).unwrap();
 
         // Field write + read-back (whole map).
-        execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::PutFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: serde_json::json!({ "note": "hello", "weight": 9 }),
+        execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::PutFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: serde_json::json!({ "note": "hello", "weight": 9 }),
+                },
             },
-        }).unwrap();
-        let get_all = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: vec![],
+        )
+        .unwrap();
+        let get_all = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: vec![],
+                },
             },
-        }).unwrap();
+        )
+        .unwrap();
         assert_eq!(get_all["note"], "hello");
         assert_eq!(get_all["weight"], 9);
 
         // Selective read: present names returned, absent omitted.
-        let get_some = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: vec!["note".into(), "ghost".into()],
+        let get_some = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: vec!["note".into(), "ghost".into()],
+                },
             },
-        }).unwrap();
+        )
+        .unwrap();
         assert_eq!(get_some.as_object().unwrap().len(), 1);
         assert_eq!(get_some["note"], "hello");
 
         // Whole-map replace: `note` is gone.
-        execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::PutFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: serde_json::json!({ "weight": 10 }),
+        execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::PutFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: serde_json::json!({ "weight": 10 }),
+                },
             },
-        }).unwrap();
-        let get_all = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: vec![],
+        )
+        .unwrap();
+        let get_all = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: vec![],
+                },
             },
-        }).unwrap();
-        assert_eq!(get_all.as_object().unwrap().len(), 1, "replace drops absent fields");
+        )
+        .unwrap();
+        assert_eq!(
+            get_all.as_object().unwrap().len(),
+            1,
+            "replace drops absent fields"
+        );
 
         // Field map is independent of the primary document (dynamic
         // segment REPLACES the slot-1 entry only; declared fields RMW).
-        let doc = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 1 }) },
-        }).unwrap();
+        let doc = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetDocument {
+                    key: serde_json::json!({ "id": 1 }),
+                },
+            },
+        )
+        .unwrap();
         assert_eq!(doc["count"], 1);
 
         // Delete drops the whole field entry; document survives.
-        execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::DeleteFields { key: serde_json::json!({ "id": 1 }) },
-        }).unwrap();
-        let gone = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: vec![],
+        execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::DeleteFields {
+                    key: serde_json::json!({ "id": 1 }),
+                },
             },
-        }).unwrap();
+        )
+        .unwrap();
+        let gone = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: vec![],
+                },
+            },
+        )
+        .unwrap();
         assert!(gone.is_null(), "no dynamic entry = null");
-        let doc = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetDocument { key: serde_json::json!({ "id": 1 }) },
-        }).unwrap();
-        assert_eq!(doc["count"], 1, "primary document untouched by delete_fields");
+        let doc = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetDocument {
+                    key: serde_json::json!({ "id": 1 }),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            doc["count"], 1,
+            "primary document untouched by delete_fields"
+        );
 
         // Composite values (nested object / heterogeneous array) round-trip
         // through the dynamic segment.
-        execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::PutFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: serde_json::json!({
-                    "meta": { "depth": 2, "kind": "auto" },
-                    "tags": ["a", 3]
-                }),
+        execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::PutFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: serde_json::json!({
+                        "meta": { "depth": 2, "kind": "auto" },
+                        "tags": ["a", 3]
+                    }),
+                },
             },
-        }).unwrap();
-        let comp = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 1 }),
-                fields: vec![],
+        )
+        .unwrap();
+        let comp = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 1 }),
+                    fields: vec![],
+                },
             },
-        }).unwrap();
+        )
+        .unwrap();
         assert_eq!(comp["meta"]["depth"], 2);
         assert_eq!(comp["meta"]["kind"], "auto");
         assert_eq!(comp["tags"][0], "a");
@@ -718,14 +996,18 @@ mod scan_tests {
 
         // Distinct keys have distinct field maps.
         execute(&store, &plan, &put(2)).unwrap();
-        let empty = execute(&store, &plan, &StoreOp {
-            collection: "notes".into(),
-            op: StoreOpKind::GetFields {
-                key: serde_json::json!({ "id": 2 }),
-                fields: vec![],
+        let empty = execute(
+            &store,
+            &plan,
+            &StoreOp {
+                collection: "notes".into(),
+                op: StoreOpKind::GetFields {
+                    key: serde_json::json!({ "id": 2 }),
+                    fields: vec![],
+                },
             },
-        }).unwrap();
+        )
+        .unwrap();
         assert!(empty.is_null(), "other documents have no dynamic entry");
     }
 }
-

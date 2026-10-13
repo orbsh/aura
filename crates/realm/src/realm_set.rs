@@ -61,20 +61,21 @@ impl RealmSet {
     /// Get-or-create the named realm (lazy; cheap).
     pub async fn realm_of(&self, name: &str) -> NamedRealm {
         let mut map = self.map.lock().await;
-        let realm = map
-            .entry(name.to_string())
-            .or_insert_with(|| {
-                // State + mq both ride the realm-prefixed okm engine
-                // (ADR-0018 step 2): the prefix bound at construction is
-                // the isolation boundary; no JSON PrefixStore layer.
-                let mq = crate::mq::MqStore::for_realm(&self.mq, name);
-                Arc::new(tokio::sync::Mutex::new(
-                    crate::Realm::with_mq(mq)
-                        .with_code_base_url(self.code_base_url.clone())
-                        .with_cursor_ttl(self.cursor_ttl),
-                ))
-            });
-        NamedRealm { name: name.to_string(), realm: realm.clone() }
+        let realm = map.entry(name.to_string()).or_insert_with(|| {
+            // State + mq both ride the realm-prefixed okm engine
+            // (ADR-0018 step 2): the prefix bound at construction is
+            // the isolation boundary; no JSON PrefixStore layer.
+            let mq = crate::mq::MqStore::for_realm(&self.mq, name);
+            Arc::new(tokio::sync::Mutex::new(
+                crate::Realm::with_mq(mq)
+                    .with_code_base_url(self.code_base_url.clone())
+                    .with_cursor_ttl(self.cursor_ttl),
+            ))
+        });
+        NamedRealm {
+            name: name.to_string(),
+            realm: realm.clone(),
+        }
     }
 
     /// Realm names currently live (observation).

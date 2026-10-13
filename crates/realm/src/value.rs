@@ -48,8 +48,8 @@ pub fn dyn_to_json(v: &DynamicValue) -> serde_json::Value {
             std::str::from_utf8(b)
                 .map(|s| serde_json::Value::String(s.to_string()))
                 .unwrap_or_else(|_| {
-                    use base64::Engine as _;
                     use base64::engine::general_purpose::STANDARD as BASE64;
+                    use base64::Engine as _;
                     serde_json::Value::String(BASE64.encode(b))
                 })
         }

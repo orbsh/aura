@@ -73,10 +73,37 @@ async fn same_type_key_isolated_per_realm() {
     engine.register_in("alice", counter()).await;
     engine.register_in("bob", counter()).await;
 
-    let target = InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) };
-    engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
-    engine.call_in("alice", target.clone(), "execute", serde_json::json!({"user_id": "alice"})).await.unwrap();
-    engine.call_in("bob", target.clone(), "execute", serde_json::json!({"user_id": "bob"})).await.unwrap();
+    let target = InstanceId {
+        booth_type: "counter".into(),
+        key: InstanceKey::Named("k".into()),
+    };
+    engine
+        .call_in(
+            "alice",
+            target.clone(),
+            "execute",
+            serde_json::json!({"user_id": "alice"}),
+        )
+        .await
+        .unwrap();
+    engine
+        .call_in(
+            "alice",
+            target.clone(),
+            "execute",
+            serde_json::json!({"user_id": "alice"}),
+        )
+        .await
+        .unwrap();
+    engine
+        .call_in(
+            "bob",
+            target.clone(),
+            "execute",
+            serde_json::json!({"user_id": "bob"}),
+        )
+        .await
+        .unwrap();
 
     // alice's count is 2, bob's is 1 — the realms never mixed. Read
     // back through the `count` handler (the booth's observable output).
@@ -85,7 +112,18 @@ async fn same_type_key_isolated_per_realm() {
         let target = target.clone();
         async move {
             let realm = engine_ns.realm_of(&ns).await;
-            let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": uid})).await.unwrap().wait().await.unwrap();
+            let waited = Realm::call(
+                &realm.realm(),
+                None,
+                target,
+                "count",
+                serde_json::json!({"user_id": uid}),
+            )
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
             match waited {
                 aura_booth::call::Waited::Done(v) => v.unwrap(),
                 aura_booth::call::Waited::Pending(_) => panic!("count read went cold"),
@@ -106,36 +144,57 @@ async fn same_type_key_isolated_per_realm() {
 async fn events_do_not_cross_realms() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Same event subscription in two realms; the emit goes to one.
-    let listener = || {
-        BoothType::script(
-            "listener",
-            "steel",
-            LISTENER,
-        )
-    };
+    let listener = || BoothType::script("listener", "steel", LISTENER);
     engine.register_in("alice", listener()).await;
     engine.register_in("bob", listener()).await;
 
     for ns in ["alice", "bob"] {
         let ns_realm = engine.realm_set.realm_of(ns).await;
-        ns_realm.realm().lock().await.router.on("order.created", "listener", "user_id");
+        ns_realm
+            .realm()
+            .lock()
+            .await
+            .router
+            .on("order.created", "listener", "user_id");
     }
 
     // Alice emits; only alice's listener may see it.
-    engine.emit_in("alice", None, "order.created", serde_json::json!({
-        "event": "order.created", "user_id": "u1"
-    })).await.unwrap();
+    engine
+        .emit_in(
+            "alice",
+            None,
+            "order.created",
+            serde_json::json!({
+                "event": "order.created", "user_id": "u1"
+            }),
+        )
+        .await
+        .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let target = InstanceId { booth_type: "listener".into(), key: InstanceKey::Named("u1".into()) };
+    let target = InstanceId {
+        booth_type: "listener".into(),
+        key: InstanceKey::Named("u1".into()),
+    };
     // Read back through the `count` handler (the booth's observable output).
     let read = |ns: String| {
         let engine_ns = engine.realm_set.clone();
         let target = target.clone();
         async move {
             let realm = engine_ns.realm_of(&ns).await;
-            let waited = Realm::call(&realm.realm(), None, target, "count", serde_json::json!({"user_id": "u1"})).await.unwrap().wait().await.unwrap();
+            let waited = Realm::call(
+                &realm.realm(),
+                None,
+                target,
+                "count",
+                serde_json::json!({"user_id": "u1"}),
+            )
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
             match waited {
                 aura_booth::call::Waited::Done(v) => v.unwrap(),
                 aura_booth::call::Waited::Pending(_) => panic!("count read went cold"),
@@ -164,8 +223,11 @@ async fn type_registered_in_one_realm_is_unknown_in_another() {
     let err = engine
         .call_in(
             "bob",
-            InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "counter".into(),
+                key: InstanceKey::Named("k".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await

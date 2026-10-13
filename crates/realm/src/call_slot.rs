@@ -20,15 +20,16 @@ impl Realm {
     /// binding; Next/Dispose resolve through it and re-address the
     /// handler with the original start args (envelope-mode handlers are
     /// stateless per call — the guard state is theirs).
-    pub async fn iterate(
-        self_arc: &SharedRealm,
-        op: IterateOp,
-    ) -> anyhow::Result<CallSlot> {
+    pub async fn iterate(self_arc: &SharedRealm, op: IterateOp) -> anyhow::Result<CallSlot> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let (kind, stream, handler, args, target) = {
             let mut realm = self_arc.lock().await;
             let (kind, stream, handler, args, target) = match op {
-                IterateOp::Start { target, handler, args } => {
+                IterateOp::Start {
+                    target,
+                    handler,
+                    args,
+                } => {
                     if !realm.types.contains_key(&target.booth_type) {
                         anyhow::bail!("unknown booth type: {}", target.booth_type);
                     }
@@ -74,7 +75,10 @@ impl Realm {
                         let _ = reply_tx.send(Ok(serde_json::Value::Null));
                         return Ok(CallSlot::Hot {
                             rx: reply_rx,
-                            deadline: Some((tokio::time::Instant::now() + spec_timeout, spec_timeout)),
+                            deadline: Some((
+                                tokio::time::Instant::now() + spec_timeout,
+                                spec_timeout,
+                            )),
                         });
                     }
                     Some(entry) => (
@@ -161,9 +165,7 @@ impl Realm {
                 .unwrap_or_else(|| CallSpec::hot(Duration::from_secs(30)));
             match spec.tier {
                 Tier::Hot => {
-                    let deadline = spec
-                        .timeout
-                        .map(|t| (tokio::time::Instant::now() + t, t));
+                    let deadline = spec.timeout.map(|t| (tokio::time::Instant::now() + t, t));
                     // One code path (§4): mint + register like every
                     // Start. A terminal first reply (the invoke shape —
                     // the common case here) unwinds the registration in

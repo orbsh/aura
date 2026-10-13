@@ -124,7 +124,11 @@ pub enum RouteResolution {
     /// instance key is one String; a composite row key has no honest
     /// string rendering, so multi-key collections are a registration
     /// error, not a rendering convention).
-    Scan { collection: String, index: String, probe_field: String },
+    Scan {
+        collection: String,
+        index: String,
+        probe_field: String,
+    },
 }
 
 /// ADR-0043 §4: the handler receives the ctx as a BORROW of the realm's
@@ -183,7 +187,9 @@ impl BoothType {
     /// carriers (they carry no channel).
     pub fn encoded(mut self, encoding: Encoding) -> Self {
         match &mut self.body {
-            Body::Script { encoding: e, .. } | Body::RemoteProbe { encoding: e, .. } => *e = encoding,
+            Body::Script { encoding: e, .. } | Body::RemoteProbe { encoding: e, .. } => {
+                *e = encoding
+            }
             Body::Rust(_) => {}
         }
         self
@@ -280,8 +286,7 @@ pub use persist::PersistedBooth;
 pub use store_emit::{StoreOp, StoreOpKind};
 
 pub mod futures_boxed {
-    pub type BoxFuture<'a, T> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+    pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 }
 
 /// Per-instance context. ADR-0011 (errata through 2026-09-29): exactly
@@ -390,17 +395,23 @@ pub mod dispatch_handle {
 /// unguessable and globally scoped within the realm — a stream is an
 /// addressing fact, never a permission you re-present).
 pub enum IterateOp {
-    Start { target: InstanceId, handler: String, args: Value },
-    Next { stream_id: String },
-    Dispose { stream_id: String },
+    Start {
+        target: InstanceId,
+        handler: String,
+        args: Value,
+    },
+    Next {
+        stream_id: String,
+    },
+    Dispose {
+        stream_id: String,
+    },
 }
 
 pub mod iterate_handle {
     use super::*;
     pub type IterateHandle = Arc<
-        dyn Fn(IterateOp) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>>
-            + Send
-            + Sync,
+        dyn Fn(IterateOp) -> futures_boxed::BoxFuture<'static, anyhow::Result<Value>> + Send + Sync,
     >;
 }
 
@@ -442,18 +453,21 @@ impl Envelope {
         let obj = v
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("iterate: envelope must be an object, got {v}"))?;
-        let done = obj
-            .get("done")
-            .and_then(|d| d.as_bool())
-            .ok_or_else(|| anyhow::anyhow!("iterate: envelope needs a boolean `done` field, got {v}"))?;
+        let done = obj.get("done").and_then(|d| d.as_bool()).ok_or_else(|| {
+            anyhow::anyhow!("iterate: envelope needs a boolean `done` field, got {v}")
+        })?;
         let item = obj.get("item").cloned();
         let value = obj.get("value").cloned();
         if done && item.is_some() {
-            anyhow::bail!("iterate: envelope with `done: true` must not carry an `item` (ADR-0036)");
+            anyhow::bail!(
+                "iterate: envelope with `done: true` must not carry an `item` (ADR-0036)"
+            );
         }
         if !done {
             if item.is_none() {
-                anyhow::bail!("iterate: envelope with `done: false` must carry an `item` (ADR-0036)");
+                anyhow::bail!(
+                    "iterate: envelope with `done: false` must carry an `item` (ADR-0036)"
+                );
             }
             if value.is_some() {
                 anyhow::bail!("iterate: `value` is legal only with `done: true` (ADR-0036)");
@@ -521,7 +535,15 @@ impl StreamCursor {
         handler: String,
         args: Value,
     ) -> Self {
-        Self { iterate, target, handler, args, stream_id: None, done: false, value: None }
+        Self {
+            iterate,
+            target,
+            handler,
+            args,
+            stream_id: None,
+            done: false,
+            value: None,
+        }
     }
 
     /// Pull one envelope. First call starts the stream — the Start
@@ -601,14 +623,18 @@ pub mod store_emit_handle {
     /// One storage instruction, executed against the owning type's ns
     /// (the runtime resolves the plan; the handle carries no addressing).
     /// Sync: script host fns run inside spawn_blocking.
-    pub type StoreEmitHandle =
-        Arc<dyn Fn(StoreOp) -> Result<Value, String> + Send + Sync>;
+    pub type StoreEmitHandle = Arc<dyn Fn(StoreOp) -> Result<Value, String> + Send + Sync>;
 }
 
 impl Invoke {
     /// Call the dispatch target and wait for its result. Used by the script
     /// ctx bridge (which blocks inside spawn_blocking).
-    pub async fn call(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
+    pub async fn call(
+        &self,
+        target: InstanceId,
+        handler: &str,
+        args: Value,
+    ) -> anyhow::Result<Value> {
         (self.dispatch.clone())(target, handler, args).await
     }
 }
@@ -653,7 +679,9 @@ impl Ctx {
     /// okm Collection instructions as data (ADR-0026 §3). Fails when the
     /// type declared no storage (no schema → no collections → no surface).
     pub fn store(&self) -> StoreSurface<'_> {
-        StoreSurface { emit: self.store_emit.as_ref() }
+        StoreSurface {
+            emit: self.store_emit.as_ref(),
+        }
     }
 
     /// The persisted interface_schema (uploaded copy; execution never
@@ -668,7 +696,12 @@ impl Ctx {
     }
 
     /// The single controlled call surface (ADR-0011).
-    pub async fn invoke(&self, target: InstanceId, handler: &str, args: Value) -> anyhow::Result<Value> {
+    pub async fn invoke(
+        &self,
+        target: InstanceId,
+        handler: &str,
+        args: Value,
+    ) -> anyhow::Result<Value> {
         (self.invoke.dispatch.clone())(target, handler, args).await
     }
 
@@ -701,10 +734,9 @@ impl Ctx {
     /// dual — mid-stream abandonment without it is the dead-ring
     /// problem wearing a request badge (released only by eviction).
     pub fn iterate(&self, target: InstanceId, handler: &str, args: Value) -> StreamCursor {
-        let iterate = self
-            .iterate
-            .clone()
-            .expect("booth ctx always carries the iterate handle (only the introspection ctx lacks it)");
+        let iterate = self.iterate.clone().expect(
+            "booth ctx always carries the iterate handle (only the introspection ctx lacks it)",
+        );
         StreamCursor::new(iterate, target, handler.to_string(), args)
     }
 
@@ -726,9 +758,10 @@ pub struct StoreSurface<'a> {
 impl StoreSurface<'_> {
     /// Execute one okm Collection instruction against the type's ns.
     pub fn emit(&self, op: StoreOp) -> Result<Value, String> {
-        let f = self
-            .emit
-            .ok_or_else(|| "this type declares no storage (no storage schema) — ctx.store is unavailable".to_string())?;
+        let f = self.emit.ok_or_else(|| {
+            "this type declares no storage (no storage schema) — ctx.store is unavailable"
+                .to_string()
+        })?;
         f(op)
     }
 }
@@ -798,8 +831,10 @@ pub struct Instance {
     /// Event-queue subscriptions (Phase 4.5c step 2): one private Receiver
     /// per (event, partition) queue this instance's @on declarations bind —
     /// the per-subscription cursor that keeps consumption serial here.
-    pub subscriptions:
-        Vec<((String, String), tokio::sync::broadcast::Receiver<QueuedJob>)>,
+    pub subscriptions: Vec<(
+        (String, String),
+        tokio::sync::broadcast::Receiver<QueuedJob>,
+    )>,
     /// Last job arrival; the evictor compares against idle_ttl.
     pub last_activity: std::time::Instant,
 }
@@ -807,7 +842,12 @@ pub struct Instance {
 impl Instance {
     pub fn new(id: InstanceId, capacity: usize) -> Self {
         let queue = Queue::new(id.clone(), capacity);
-        Self { id, queue, subscriptions: Vec::new(), last_activity: std::time::Instant::now() }
+        Self {
+            id,
+            queue,
+            subscriptions: Vec::new(),
+            last_activity: std::time::Instant::now(),
+        }
     }
 }
 

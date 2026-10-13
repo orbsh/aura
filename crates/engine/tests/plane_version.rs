@@ -6,7 +6,6 @@
 //! matching marker boots; a stale marker is a boot error naming the version
 //! and the wipe.
 
-
 #[tokio::test]
 #[cfg(feature = "fjall")]
 async fn fresh_store_seeds_the_marker_and_boots() {
@@ -34,8 +33,7 @@ async fn stale_marker_is_a_boot_error_with_the_wipe_instruction() {
     aura_engine::Engine::start(&config).await.unwrap();
     // Simulate an older-layout store: rewind the marker.
     {
-        let db = fjall::Database::create_or_recover(fjall::Config::new(dir.path()))
-            .unwrap();
+        let db = fjall::Database::create_or_recover(fjall::Config::new(dir.path())).unwrap();
         let store = okm_core::FjallStore::from_db(db, "aura_mq").unwrap();
         use okm_core::storage::VirtualStorage;
         store.put(

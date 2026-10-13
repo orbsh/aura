@@ -3,8 +3,8 @@
 
 use super::Realm;
 use crate::{mq, store_exec};
-use aura_booth::BoothType;
 use aura_booth::call::CallSpec;
+use aura_booth::BoothType;
 use std::time::Duration;
 
 impl Realm {
@@ -23,7 +23,8 @@ impl Realm {
                 (0, None)
             }
         };
-        self.persisted_schemas.insert(booth.name.clone(), schema.clone());
+        self.persisted_schemas
+            .insert(booth.name.clone(), schema.clone());
         self.store_plans.remove(&booth.name);
         if let Some(schema) = schema {
             match store_exec::StorePlan::from_schema(ns as u16, &schema) {
@@ -66,9 +67,11 @@ impl Realm {
         }
         for decl in &booth.receives {
             match &decl.resolution {
-                aura_booth::RouteResolution::Scan { collection, index, probe_field }
-                    if !decl.wildcard =>
-                {
+                aura_booth::RouteResolution::Scan {
+                    collection,
+                    index,
+                    probe_field,
+                } if !decl.wildcard => {
                     self.router.on_resolve(
                         decl.event.clone(),
                         &booth.name,
@@ -89,8 +92,17 @@ impl Realm {
                 // delivery by the `_ if wildcard` arm above.
                 _ => {}
             }
-            if let Err(e) = mq::route_put(&self.mq, &decl.event, &booth.name, &decl.resolution, decl.wildcard) {
-                eprintln!("route persist failed for {}/{}: {e}", decl.event, booth.name);
+            if let Err(e) = mq::route_put(
+                &self.mq,
+                &decl.event,
+                &booth.name,
+                &decl.resolution,
+                decl.wildcard,
+            ) {
+                eprintln!(
+                    "route persist failed for {}/{}: {e}",
+                    decl.event, booth.name
+                );
             }
         }
         self.types.insert(booth.name.clone(), booth);

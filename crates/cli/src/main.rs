@@ -19,7 +19,9 @@ const CALLER: &str = r#"
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = aura_config::EngineConfig::default();
-    let engine = aura_engine::Engine::start(&config).await.expect("engine boot");
+    let engine = aura_engine::Engine::start(&config)
+        .await
+        .expect("engine boot");
 
     // Echo Booth: define → invoke → return. The Phase 0 acceptance path,
     // now as a script booth.
@@ -27,8 +29,13 @@ async fn main() -> anyhow::Result<()> {
         .register(BoothType::script("echo", "steel", ECHO))
         .await?;
 
-    let target = InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("a1".into()) };
-    let result = engine.invoke(target, "execute", serde_json::json!({"hello": "aura"})).await?;
+    let target = InstanceId {
+        booth_type: "echo".into(),
+        key: InstanceKey::Named("a1".into()),
+    };
+    let result = engine
+        .invoke(target, "execute", serde_json::json!({"hello": "aura"}))
+        .await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
 
     // Chained invoke: echo.a2 invoked BY caller.c1's ctx — exercises ctx.invoke
@@ -39,7 +46,10 @@ async fn main() -> anyhow::Result<()> {
 
     let result = engine
         .invoke(
-            InstanceId { booth_type: "caller".into(), key: InstanceKey::Named("c1".into()) },
+            InstanceId {
+                booth_type: "caller".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
             "execute",
             serde_json::json!(null),
         )

@@ -90,10 +90,16 @@ pub struct S3Config {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Io { path: String, source: std::io::Error },
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
     /// miette Report: knus errors are Diagnostics (rich spans), not
     /// std::error::Error — same wrapping as krystallizer's config.
-    Parse { path: String, report: miette::Report },
+    Parse {
+        path: String,
+        report: miette::Report,
+    },
 }
 
 impl std::fmt::Display for ConfigError {

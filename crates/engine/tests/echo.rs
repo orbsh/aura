@@ -29,13 +29,18 @@ fn echo_type() -> BoothType {
 
 #[tokio::test]
 async fn invoke_returns_handler_result() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine.register(echo_type()).await.unwrap();
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("a1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "echo".into(),
+                key: InstanceKey::Named("a1".into()),
+            },
+            "execute",
             serde_json::json!({"hello": "aura"}),
         )
         .await
@@ -45,7 +50,9 @@ async fn invoke_returns_handler_result() {
 
 #[tokio::test]
 async fn invoke_routes_through_realm() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine.register(echo_type()).await.unwrap();
 
     // `caller` invokes `echo` via ctx.invoke — the only call surface an
@@ -57,8 +64,11 @@ async fn invoke_routes_through_realm() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "caller".into(), key: InstanceKey::Named("c1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "caller".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
+            "execute",
             serde_json::json!({"target_key": "a2"}),
         )
         .await
@@ -68,11 +78,16 @@ async fn invoke_routes_through_realm() {
 
 #[tokio::test]
 async fn unknown_booth_type_is_error_value() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let err = engine
         .invoke(
-            InstanceId { booth_type: "ghost".into(), key: InstanceKey::Named("x".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "ghost".into(),
+                key: InstanceKey::Named("x".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -82,13 +97,18 @@ async fn unknown_booth_type_is_error_value() {
 
 #[tokio::test]
 async fn instance_key_activates_distinct_instances() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine.register(echo_type()).await.unwrap();
 
     for key in ["a1", "a2"] {
         let out = engine
             .invoke(
-                InstanceId { booth_type: "echo".into(), key: InstanceKey::Named(key.into()) },
+                InstanceId {
+                    booth_type: "echo".into(),
+                    key: InstanceKey::Named(key.into()),
+                },
                 "execute",
                 serde_json::json!({"key": key}),
             )
@@ -106,7 +126,9 @@ async fn instance_key_activates_distinct_instances() {
 // type's declared collections through ctx.store.emit.)
 #[tokio::test]
 async fn state_survives_scale_to_zero() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     // RMW via the ctx bridge: read the whole field map, merge, write back.
     const COUNTER: &str = r#"
 (define (schema) (hash "storage" (hash "collections" (hash "counters" (hash "schema"
@@ -124,20 +146,47 @@ async fn state_survives_scale_to_zero() {
                                     "key" (hash "id" 1) "doc" (hash "count" (+ n 1))))))
     (hash "count" (+ n 1))))
 "#;
-    engine.register(
-        BoothType::script("counter", "steel", COUNTER)
-    ).await.unwrap();
+    engine
+        .register(BoothType::script("counter", "steel", COUNTER))
+        .await
+        .unwrap();
 
-    let target = InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k1".into()) };
-    assert_eq!(engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 1}));
-    assert_eq!(engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 2}));
+    let target = InstanceId {
+        booth_type: "counter".into(),
+        key: InstanceKey::Named("k1".into()),
+    };
+    assert_eq!(
+        engine
+            .invoke(target.clone(), "execute", serde_json::json!(null))
+            .await
+            .unwrap(),
+        serde_json::json!({"count": 1})
+    );
+    assert_eq!(
+        engine
+            .invoke(target.clone(), "execute", serde_json::json!(null))
+            .await
+            .unwrap(),
+        serde_json::json!({"count": 2})
+    );
 
     // Force eviction: everything idle is older than 0s.
-    engine.realm.lock().await.evict_idle(engine.realm.clone()).await;
+    engine
+        .realm
+        .lock()
+        .await
+        .evict_idle(engine.realm.clone())
+        .await;
 
     // Resident is gone; state survives. Next touch reactivates (on_wake)
     // and the count continues.
-    assert_eq!(engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap(), serde_json::json!({"count": 3}));
+    assert_eq!(
+        engine
+            .invoke(target, "execute", serde_json::json!(null))
+            .await
+            .unwrap(),
+        serde_json::json!({"count": 3})
+    );
 }
 
 // ------------------------------------------------------- Phase 2 (script) --
@@ -149,7 +198,9 @@ async fn state_survives_scale_to_zero() {
 // path): the spawn spec is `nu <author.nu>`, pipelines run untouched.
 #[tokio::test]
 async fn nu_induction_script_booth_through_realm() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../effector/crates/runtime/examples/induction_nu.nu"
@@ -165,8 +216,11 @@ async fn nu_induction_script_booth_through_realm() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "nu-op".into(), key: InstanceKey::Named("n1".into()) },
-                "sum",
+            InstanceId {
+                booth_type: "nu-op".into(),
+                key: InstanceKey::Named("n1".into()),
+            },
+            "sum",
             serde_json::json!({"items": [1, 2, 3]}),
         )
         .await
@@ -177,7 +231,9 @@ async fn nu_induction_script_booth_through_realm() {
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn python_script_booth() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(aura_booth::BoothType::script(
             "py-op",
@@ -186,12 +242,16 @@ async fn python_script_booth() {
     return {"doubled": args["x"] * 2}
 "#,
         ))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-op".into(), key: InstanceKey::Named("p1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "py-op".into(),
+                key: InstanceKey::Named("p1".into()),
+            },
+            "execute",
             serde_json::json!({"x": 21}),
         )
         .await
@@ -204,19 +264,21 @@ async fn python_script_booth() {
 // (Carrier-free assertion: the unknown language never resolves a session.)
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
-        .register(aura_booth::BoothType::script(
-            "koto-op",
-            "koto",
-            "1 + 2",
-        ))
-        .await.unwrap();
+        .register(aura_booth::BoothType::script("koto-op", "koto", "1 + 2"))
+        .await
+        .unwrap();
 
     let err = engine
         .invoke(
-            InstanceId { booth_type: "koto-op".into(), key: InstanceKey::Named("k1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "koto-op".into(),
+                key: InstanceKey::Named("k1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -230,11 +292,19 @@ async fn idle_ttl_evicts_automatically() {
     // The evictor ticks every 5s; use a 0s TTL and drive one tick manually
     // via the realm to keep the test fast — the tick loop itself is
     // exercised by the running engine.
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine.register(echo_type()).await.unwrap();
 
-    let target = InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("ttl".into()) };
-    engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
+    let target = InstanceId {
+        booth_type: "echo".into(),
+        key: InstanceKey::Named("ttl".into()),
+    };
+    engine
+        .invoke(target, "execute", serde_json::json!(null))
+        .await
+        .unwrap();
 
     {
         let mut realm = engine.realm.try_lock().unwrap();
@@ -250,27 +320,35 @@ async fn idle_ttl_evicts_automatically() {
 // turn-executor declares a long TTL; entity booths fall back to default).
 #[tokio::test]
 async fn per_type_idle_ttl_overrides_realm_default() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
 
     // "dweller": 10-minute TTL (long-lived resident, the retention-window
     // shape). "echo": no override — realm default applies.
-    let dweller = BoothType::script("dweller", "steel", ECHO)
-        .with_idle_ttl(Duration::from_secs(600));
+    let dweller =
+        BoothType::script("dweller", "steel", ECHO).with_idle_ttl(Duration::from_secs(600));
     engine.register(dweller).await.unwrap();
     engine.register(echo_type()).await.unwrap();
 
     engine
         .invoke(
-            InstanceId { booth_type: "dweller".into(), key: InstanceKey::Named("d1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "dweller".into(),
+                key: InstanceKey::Named("d1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
         .unwrap();
     engine
         .invoke(
-            InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("e1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "echo".into(),
+                key: InstanceKey::Named("e1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -303,7 +381,9 @@ async fn per_type_idle_ttl_overrides_realm_default() {
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn steel_script_ctx_bridge() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
 
     // Target invoked from the script: echoes back its args.
     engine.register(echo_type()).await.unwrap();
@@ -333,8 +413,11 @@ async fn steel_script_ctx_bridge() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "steel-ctx".into(), key: InstanceKey::Named("s1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "steel-ctx".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -351,7 +434,9 @@ async fn steel_script_ctx_bridge() {
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn python_script_ctx_bridge() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine.register(echo_type()).await.unwrap();
     engine
         .register(aura_booth::BoothType::script(
@@ -384,8 +469,11 @@ def execute(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-ctx".into(), key: InstanceKey::Named("p1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "py-ctx".into(),
+                key: InstanceKey::Named("p1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -400,7 +488,9 @@ def execute(args):
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn idle_eviction_drops_the_resident_session() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(aura_booth::BoothType::script(
             "py-resident",
@@ -415,12 +505,26 @@ def bump(args):
     return {"memory": memory}
 "#,
         ))
-        .await.unwrap();
+        .await
+        .unwrap();
 
-    let target = InstanceId { booth_type: "py-resident".into(), key: InstanceKey::Named("r1".into()) };
-    engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
-    let out = engine.invoke(target.clone(), "bump", serde_json::json!(null)).await.unwrap();
-    assert_eq!(out, serde_json::json!({"memory": 2}), "same session accumulates");
+    let target = InstanceId {
+        booth_type: "py-resident".into(),
+        key: InstanceKey::Named("r1".into()),
+    };
+    engine
+        .invoke(target.clone(), "bump", serde_json::json!(null))
+        .await
+        .unwrap();
+    let out = engine
+        .invoke(target.clone(), "bump", serde_json::json!(null))
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({"memory": 2}),
+        "same session accumulates"
+    );
 
     {
         let mut realm = engine.realm.try_lock().unwrap();
@@ -429,10 +533,16 @@ def bump(args):
         assert_eq!(evicted.len(), 1);
     }
 
-    let out = engine.invoke(target, "bump", serde_json::json!(null)).await.unwrap();
-    assert_eq!(out, serde_json::json!({"memory": 1}), "evicted session restarted fresh");
+    let out = engine
+        .invoke(target, "bump", serde_json::json!(null))
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({"memory": 1}),
+        "evicted session restarted fresh"
+    );
 }
-
 
 // Script-declared TTL: `interface_schema()` introspection seeds
 // `BoothType.idle_ttl` at registration (host ← script; the script never
@@ -441,7 +551,9 @@ def bump(args):
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn script_interface_schema_declares_idle_ttl() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(aura_booth::BoothType::script(
             "py-dweller",
@@ -454,7 +566,8 @@ def execute(args):
     return {"ok": True}
 "#,
         ))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // Register introspected the declaration: the type now carries a
     // per-type TTL even though the host never called with_idle_ttl.
@@ -477,7 +590,8 @@ def execute(args):
     return {"ok": True}
 "#,
         ))
-        .await.unwrap();
+        .await
+        .unwrap();
     {
         let realm = engine.realm.try_lock().unwrap();
         let booth = realm.booth_type("py-plain").unwrap();
@@ -537,8 +651,11 @@ async fn script_booth_definition_survives_restart() {
     }
     let out = engine
         .invoke(
-            InstanceId { booth_type: "persisted".into(), key: InstanceKey::Named("k1".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "persisted".into(),
+                key: InstanceKey::Named("k1".into()),
+            },
+            "execute",
             serde_json::json!(null),
         )
         .await
@@ -552,7 +669,9 @@ async fn script_booth_definition_survives_restart() {
 // introspection). Nu booths declare TTL in script like python/steel.
 #[tokio::test]
 async fn induction_nu_interface_schema_declares_idle_ttl() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../effector/crates/runtime/examples/induction_nu.nu"
@@ -581,7 +700,9 @@ async fn induction_nu_interface_schema_declares_idle_ttl() {
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn python_on_decorators_derive_receives_and_routes() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(aura_booth::BoothType::script(
             "cart",
@@ -607,10 +728,19 @@ def audit(args):
     let routes = realm.router.matches("add_to_cart");
     assert_eq!(routes.len(), 1, "add_to_cart routed to cart");
     assert_eq!(routes[0].booth_type, "cart");
-    assert!(matches!(&routes[0].resolution, aura_booth::RouteResolution::Field(f) if f == "user_id"));
+    assert!(
+        matches!(&routes[0].resolution, aura_booth::RouteResolution::Field(f) if f == "user_id")
+    );
     let routes = realm.router.matches("remove_from_cart");
-    assert_eq!(routes.len(), 1, "remove_from_cart routed (no key → singleton)");
-    assert!(matches!(&routes[0].resolution, aura_booth::RouteResolution::Singleton));
+    assert_eq!(
+        routes.len(),
+        1,
+        "remove_from_cart routed (no key → singleton)"
+    );
+    assert!(matches!(
+        &routes[0].resolution,
+        aura_booth::RouteResolution::Singleton
+    ));
     let routes = realm.router.matches("order.created");
     assert_eq!(routes.len(), 1, "order.* wildcard routed");
     assert!(realm.router.matches("unrelated").is_empty());
@@ -623,7 +753,9 @@ def audit(args):
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn re_register_replaces_routes() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let v1 = r#"
 (define (interface_schema args)
   (hash "receives" (hash "evt.a" (hash "key" "k")
@@ -643,7 +775,10 @@ async fn re_register_replaces_routes() {
     // Resident on v1 first — the swap must rebuild the session on v2.
     let out = engine
         .invoke(
-            aura_booth::InstanceId { booth_type: "swapper".into(), key: InstanceKey::Named("x".into()) },
+            aura_booth::InstanceId {
+                booth_type: "swapper".into(),
+                key: InstanceKey::Named("x".into()),
+            },
             "a",
             serde_json::json!({"k": "x"}),
         )
@@ -663,8 +798,15 @@ async fn re_register_replaces_routes() {
         .unwrap();
     {
         let realm = engine.realm.try_lock().unwrap();
-        assert_eq!(realm.router.matches("evt.a").len(), 1, "no duplicate after re-register");
-        assert!(realm.router.matches("evt.b").is_empty(), "dropped declaration stops routing");
+        assert_eq!(
+            realm.router.matches("evt.a").len(),
+            1,
+            "no duplicate after re-register"
+        );
+        assert!(
+            realm.router.matches("evt.b").is_empty(),
+            "dropped declaration stops routing"
+        );
         // Persisted registry agrees with the router (same-side durability).
         let rows = aura_realm::mq::routes_of_booth(&realm.mq.clone(), "swapper").unwrap();
         assert_eq!(rows.len(), 1, "EventRoute table holds only evt.a: {rows:?}");
@@ -673,13 +815,19 @@ async fn re_register_replaces_routes() {
     // cold start loads v2.
     let out = engine
         .invoke(
-            aura_booth::InstanceId { booth_type: "swapper".into(), key: InstanceKey::Named("x".into()) },
+            aura_booth::InstanceId {
+                booth_type: "swapper".into(),
+                key: InstanceKey::Named("x".into()),
+            },
             "a",
             serde_json::json!({"k": "x"}),
         )
         .await
         .unwrap();
-    assert_eq!(out["got"], "v2", "resident session replaced with the new version");
+    assert_eq!(
+        out["got"], "v2",
+        "resident session replaced with the new version"
+    );
 }
 
 // ADR-0026 §3 + §4: the type declares storage collections through its
@@ -690,7 +838,9 @@ async fn re_register_replaces_routes() {
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn store_emit_roundtrip_and_interface_schema_read() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let full_src = r#"
 (define (interface_schema args)
   (hash "storage"
@@ -729,7 +879,10 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
         .await
         .expect("register store-keeper");
 
-    let target = aura_booth::InstanceId { booth_type: "store-keeper".into(), key: InstanceKey::Named("k".into()) };
+    let target = aura_booth::InstanceId {
+        booth_type: "store-keeper".into(),
+        key: InstanceKey::Named("k".into()),
+    };
 
     // The type's plan resolved at registration: ctx.store is available.
     engine

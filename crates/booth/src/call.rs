@@ -50,10 +50,16 @@ pub struct CallSpec {
 
 impl CallSpec {
     pub fn hot(timeout: Duration) -> Self {
-        Self { tier: Tier::Hot, timeout: Some(timeout) }
+        Self {
+            tier: Tier::Hot,
+            timeout: Some(timeout),
+        }
     }
     pub fn cold() -> Self {
-        Self { tier: Tier::Cold, timeout: None }
+        Self {
+            tier: Tier::Cold,
+            timeout: None,
+        }
     }
 }
 

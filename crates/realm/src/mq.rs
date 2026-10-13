@@ -50,10 +50,10 @@
 //! The WRITE HEAD is the second reduce on the same table, `HighWater(seq)`
 //! (ADR-0041 §3).
 
+use crate::value::{dyn_to_json, json_to_dyn};
 use okm_core::document::Collection;
-use okm_core::{KeyEncode, Document, DocumentEncode, ReduceCodec};
 use okm_core::storage::VirtualStorage as _;
-use crate::value::{json_to_dyn, dyn_to_json};
+use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 // ---------------------------------------------------------------------------
 // Tables
@@ -300,7 +300,10 @@ impl MqStore {
         Self::with_engine(MqEngine::Test(okm_core::TestStore::default()))
     }
     fn with_engine(engine: MqEngine) -> Self {
-        Self { prefix: Vec::new(), inner: engine }
+        Self {
+            prefix: Vec::new(),
+            inner: engine,
+        }
     }
     /// A realm-qualified handle: every key enters as
     /// `[prefix][inner key]`; the inner engine stays untouched.
@@ -319,7 +322,10 @@ impl MqStore {
         let prefix = ns.to_be_bytes().to_vec();
         let mut p = prefix;
         p.extend_from_slice(&inner.prefix);
-        Self { prefix: p, inner: inner.inner.clone() }
+        Self {
+            prefix: p,
+            inner: inner.inner.clone(),
+        }
     }
     /// The realm-prefixed handle (ADR-0028: the outer isolation axis is
     /// a realm, not a "namespace"): `[u16 BE len][realm name]` prepended
@@ -329,7 +335,10 @@ impl MqStore {
         prefix.extend_from_slice(name.as_bytes());
         let mut p = prefix.clone();
         p.extend_from_slice(&inner.prefix);
-        Self { prefix: p, inner: inner.inner.clone() }
+        Self {
+            prefix: p,
+            inner: inner.inner.clone(),
+        }
     }
     fn qualified(&self, key: &[u8]) -> Vec<u8> {
         let mut k = self.prefix.clone();
@@ -397,7 +406,12 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
         }
     }
     let id = max_id + 1;
-    t.put(&EventNameKey { id }, &EventName { name: name.to_string() });
+    t.put(
+        &EventNameKey { id },
+        &EventName {
+            name: name.to_string(),
+        },
+    );
     Ok(id)
 }
 
@@ -423,7 +437,8 @@ pub fn instance_key_id(store: &MqStore, part: &InstanceKey) -> anyhow::Result<u3
 }
 
 fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
+    let mut t =
+        Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
     for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
@@ -438,11 +453,22 @@ fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
         t.store(),
         <InstanceKeyRegistry as Document>::NS_PREFIX,
         &InstanceKeyRegistryKey { id: 0 },
-        &InstanceKeyRegistry { name: String::new(), id: 0, global: 0 },
+        &InstanceKeyRegistry {
+            name: String::new(),
+            id: 0,
+            global: 0,
+        },
     )
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
-    t.put(&InstanceKeyRegistryKey { id }, &InstanceKeyRegistry { name: name.to_string(), id, global: 0 });
+    t.put(
+        &InstanceKeyRegistryKey { id },
+        &InstanceKeyRegistry {
+            name: name.to_string(),
+            id,
+            global: 0,
+        },
+    );
     Ok(id)
 }
 
@@ -503,7 +529,11 @@ fn head_seq(store: &MqStore, event_id: u32, instance_key_id: u32) -> anyhow::Res
     Ok(okm_core::reduce_get::<MqStore, __OkmReduce_MqData_1>(
         store,
         &header,
-        &MqDataKey { event_id, instance_key_id, seq: 0 },
+        &MqDataKey {
+            event_id,
+            instance_key_id,
+            seq: 0,
+        },
         &MqData {},
     )
     .unwrap_or(0))
@@ -527,7 +557,14 @@ pub fn append(
     let instance_key_id = instance_key_id(store, part)?;
     let seq = head_seq(store, event_id, instance_key_id)? + 1;
     let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
-    t.put(&MqDataKey { event_id, instance_key_id, seq }, &MqData {});
+    t.put(
+        &MqDataKey {
+            event_id,
+            instance_key_id,
+            seq,
+        },
+        &MqData {},
+    );
     // Payload → dynamic segment, fully native. The emit chain guarantees
     // an object top (routing reads the instance key from data fields;
     // handlers receive objects) — no wrapping convention exists here or
@@ -543,7 +580,14 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
-    t.put_document(&MqDataKey { event_id, instance_key_id, seq }, &obj);
+    t.put_document(
+        &MqDataKey {
+            event_id,
+            instance_key_id,
+            seq,
+        },
+        &obj,
+    );
     Ok(seq)
 }
 
@@ -555,7 +599,12 @@ pub const SINGLETON_KEY_ID: u32 = 0;
 
 /// The subscriber's cursor (0 = nothing consumed). The subscriber is the
 /// booth TYPE (ADR-0038 §2): one dictionary id, no participant name.
-pub fn cursor(store: &MqStore, event: &str, part: &InstanceKey, booth_type: &str) -> anyhow::Result<u64> {
+pub fn cursor(
+    store: &MqStore,
+    event: &str,
+    part: &InstanceKey,
+    booth_type: &str,
+) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
@@ -583,12 +632,22 @@ pub fn advance(
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    let key = MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id };
+    let key = MqCursorKey {
+        event_id,
+        instance_key_id: instance_key_id(store, part)?,
+        booth_id,
+    };
     let current = t.get(&key).map(|c| c.cursor).unwrap_or(0);
     if seq <= current {
         return Ok(());
     }
-    t.put(&key, &MqCursor { cursor: seq, last_active_ms: now_ms() });
+    t.put(
+        &key,
+        &MqCursor {
+            cursor: seq,
+            last_active_ms: now_ms(),
+        },
+    );
     Ok(())
 }
 
@@ -618,25 +677,35 @@ pub fn backlog(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq > after_seq
-            && t.get(&MqDataKey { event_id, instance_key_id, seq }).is_some() {
-                // Reconstruct from the dynamic segment (name-keyed).
-                let v = match t.get_document(&MqDataKey { event_id, instance_key_id, seq }) {
-                    Some(obj) if !obj.contains_key("_root") => {
-                        let mut m = serde_json::Map::new();
-                        for (k, dv) in &obj {
-                            m.insert(k.clone(), dyn_to_json(dv));
-                        }
-                        serde_json::Value::Object(m)
+            && t.get(&MqDataKey {
+                event_id,
+                instance_key_id,
+                seq,
+            })
+            .is_some()
+        {
+            // Reconstruct from the dynamic segment (name-keyed).
+            let v = match t.get_document(&MqDataKey {
+                event_id,
+                instance_key_id,
+                seq,
+            }) {
+                Some(obj) if !obj.contains_key("_root") => {
+                    let mut m = serde_json::Map::new();
+                    for (k, dv) in &obj {
+                        m.insert(k.clone(), dyn_to_json(dv));
                     }
-                    // Non-object top level came in as a single _root field.
-                    Some(obj) => match obj.get("_root") {
-                        Some(dv) => dyn_to_json(dv),
-                        None => serde_json::Value::Null,
-                    },
+                    serde_json::Value::Object(m)
+                }
+                // Non-object top level came in as a single _root field.
+                Some(obj) => match obj.get("_root") {
+                    Some(dv) => dyn_to_json(dv),
                     None => serde_json::Value::Null,
-                };
-                out.push((seq, v));
-            }
+                },
+                None => serde_json::Value::Null,
+            };
+            out.push((seq, v));
+        }
     }
     out.sort_by_key(|(s, _)| *s);
     Ok(out)
@@ -654,15 +723,17 @@ pub fn depth(store: &MqStore, event: &str, part: &InstanceKey) -> anyhow::Result
     let mut header = Vec::with_capacity(4);
     header.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     header.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    Ok(
-        okm_core::reduce_get::<MqStore, __OkmReduce_MqData_0>(
-            store,
-            &header,
-            &MqDataKey { event_id, instance_key_id, seq: 0 },
-            &MqData {},
-        )
-        .unwrap_or(0),
+    Ok(okm_core::reduce_get::<MqStore, __OkmReduce_MqData_0>(
+        store,
+        &header,
+        &MqDataKey {
+            event_id,
+            instance_key_id,
+            seq: 0,
+        },
+        &MqData {},
     )
+    .unwrap_or(0))
 }
 
 /// Rewind a cursor BELOW its current value (test-support only — the
@@ -681,8 +752,15 @@ pub fn rewind_cursor(
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
-        &MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id },
-        &MqCursor { cursor: seq, last_active_ms: now_ms() },
+        &MqCursorKey {
+            event_id,
+            instance_key_id: instance_key_id(store, part)?,
+            booth_id,
+        },
+        &MqCursor {
+            cursor: seq,
+            last_active_ms: now_ms(),
+        },
     );
     Ok(())
 }
@@ -701,9 +779,19 @@ pub fn age_cursor(
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    let key = MqCursorKey { event_id, instance_key_id: instance_key_id(store, part)?, booth_id };
+    let key = MqCursorKey {
+        event_id,
+        instance_key_id: instance_key_id(store, part)?,
+        booth_id,
+    };
     let cursor = t.get(&key).map(|c| c.cursor).unwrap_or(0);
-    t.put(&key, &MqCursor { cursor, last_active_ms });
+    t.put(
+        &key,
+        &MqCursor {
+            cursor,
+            last_active_ms,
+        },
+    );
     Ok(())
 }
 
@@ -740,16 +828,40 @@ pub fn route_put(
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let (tag, key_field, collection, index, probe_field) = match resolution {
-        aura_booth::RouteResolution::Singleton => (0u8, String::new(), String::new(), String::new(), String::new()),
-        aura_booth::RouteResolution::Field(f) => (1u8, f.clone(), String::new(), String::new(), String::new()),
-        aura_booth::RouteResolution::Scan { collection, index, probe_field } => {
-            (2u8, String::new(), collection.clone(), index.clone(), probe_field.clone())
+        aura_booth::RouteResolution::Singleton => (
+            0u8,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        aura_booth::RouteResolution::Field(f) => {
+            (1u8, f.clone(), String::new(), String::new(), String::new())
         }
+        aura_booth::RouteResolution::Scan {
+            collection,
+            index,
+            probe_field,
+        } => (
+            2u8,
+            String::new(),
+            collection.clone(),
+            index.clone(),
+            probe_field.clone(),
+        ),
     };
     let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     t.put(
         &EventRouteKey { event_id, booth_id },
-        &EventRoute { booth_id, resolution: tag, key_field, collection, index, probe_field, wildcard: u8::from(is_wildcard) },
+        &EventRoute {
+            booth_id,
+            resolution: tag,
+            key_field,
+            collection,
+            index,
+            probe_field,
+            wildcard: u8::from(is_wildcard),
+        },
     );
     Ok(())
 }
@@ -812,7 +924,11 @@ pub fn routes_of_booth(
     let mut out = Vec::new();
     for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes()) {
         if let Some(row) = &hit.1 {
-            out.push((hit.0.decoded.event_id, row_resolution(row), row.wildcard != 0));
+            out.push((
+                hit.0.decoded.event_id,
+                row_resolution(row),
+                row.wildcard != 0,
+            ));
         }
     }
     Ok(out)
@@ -868,7 +984,11 @@ pub fn delete_before(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq < min_seq {
-            t.delete_by_pkey(&MqDataKey { event_id, instance_key_id, seq });
+            t.delete_by_pkey(&MqDataKey {
+                event_id,
+                instance_key_id,
+                seq,
+            });
             removed += 1;
         }
     }
@@ -899,7 +1019,11 @@ pub fn cursor_rows(
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);
-        let row = t.get(&MqCursorKey { event_id, instance_key_id, booth_id });
+        let row = t.get(&MqCursorKey {
+            event_id,
+            instance_key_id,
+            booth_id,
+        });
         out.push((
             booth_id,
             row.as_ref().map(|c| c.cursor).unwrap_or(0),
@@ -916,9 +1040,18 @@ pub fn cursor_rows(
 /// read the cursor back as 0 and re-deliver the surviving rows. This call
 /// is therefore only for rows already below the watermark (proof that
 /// nothing can replay).
-pub fn drop_cursor(store: &MqStore, event_id: u32, instance_key_id: u32, booth_id: u32) -> anyhow::Result<()> {
+pub fn drop_cursor(
+    store: &MqStore,
+    event_id: u32,
+    instance_key_id: u32,
+    booth_id: u32,
+) -> anyhow::Result<()> {
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    t.delete_by_pkey(&MqCursorKey { event_id, instance_key_id, booth_id });
+    t.delete_by_pkey(&MqCursorKey {
+        event_id,
+        instance_key_id,
+        booth_id,
+    });
     Ok(())
 }
 
@@ -971,7 +1104,8 @@ pub fn bound_instance_key(
                     return Ok(matches!(instance_key, aura_booth::InstanceKey::Singleton)
                         .then_some(InstanceKey::Singleton));
                 }
-                aura_booth::RouteResolution::Field(_) | aura_booth::RouteResolution::Scan { .. } => {
+                aura_booth::RouteResolution::Field(_)
+                | aura_booth::RouteResolution::Scan { .. } => {
                     return Ok(Some(InstanceKey::Named(instance_key.render().to_string())));
                 }
             }

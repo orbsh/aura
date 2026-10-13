@@ -37,7 +37,12 @@ pub struct PersistedBooth {
 
 impl PersistedBooth {
     pub fn from_type(booth: &BoothType) -> Option<Self> {
-        let crate::Body::Script { language, source, encoding } = &booth.body else {
+        let crate::Body::Script {
+            language,
+            source,
+            encoding,
+        } = &booth.body
+        else {
             return None; // Rust handlers are compile-time; nothing to persist
         };
         Some(Self {

@@ -32,55 +32,100 @@ fn script() -> &'static str {
 }
 
 fn valve() -> InstanceId {
-    InstanceId { booth_type: "valve".into(), key: BKey::Named("k1".into()) }
+    InstanceId {
+        booth_type: "valve".into(),
+        key: BKey::Named("k1".into()),
+    }
 }
 
 #[tokio::test]
 async fn relief_valve_bridges_reaches_the_store_and_skip_moves_the_cursor() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("valve", "steel", script()))
         .await
         .unwrap();
 
     // Warm the resident session.
-    Realm::emit(&engine.realm, None, "tick", serde_json::json!({
-        "event": "tick", "user_id": "k1", "n": 0
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "tick",
+        serde_json::json!({
+            "event": "tick", "user_id": "k1", "n": 0
+        }),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     for n in 1..=3 {
-        Realm::emit(&engine.realm, None, "tick", serde_json::json!({
-            "event": "tick", "user_id": "k1", "n": n
-        })).await.unwrap();
+        Realm::emit(
+            &engine.realm,
+            None,
+            "tick",
+            serde_json::json!({
+                "event": "tick", "user_id": "k1", "n": n
+            }),
+        )
+        .await
+        .unwrap();
     }
 
     // Handler-side depth == store-side depth (same point read), and the
     // route resolution through the persisted registry worked at all.
-    let d = engine.invoke(valve(), "depth", serde_json::json!({ "user_id": "k1" })).await.unwrap();
+    let d = engine
+        .invoke(valve(), "depth", serde_json::json!({ "user_id": "k1" }))
+        .await
+        .unwrap();
     let vs = engine.realm.try_lock().unwrap().mq.clone();
     let stored = mq::depth(&vs, "tick", &named("k1")).unwrap();
-    assert_eq!(d.as_u64(), Some(stored), "handler read == store read: {d} vs {stored}");
+    assert_eq!(
+        d.as_u64(),
+        Some(stored),
+        "handler read == store read: {d} vs {stored}"
+    );
 
     // An event this booth type has no route for = an error value, never
     // a silent no-op (the valve answers to the subscription truth).
-    let err = engine.invoke(valve(), "peek", serde_json::json!({ "ev": "other.event" })).await;
+    let err = engine
+        .invoke(valve(), "peek", serde_json::json!({ "ev": "other.event" }))
+        .await;
     assert!(err.is_err(), "unbound event surfaces as a failure value");
 
     // Skip-to-now: the cursor jumps to the head — the stored backlog is
     // ahead of no consumer anymore...
-    engine.invoke(valve(), "skip", serde_json::json!({ "user_id": "k1" })).await.unwrap();
+    engine
+        .invoke(valve(), "skip", serde_json::json!({ "user_id": "k1" }))
+        .await
+        .unwrap();
     let cur = mq::cursor(&vs, "tick", &named("k1"), "valve").unwrap();
     let pending = mq::backlog(&vs, "tick", &named("k1"), cur).unwrap();
-    assert!(pending.is_empty(), "skipped: nothing pending after the head cursor");
+    assert!(
+        pending.is_empty(),
+        "skipped: nothing pending after the head cursor"
+    );
 
     // ...and a new emit past the skip drains normally — the valve does
     // not kill the subscription.
-    Realm::emit(&engine.realm, None, "tick", serde_json::json!({
-        "event": "tick", "user_id": "k1", "n": 99
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "tick",
+        serde_json::json!({
+            "event": "tick", "user_id": "k1", "n": 99
+        }),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let cur = mq::cursor(&vs, "tick", &named("k1"), "valve").unwrap();
-    assert!(mq::backlog(&vs, "tick", &named("k1"), cur).unwrap().is_empty(),
-        "post-skip events still flow to the cursor");
+    assert!(
+        mq::backlog(&vs, "tick", &named("k1"), cur)
+            .unwrap()
+            .is_empty(),
+        "post-skip events still flow to the cursor"
+    );
 }

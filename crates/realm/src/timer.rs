@@ -40,7 +40,10 @@ enum Entry {
     /// Deliver-type (ADR-0016 §1): `__on_timer` queue job with a tag.
     Deliver { target: InstanceId, tag: String },
     /// Reclaim-type (revision §2): evict / watchdog expiry action.
-    Reclaim { target: InstanceId, kind: ReclaimKind },
+    Reclaim {
+        target: InstanceId,
+        kind: ReclaimKind,
+    },
 }
 
 impl Entry {
@@ -55,7 +58,11 @@ impl Entry {
 enum Command {
     /// Pre-allocated id: the caller learns nothing back — ids come from a
     /// shared atomic so register is fully synchronous on the caller side.
-    Register { id: TimerId, entry: Entry, at: Duration },
+    Register {
+        id: TimerId,
+        entry: Entry,
+        at: Duration,
+    },
     Cancel(TimerId),
     /// Reclaim entries only: the job-entry path voids pending idle/
     /// watchdog timers (work arrived) but must NOT touch the instance's
@@ -125,13 +132,17 @@ impl TimerHandle {
     /// arrived, so the idle/watchdog bookkeeping is void — the ctx.timer
     /// deliveries stay armed).
     pub fn cancel_reclaim_target(&self, target: &InstanceId) {
-        let _ = self.tx.send(Command::CancelReclaimTarget(Box::new(target.clone())));
+        let _ = self
+            .tx
+            .send(Command::CancelReclaimTarget(Box::new(target.clone())));
     }
 
     /// Cancel EVERY timer targeting an instance (eviction path: a dead
     /// instance's pending deliveries must not fire either).
     pub fn cancel_target(&self, target: &InstanceId) {
-        let _ = self.tx.send(Command::CancelAllTarget(Box::new(target.clone())));
+        let _ = self
+            .tx
+            .send(Command::CancelAllTarget(Box::new(target.clone())));
     }
 }
 
@@ -207,10 +218,9 @@ impl TimerDriver {
     async fn apply(&mut self, cmd: Command) {
         match cmd {
             Command::Register { id, entry, at } => {
-                let key = self.queue.insert_at(
-                    (id, entry.clone()),
-                    tokio::time::Instant::now() + at,
-                );
+                let key = self
+                    .queue
+                    .insert_at((id, entry.clone()), tokio::time::Instant::now() + at);
                 self.index.insert(id, (key, entry));
             }
             Command::Cancel(id) => self.cancel(&id),
@@ -230,9 +240,7 @@ impl TimerDriver {
         let ids: Vec<TimerId> = self
             .index
             .iter()
-            .filter(|(_, (_, e))| {
-                e.targets(target) && (all || matches!(e, Entry::Reclaim { .. }))
-            })
+            .filter(|(_, (_, e))| e.targets(target) && (all || matches!(e, Entry::Reclaim { .. })))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -241,21 +249,21 @@ impl TimerDriver {
     }
 
     async fn fire(&self, entry: Entry) {
-        let Some(realm) = std::sync::Weak::upgrade(&self.realm) else { return };
+        let Some(realm) = std::sync::Weak::upgrade(&self.realm) else {
+            return;
+        };
         match entry {
             Entry::Deliver { target, tag } => {
                 crate::Realm::deliver_timer(realm.clone(), target, tag).await;
             }
-            Entry::Reclaim { target, kind } => {
-                match kind {
-                    ReclaimKind::Idle => {
-                        crate::Realm::evict_instance(realm.clone(), &target).await;
-                    }
-                    ReclaimKind::Watchdog => {
-                        crate::Realm::watchdog_expiry(realm.clone(), &target).await;
-                    }
+            Entry::Reclaim { target, kind } => match kind {
+                ReclaimKind::Idle => {
+                    crate::Realm::evict_instance(realm.clone(), &target).await;
                 }
-            }
+                ReclaimKind::Watchdog => {
+                    crate::Realm::watchdog_expiry(realm.clone(), &target).await;
+                }
+            },
         }
     }
 }

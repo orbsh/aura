@@ -41,14 +41,22 @@ def read(args):
 
     #[tokio::test]
     async fn decorator_schema_resolves_the_store_plan() {
-        let engine = Engine::start(&Default::default()).await.expect("engine boot");
-        engine.register(BoothType::script("py-counter", "python", RMW)).await.unwrap();
+        let engine = Engine::start(&Default::default())
+            .await
+            .expect("engine boot");
+        engine
+            .register(BoothType::script("py-counter", "python", RMW))
+            .await
+            .unwrap();
 
         // The plan resolved from the decorator-assembled schema: put/get
         // round trip through the type's declared collection.
         let out = engine
             .invoke(
-                InstanceId { booth_type: "py-counter".into(), key: InstanceKey::Named("k".into()) },
+                InstanceId {
+                    booth_type: "py-counter".into(),
+                    key: InstanceKey::Named("k".into()),
+                },
                 "bump",
                 serde_json::json!({"user_id": "alice"}),
             )
@@ -60,7 +68,10 @@ def read(args):
         // output, not a store poke.
         let read = engine
             .invoke(
-                InstanceId { booth_type: "py-counter".into(), key: InstanceKey::Named("k".into()) },
+                InstanceId {
+                    booth_type: "py-counter".into(),
+                    key: InstanceKey::Named("k".into()),
+                },
                 "read",
                 serde_json::json!({"user_id": "alice"}),
             )
@@ -74,8 +85,13 @@ def read(args):
         // The assembled schema rides BoothDef (ADR-0025 Plan A) — the
         // persisted copy is what ctx.interface_schema reflects and what
         // StorePlan::from_schema consumes at plan resolution.
-        let engine = Engine::start(&Default::default()).await.expect("engine boot");
-        engine.register(BoothType::script("py-counter2", "python", RMW)).await.unwrap();
+        let engine = Engine::start(&Default::default())
+            .await
+            .expect("engine boot");
+        engine
+            .register(BoothType::script("py-counter2", "python", RMW))
+            .await
+            .unwrap();
         let schema = engine
             .realm
             .lock()

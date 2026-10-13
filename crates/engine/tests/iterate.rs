@@ -4,7 +4,7 @@
 //! Every pull is one hot call riding the existing machinery — these
 //! tests assert the delivery shape, not a new queue.
 
-use aura_booth::{BoothType, Body, InstanceId, InstanceKey};
+use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -41,7 +41,9 @@ def consume(args):
 
 #[cfg(feature = "python")]
 async fn boot() -> Engine {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("py-prod", "python", PRODUCER))
         .await
@@ -62,7 +64,10 @@ async fn python_generator_to_python_consumer() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
+            InstanceId {
+                booth_type: "py-cons".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c"] }),
         )
@@ -88,7 +93,10 @@ async fn break_sends_dispose() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
+            InstanceId {
+                booth_type: "py-cons".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c"] }),
         )
@@ -112,7 +120,9 @@ async fn unknown_stream_and_idempotent_dispose() {
     let engine = boot().await;
     let err = aura_realm::Realm::iterate(
         &engine.realm,
-        aura_booth::IterateOp::Next { stream_id: "stream-ghost".into() },
+        aura_booth::IterateOp::Next {
+            stream_id: "stream-ghost".into(),
+        },
     )
     .await
     .unwrap_err();
@@ -120,7 +130,9 @@ async fn unknown_stream_and_idempotent_dispose() {
 
     let slot = aura_realm::Realm::iterate(
         &engine.realm,
-        aura_booth::IterateOp::Dispose { stream_id: "stream-ghost".into() },
+        aura_booth::IterateOp::Dispose {
+            stream_id: "stream-ghost".into(),
+        },
     )
     .await
     .unwrap();
@@ -172,7 +184,10 @@ def consume(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "py-cons".into(), key: InstanceKey::Named("c1".into()) },
+            InstanceId {
+                booth_type: "py-cons".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
             "consume",
             serde_json::json!({}),
         )
@@ -219,7 +234,10 @@ async fn steel_envelope_producer() {
         .unwrap();
 
     let realm = engine.realm.clone();
-    let target = InstanceId { booth_type: "steel-prod".into(), key: InstanceKey::Named("n1".into()) };
+    let target = InstanceId {
+        booth_type: "steel-prod".into(),
+        key: InstanceKey::Named("n1".into()),
+    };
     let mut items = Vec::new();
     let mut stream_id: Option<String> = None;
     loop {
@@ -229,7 +247,9 @@ async fn steel_envelope_producer() {
                 handler: "count3".into(),
                 args: serde_json::json!({}),
             },
-            Some(sid) => aura_booth::IterateOp::Next { stream_id: sid.clone() },
+            Some(sid) => aura_booth::IterateOp::Next {
+                stream_id: sid.clone(),
+            },
         };
         let slot = aura_realm::Realm::iterate(&realm, op).await.unwrap();
         let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
@@ -250,9 +270,17 @@ async fn steel_envelope_producer() {
     }
     assert_eq!(
         items,
-        vec![serde_json::json!(0), serde_json::json!(1), serde_json::json!(2)]
+        vec![
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(2)
+        ]
     );
-    assert_eq!(realm.lock().await.streams.len(), 0, "done releases the entry");
+    assert_eq!(
+        realm.lock().await.streams.len(),
+        0,
+        "done releases the entry"
+    );
 }
 
 // Rust closure bodies carry no resident stream state (ADR-0034: the
@@ -283,7 +311,10 @@ async fn rust_body_iterate_is_error_value() {
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
-            target: InstanceId { booth_type: "rust-prod".into(), key: InstanceKey::Named("r1".into()) },
+            target: InstanceId {
+                booth_type: "rust-prod".into(),
+                key: InstanceKey::Named("r1".into()),
+            },
             handler: "whatever".into(),
             args: serde_json::json!({}),
         },
@@ -296,13 +327,22 @@ async fn rust_body_iterate_is_error_value() {
     // The invoke shape: a terminal envelope carrying the handler's
     // return, and the stream registration unwound (no stream opened).
     let env = aura_booth::Envelope::from_value(&result.unwrap()).unwrap();
-    assert!(env.done && env.item.is_none(), "a Rust Start is terminal: {env:?}");
-    assert_eq!(realm.lock().await.streams.len(), 0, "terminal start unwinds the registration");
+    assert!(
+        env.done && env.item.is_none(),
+        "a Rust Start is terminal: {env:?}"
+    );
+    assert_eq!(
+        realm.lock().await.streams.len(),
+        0,
+        "terminal start unwinds the registration"
+    );
 
     // The follow-up pull is where the error value lives.
     let err = aura_realm::Realm::iterate(
         &realm,
-        aura_booth::IterateOp::Next { stream_id: "stream-ghost".into() },
+        aura_booth::IterateOp::Next {
+            stream_id: "stream-ghost".into(),
+        },
     )
     .await
     .unwrap_err();

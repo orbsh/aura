@@ -3,8 +3,8 @@
 //! Result frames back to in-flight realm calls.
 
 use aura_realm::SharedRealm;
-use futures_util::{SinkExt, StreamExt};
 use effector_protocol::{Frame, HostFrame};
+use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Accept loop: one task per engine; each connection gets a writer task
@@ -51,7 +51,11 @@ async fn handle_connection(
     // Registration: alias + carriers. The alias keys the connection.
     let (node_alias, _carriers) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
-            Frame::Register { node_alias, carriers, .. } => (node_alias, carriers),
+            Frame::Register {
+                node_alias,
+                carriers,
+                ..
+            } => (node_alias, carriers),
             other => anyhow::bail!("expected Register, got {other:?}"),
         },
         other => anyhow::bail!("bad register frame: {other:?}"),
@@ -62,7 +66,10 @@ async fn handle_connection(
     // Writer channel: realm calls push frames; this task owns the sink.
     // A clone stays with the reader so it can answer host calls.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
-    let entry = aura_realm::ActuatorConn { sender: tx.clone(), peer };
+    let entry = aura_realm::ActuatorConn {
+        sender: tx.clone(),
+        peer,
+    };
     {
         let mut r = realm.lock().await;
         if let Some(old) = r.effectors.insert(node_alias.clone(), entry.clone()) {
@@ -97,7 +104,11 @@ async fn handle_connection(
     // guard releasing its clone).
     tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
-            if sink.send(Message::Text(serde_json::to_string(&frame)?)).await.is_err() {
+            if sink
+                .send(Message::Text(serde_json::to_string(&frame)?))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -124,18 +135,24 @@ async fn handle_connection(
                 // reply on this connection's writer.
                 let instance = {
                     let r = realm.lock().await;
-                    r.pending_remote.get(&call.call_id).map(|p| p.instance.clone())
+                    r.pending_remote
+                        .get(&call.call_id)
+                        .map(|p| p.instance.clone())
                 };
                 let outcome = match instance {
                     Some(inst) => {
                         crate::host_wire::resolve_host_call(&realm, &inst, &call.op).await
                     }
-                    None => Err("unknown call_id: the enclosing remote call is not in flight".into()),
+                    None => {
+                        Err("unknown call_id: the enclosing remote call is not in flight".into())
+                    }
                 };
-                tx.send(Frame::Host(HostFrame::Result(effector_protocol::HostResult {
-                    host_call_id: call.host_call_id,
-                    outcome,
-                })))
+                tx.send(Frame::Host(HostFrame::Result(
+                    effector_protocol::HostResult {
+                        host_call_id: call.host_call_id,
+                        outcome,
+                    },
+                )))
                 .ok();
             }
             other => anyhow::bail!("unexpected frame from effector: {other:?}"),
@@ -158,12 +175,17 @@ struct PresenceGuard {
 
 impl Drop for PresenceGuard {
     fn drop(&mut self) {
-        let Some(realm) = self.realm.take() else { return };
+        let Some(realm) = self.realm.take() else {
+            return;
+        };
         let alias = std::mem::take(&mut self.alias);
         let channel = self.channel.clone();
         tokio::spawn(async move {
             let mut r = realm.lock().await;
-            if r.effectors.get(&alias).is_some_and(|conn| conn.sender.same_channel(&channel)) {
+            if r.effectors
+                .get(&alias)
+                .is_some_and(|conn| conn.sender.same_channel(&channel))
+            {
                 r.effectors.remove(&alias);
             }
         });

@@ -49,7 +49,11 @@ pub enum StoreOpKind {
     DeleteFields { key: Value },
     /// Index scan by encoded index value. args: { index: <name>,
     /// value: <encoding-compatible scalar or map> }, limit optional.
-    Scan { index: String, value: Value, limit: Option<u64> },
+    Scan {
+        index: String,
+        value: Value,
+        limit: Option<u64>,
+    },
     /// Group accumulator read (declared reduce). args: { reduce: <name>,
     /// group: <map> }. Missing group → `null`.
     ReduceGet { reduce: String, group: Value },

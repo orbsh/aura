@@ -36,8 +36,9 @@ fn counter_script(events: &[&'static str]) -> String {
     // user-doc maps user_id → a fixed U64 id (the collection's key fields
     // are fixed-width; string user ids hash — here the tests use small
     // numeric user_ids, so the map is trivial).
-    let body = |name: &str| format!(
-        r#"(define ({name} args)
+    let body = |name: &str| {
+        format!(
+            r#"(define ({name} args)
   (let* ((uid (hash-ref args "user_id"))
          (n (user-n uid))
          (cur (ctx.store (hash "collection" "counters" "op" "get_document" "key" (hash "id" n))))
@@ -45,7 +46,8 @@ fn counter_script(events: &[&'static str]) -> String {
     (ctx.store (hash "collection" "counters" "op" "put_document"
                        "key" (hash "id" n) "doc" (hash "count" (+ c 1))))
     (+ c 1)))"#
-    );
+        )
+    };
     // user-doc: alice→1, bob→2, u1→3, __singleton__→4 (the shapes the
     // tests emit).
     let userdoc = r#"(define (user-n uid)
@@ -56,7 +58,14 @@ fn counter_script(events: &[&'static str]) -> String {
   9)))))
 (define (user-doc uid) (hash "n" (user-n uid)))
 "#;
-    format!("{common}{userdoc}{}", events.iter().map(|e| body(e)).collect::<Vec<_>>().join("\n"))
+    format!(
+        "{common}{userdoc}{}",
+        events
+            .iter()
+            .map(|e| body(e))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 fn counter_of(name: &'static str, events: &[&'static str]) -> BoothType {
@@ -65,8 +74,13 @@ fn counter_of(name: &'static str, events: &[&'static str]) -> BoothType {
 
 #[tokio::test]
 async fn exact_route_instance_key_from_event_data() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["add_to_cart"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("cart", &["add_to_cart"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("add_to_cart", "cart", "user_id");
@@ -74,12 +88,26 @@ async fn exact_route_instance_key_from_event_data() {
 
     // The event name references the booth; the payload's user_id picks the
     // instance. Two users → two instances, independent state.
-    Realm::emit(&engine.realm, None, "add_to_cart", serde_json::json!({
-        "event": "add_to_cart", "user_id": "alice", "item": "book"
-    })).await.unwrap();
-    Realm::emit(&engine.realm, None, "add_to_cart", serde_json::json!({
-        "event": "add_to_cart", "user_id": "bob", "item": "pen"
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "add_to_cart",
+        serde_json::json!({
+            "event": "add_to_cart", "user_id": "alice", "item": "book"
+        }),
+    )
+    .await
+    .unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "add_to_cart",
+        serde_json::json!({
+            "event": "add_to_cart", "user_id": "bob", "item": "pen"
+        }),
+    )
+    .await
+    .unwrap();
 
     // Fire-and-forget: yield until handlers drain.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -87,7 +115,10 @@ async fn exact_route_instance_key_from_event_data() {
     let read = async |uid: &str| {
         engine
             .invoke(
-                InstanceId { booth_type: "cart".into(), key: BKey::Named(format!("cart/{uid}")) },
+                InstanceId {
+                    booth_type: "cart".into(),
+                    key: BKey::Named(format!("cart/{uid}")),
+                },
                 "count",
                 serde_json::json!({ "user_id": uid }),
             )
@@ -100,26 +131,48 @@ async fn exact_route_instance_key_from_event_data() {
 
 #[tokio::test]
 async fn wildcard_route_goes_to_singleton() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("audit", &["order.created", "order.cancelled"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("audit", &["order.created", "order.cancelled"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on_wildcard("order.*", "audit");
     }
 
     for name in ["order.created", "order.cancelled"] {
-        Realm::emit(&engine.realm, None, name, serde_json::json!({
-            "event": name, "user_id": "u1"
-        })).await.unwrap();
+        Realm::emit(
+            &engine.realm,
+            None,
+            name,
+            serde_json::json!({
+                "event": name, "user_id": "u1"
+            }),
+        )
+        .await
+        .unwrap();
     }
     // "order" alone does not match the "order." prefix (wiki: no dot = no match).
-    Realm::emit(&engine.realm, None, "order", serde_json::json!({"event": "order"})).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "order",
+        serde_json::json!({"event": "order"}),
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let count = engine
         .invoke(
-            InstanceId { booth_type: "audit".into(), key: BKey::Named("__singleton__".into()) },
+            InstanceId {
+                booth_type: "audit".into(),
+                key: BKey::Named("__singleton__".into()),
+            },
             "count",
             serde_json::json!({ "user_id": "u1" }),
         )
@@ -132,8 +185,13 @@ async fn wildcard_route_goes_to_singleton() {
 
 #[tokio::test]
 async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["cart_updated"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("cart", &["cart_updated"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("cart_updated", "cart", "user_id");
@@ -141,14 +199,28 @@ async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
 
     // ADR-0012: emits are never declared or validated — the receiver set is
     // a runtime fact. A matching subscriber receives.
-    assert!(Realm::emit(&engine.realm, Some("cart"), "cart_updated", serde_json::json!({
-        "event": "cart_updated", "user_id": "u1"
-    })).await.is_ok());
+    assert!(Realm::emit(
+        &engine.realm,
+        Some("cart"),
+        "cart_updated",
+        serde_json::json!({
+            "event": "cart_updated", "user_id": "u1"
+        })
+    )
+    .await
+    .is_ok());
     // No subscriber: the event lands in the dead ring — the observable
     // boundary, not a registration error.
-    assert!(Realm::emit(&engine.realm, Some("cart"), "ghost_event", serde_json::json!({
-        "event": "ghost_event"
-    })).await.is_ok());
+    assert!(Realm::emit(
+        &engine.realm,
+        Some("cart"),
+        "ghost_event",
+        serde_json::json!({
+            "event": "ghost_event"
+        })
+    )
+    .await
+    .is_ok());
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let realm = engine.realm.try_lock().unwrap();
     assert_eq!(realm.dead_events.len(), 1);
@@ -157,9 +229,17 @@ async fn emits_need_no_declaration_dead_ring_is_the_boundary() {
 
 #[tokio::test]
 async fn unmatched_events_land_in_dead_ring() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    Realm::emit(&engine.realm, None, "nobody_listens", serde_json::json!({"x": 1}))
-        .await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    Realm::emit(
+        &engine.realm,
+        None,
+        "nobody_listens",
+        serde_json::json!({"x": 1}),
+    )
+    .await
+    .unwrap();
     let realm = engine.realm.try_lock().unwrap();
     assert_eq!(realm.dead_events.len(), 1);
     assert_eq!(realm.dead_events.snapshot()[0].0, "nobody_listens");
@@ -167,36 +247,65 @@ async fn unmatched_events_land_in_dead_ring() {
 
 #[tokio::test]
 async fn exact_and_wildcard_both_match_deliver_independently() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["order.created"])).await.unwrap();
-    engine.register(counter_of("stats", &["order.created"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("cart", &["order.created"]))
+        .await
+        .unwrap();
+    engine
+        .register(counter_of("stats", &["order.created"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
         r.router.on_wildcard("order.*", "stats");
     }
 
-    Realm::emit(&engine.realm, None, "order.created", serde_json::json!({
-        "event": "order.created", "user_id": "alice"
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "order.created",
+        serde_json::json!({
+            "event": "order.created", "user_id": "alice"
+        }),
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Exact: keyed instance got it.
     assert_eq!(
-        engine.invoke(
-            InstanceId { booth_type: "cart".into(), key: BKey::Named("alice".into()) },
-            "count", serde_json::json!({ "user_id": "alice" }),
-        ).await.unwrap(),
+        engine
+            .invoke(
+                InstanceId {
+                    booth_type: "cart".into(),
+                    key: BKey::Named("alice".into())
+                },
+                "count",
+                serde_json::json!({ "user_id": "alice" }),
+            )
+            .await
+            .unwrap(),
         serde_json::json!({"count": 1})
     );
     // Wildcard: singleton got it too (the stats handler counted under the
     // event's own user_id — same key the exact-route instance wrote).
     assert_eq!(
-        engine.invoke(
-            InstanceId { booth_type: "stats".into(), key: BKey::Named("__singleton__".into()) },
-            "count", serde_json::json!({ "user_id": "alice" }),
-        ).await.unwrap(),
+        engine
+            .invoke(
+                InstanceId {
+                    booth_type: "stats".into(),
+                    key: BKey::Named("__singleton__".into())
+                },
+                "count",
+                serde_json::json!({ "user_id": "alice" }),
+            )
+            .await
+            .unwrap(),
         serde_json::json!({"count": 1})
     );
 }
@@ -204,19 +313,32 @@ async fn exact_and_wildcard_both_match_deliver_independently() {
 // Regression: direct invoke still works alongside event delivery.
 #[tokio::test]
 async fn invoke_path_unaffected() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     const ECHO: &str = r#"
 (define (execute args) args)
 "#;
-    engine.register(
-        BoothType::script("echo", "steel", ECHO)
-    ).await.unwrap();
+    engine
+        .register(BoothType::script("echo", "steel", ECHO))
+        .await
+        .unwrap();
     let out = engine
-        .invoke(InstanceId { booth_type: "echo".into(), key: BKey::Named("a".into()) }, "execute", serde_json::json!({"x": 1}))
+        .invoke(
+            InstanceId {
+                booth_type: "echo".into(),
+                key: BKey::Named("a".into()),
+            },
+            "execute",
+            serde_json::json!({"x": 1}),
+        )
         .await
         .unwrap();
     assert_eq!(out, serde_json::json!({"x": 1}));
-    let _ = InstanceId { booth_type: String::new(), key: aura_booth::InstanceKey::Singleton }; // silence unused if refactors
+    let _ = InstanceId {
+        booth_type: String::new(),
+        key: aura_booth::InstanceKey::Singleton,
+    }; // silence unused if refactors
 }
 
 // ------------------------------------- Phase 4.5c (step 2: event queues) --
@@ -226,34 +348,63 @@ async fn invoke_path_unaffected() {
 // per-subscription cursor keeps each instance's consumption serial.
 #[tokio::test]
 async fn one_event_multiple_subscriber_types() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["order.created"])).await.unwrap();
-    engine.register(counter_of("stats", &["order.created"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("cart", &["order.created"]))
+        .await
+        .unwrap();
+    engine
+        .register(counter_of("stats", &["order.created"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("order.created", "cart", "user_id");
         r.router.on("order.created", "stats", "user_id");
     }
 
-    Realm::emit(&engine.realm, None, "order.created", serde_json::json!({
-        "event": "order.created", "user_id": "alice"
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "order.created",
+        serde_json::json!({
+            "event": "order.created", "user_id": "alice"
+        }),
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Both subscriber types received the same event, independently.
     assert_eq!(
-        engine.invoke(
-            InstanceId { booth_type: "cart".into(), key: BKey::Named("alice".into()) },
-            "count", serde_json::json!({ "user_id": "alice" }),
-        ).await.unwrap(),
+        engine
+            .invoke(
+                InstanceId {
+                    booth_type: "cart".into(),
+                    key: BKey::Named("alice".into())
+                },
+                "count",
+                serde_json::json!({ "user_id": "alice" }),
+            )
+            .await
+            .unwrap(),
         serde_json::json!({"count": 1})
     );
     assert_eq!(
-        engine.invoke(
-            InstanceId { booth_type: "stats".into(), key: BKey::Named("alice".into()) },
-            "count", serde_json::json!({ "user_id": "alice" }),
-        ).await.unwrap(),
+        engine
+            .invoke(
+                InstanceId {
+                    booth_type: "stats".into(),
+                    key: BKey::Named("alice".into())
+                },
+                "count",
+                serde_json::json!({ "user_id": "alice" }),
+            )
+            .await
+            .unwrap(),
         serde_json::json!({"count": 1})
     );
 }
@@ -266,29 +417,55 @@ async fn one_event_multiple_subscriber_types() {
 // Old shape: count 1 (only the first queue's handler ran); new: count 2.
 #[tokio::test]
 async fn multi_route_instance_drains_every_queue() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("multi", &["evt.a", "evt.b"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("multi", &["evt.a", "evt.b"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("evt.a", "multi", "user_id");
         r.router.on("evt.b", "multi", "user_id");
     }
-    Realm::emit(&engine.realm, None, "evt.a", serde_json::json!({
-        "event": "evt.a", "user_id": "alice"
-    })).await.unwrap();
-    Realm::emit(&engine.realm, None, "evt.b", serde_json::json!({
-        "event": "evt.b", "user_id": "alice"
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "evt.a",
+        serde_json::json!({
+            "event": "evt.a", "user_id": "alice"
+        }),
+    )
+    .await
+    .unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "evt.b",
+        serde_json::json!({
+            "event": "evt.b", "user_id": "alice"
+        }),
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // ONE instance (same key) consumed BOTH queues — the counter is
     // per-user, so 2 means both handlers ran, not fan-out copies.
     assert_eq!(
-        engine.invoke(
-            InstanceId { booth_type: "multi".into(), key: BKey::Named("alice".into()) },
-            "count", serde_json::json!({ "user_id": "alice" }),
-        ).await.unwrap(),
+        engine
+            .invoke(
+                InstanceId {
+                    booth_type: "multi".into(),
+                    key: BKey::Named("alice".into())
+                },
+                "count",
+                serde_json::json!({ "user_id": "alice" }),
+            )
+            .await
+            .unwrap(),
         serde_json::json!({"count": 2})
     );
 }
@@ -301,17 +478,18 @@ async fn multi_route_instance_drains_every_queue() {
 // type whose route is gone does not. Write-path compaction runs on emit.
 #[tokio::test]
 async fn watermark_compaction_deletes_below_min_cursor() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
 
     const ECHO: &str = r#"
 (define (execute args) args)
 "#;
     for name in ["cart", "stats"] {
-        engine.register(
-            BoothType::script(name, "steel", ECHO)
-                .on("order.created", "user_id"),
-        )
-        .await.unwrap();
+        engine
+            .register(BoothType::script(name, "steel", ECHO).on("order.created", "user_id"))
+            .await
+            .unwrap();
     }
 
     // Emit three events; both instances consume (the poll loop drains).
@@ -342,7 +520,10 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     // drained it.
     let head = rows.iter().map(|(_, c, _)| *c).max().unwrap();
     assert!(head > 0, "head advanced past zero");
-    assert!(rows.iter().all(|(_, c, _)| *c == head), "both caught up: {rows:?}");
+    assert!(
+        rows.iter().all(|(_, c, _)| *c == head),
+        "both caught up: {rows:?}"
+    );
 
     // Consumers caught up to the head. Write-path compaction ran on each emit
     // with whatever the watermark was AT THAT TIME (cursors lag during the
@@ -373,7 +554,10 @@ async fn watermark_compaction_deletes_below_min_cursor() {
             .map(|(s, _)| s)
             .collect()
     };
-    assert!(remaining.iter().all(|s| *s >= min), "nothing below the watermark survives: {remaining:?}");
+    assert!(
+        remaining.iter().all(|s| *s >= min),
+        "nothing below the watermark survives: {remaining:?}"
+    );
 
     // A lagging subscriber pins the watermark: rewind one cursor to the
     // first event's seq (advance is monotonic — a test-only
@@ -392,10 +576,14 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     // Trigger compaction explicitly at the true min watermark (2): rows
     // below it are removed; rows at/above survive.
-    aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", &named("u1")).await.unwrap();
+    aura_realm::Realm::compact_queue_for_test(&engine.realm, "order.created", &named("u1"))
+        .await
+        .unwrap();
     let surviving = mq::backlog(&vs, "order.created", &named("u1"), 0).unwrap();
-    assert!(surviving.iter().all(|(s, _)| *s > first_seq),
-        "rows at/below the pinned watermark are gone: {surviving:?}");
+    assert!(
+        surviving.iter().all(|(s, _)| *s > first_seq),
+        "rows at/below the pinned watermark are gone: {surviving:?}"
+    );
     assert!(!surviving.is_empty(), "at/above-watermark rows survive");
 }
 
@@ -409,7 +597,9 @@ async fn watermark_compaction_deletes_below_min_cursor() {
 /// activated a new instance whose cursor read 0 and replayed the queue).
 #[tokio::test]
 async fn wildcard_delivers_to_the_singleton_instance_only() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(counter_of("audit", &["order.created", "order.ping"]))
         .await
@@ -424,23 +614,36 @@ async fn wildcard_delivers_to_the_singleton_instance_only() {
     for key in ["alice", "bob"] {
         engine
             .invoke(
-                InstanceId { booth_type: "audit".into(), key: aura_booth::InstanceKey::Named(key.into()) },
+                InstanceId {
+                    booth_type: "audit".into(),
+                    key: aura_booth::InstanceKey::Named(key.into()),
+                },
                 "count",
                 serde_json::json!({ "user_id": key }),
             )
             .await
             .unwrap();
     }
-    Realm::emit(&engine.realm, None, "order.created", serde_json::json!({
-        "event": "order.created", "user_id": "u1"
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "order.created",
+        serde_json::json!({
+            "event": "order.created", "user_id": "u1"
+        }),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // The singleton consumed it.
     assert_eq!(
         engine
             .invoke(
-                InstanceId { booth_type: "audit".into(), key: BKey::Named("__singleton__".into()) },
+                InstanceId {
+                    booth_type: "audit".into(),
+                    key: BKey::Named("__singleton__".into())
+                },
                 "count",
                 serde_json::json!({ "user_id": "u1" }),
             )
@@ -455,7 +658,11 @@ async fn wildcard_delivers_to_the_singleton_instance_only() {
     let vs = engine.realm.try_lock().unwrap().mq.clone();
     let eid = mq::event_id_of(&vs, "order.created").unwrap().unwrap();
     let rows = mq::cursor_rows(&vs, eid, mq::SINGLETON_KEY_ID).unwrap();
-    assert_eq!(rows.len(), 1, "one consumer per queue (ADR-0038 §1): {rows:?}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "one consumer per queue (ADR-0038 §1): {rows:?}"
+    );
 }
 
 // ---------------------------------- ADR-0038 §4 (no silent drops: malformed) --
@@ -470,26 +677,44 @@ async fn missing_key_field_is_recorded_not_fallen_back() {
     use aura_realm::event::DeadReason;
     use aura_realm::mq;
 
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
-    engine.register(counter_of("cart", &["cart_updated"])).await.unwrap();
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
+    engine
+        .register(counter_of("cart", &["cart_updated"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("cart_updated", "cart", "user_id");
     }
-    Realm::emit(&engine.realm, None, "cart_updated", serde_json::json!({
-        "event": "cart_updated" // user_id missing
-    })).await.unwrap();
+    Realm::emit(
+        &engine.realm,
+        None,
+        "cart_updated",
+        serde_json::json!({
+            "event": "cart_updated" // user_id missing
+        }),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     let realm = engine.realm.try_lock().unwrap();
     let dead = realm.dead_events.detailed();
     assert_eq!(dead.len(), 1, "the malformed event is recorded: {dead:?}");
     assert_eq!(dead[0].0, "cart_updated");
-    assert_eq!(dead[0].2, DeadReason::MissingKeyField, "the reason rides the record");
+    assert_eq!(
+        dead[0].2,
+        DeadReason::MissingKeyField,
+        "the reason rides the record"
+    );
     // Nothing reached the queue plane: no fallback partition, no event id.
     let vs = realm.mq.clone();
     assert!(
-        mq::instance_key_id_of(&vs, "__default__").unwrap().is_none(),
+        mq::instance_key_id_of(&vs, "__default__")
+            .unwrap()
+            .is_none(),
         "no fallback partition was ever created"
     );
     assert!(
@@ -511,15 +736,31 @@ async fn expired_cursor_forfeits_its_backlog() {
     let realm = std::sync::Arc::new(tokio::sync::Mutex::new(Realm::default()));
     let vs = realm.lock().await.mq.clone();
     // Two registered types on one event: the denominator's members.
-    mq::route_put(&vs, "e", "cart", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
-    mq::route_put(&vs, "e", "stats", &aura_booth::RouteResolution::Field("user_id".into()), false).unwrap();
+    mq::route_put(
+        &vs,
+        "e",
+        "cart",
+        &aura_booth::RouteResolution::Field("user_id".into()),
+        false,
+    )
+    .unwrap();
+    mq::route_put(
+        &vs,
+        "e",
+        "stats",
+        &aura_booth::RouteResolution::Field("user_id".into()),
+        false,
+    )
+    .unwrap();
     let s1 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
     let s2 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
     mq::advance(&vs, "e", &named("u1"), "stats", s2).unwrap();
     mq::advance(&vs, "e", &named("u1"), "cart", s1).unwrap();
 
     // Fresh rows, default promise (30d): the lagging cart pins the backlog.
-    Realm::compact_queue_for_test(&realm, "e", &named("u1")).await.unwrap();
+    Realm::compact_queue_for_test(&realm, "e", &named("u1"))
+        .await
+        .unwrap();
     assert_eq!(
         mq::backlog(&vs, "e", &named("u1"), 0).unwrap().len(),
         2,
@@ -531,10 +772,19 @@ async fn expired_cursor_forfeits_its_backlog() {
     // cursor and everything below it — cart's unconsumed row — is forfeit.
     realm.lock().await.cursor_ttl = Duration::from_secs(1);
     mq::age_cursor(&vs, "e", &named("u1"), "cart", 1).unwrap();
-    Realm::compact_queue_for_test(&realm, "e", &named("u1")).await.unwrap();
+    Realm::compact_queue_for_test(&realm, "e", &named("u1"))
+        .await
+        .unwrap();
     let surviving = mq::backlog(&vs, "e", &named("u1"), 0).unwrap();
-    assert_eq!(surviving.len(), 1, "the forfeited backlog is compacted away: {surviving:?}");
-    assert!(surviving.iter().all(|(s, _)| *s > s1), "only rows at/above the new watermark survive");
+    assert_eq!(
+        surviving.len(),
+        1,
+        "the forfeited backlog is compacted away: {surviving:?}"
+    );
+    assert!(
+        surviving.iter().all(|(s, _)| *s > s1),
+        "only rows at/above the new watermark survive"
+    );
 
     // The expired row itself is reclaimed once it sits below the watermark
     // (nothing can replay through a position whose rows are gone).
@@ -586,7 +836,9 @@ async fn scan_route_fans_out_to_the_hit_rows() {
                      "doc" (hash "email" (hash-ref args "email") "hits" 0)))
   (hash-ref args "id"))
 "#;
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let mut booth = BoothType::script("notify", "steel", SCRIPT);
     // The receives declaration rides the introspection normally; the
     // introspection ctx carries no realm, so the declaration is applied
@@ -608,7 +860,10 @@ async fn scan_route_fans_out_to_the_hit_rows() {
     for (id, email) in [(1u64, "a@x"), (2, "a@x"), (3, "b@x")] {
         engine
             .invoke(
-                InstanceId { booth_type: "notify".into(), key: aura_booth::InstanceKey::Named(id.to_string()) },
+                InstanceId {
+                    booth_type: "notify".into(),
+                    key: aura_booth::InstanceKey::Named(id.to_string()),
+                },
                 "enroll",
                 serde_json::json!({ "id": id, "email": email }),
             )
@@ -618,9 +873,14 @@ async fn scan_route_fans_out_to_the_hit_rows() {
 
     // One emit, effector a@x → TWO targets (rows 1, 2); row 3 is untouched.
     // The effector = the exact email string of a@x: matches rows 1, 2 only.
-    Realm::emit(&engine.realm, None, "newsletter", serde_json::json!({
-        "event": "newsletter", "email": "a@x"
-    }))
+    Realm::emit(
+        &engine.realm,
+        None,
+        "newsletter",
+        serde_json::json!({
+            "event": "newsletter", "email": "a@x"
+        }),
+    )
     .await
     .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -633,17 +893,28 @@ async fn scan_route_fans_out_to_the_hit_rows() {
     let vs = engine.realm.try_lock().unwrap().mq.clone();
     let eid = mq::event_id_of(&vs, "newsletter").unwrap().unwrap();
     for key in ["1", "2"] {
-        let kid = mq::instance_key_id_of(&vs, key).unwrap().expect("the slice exists");
+        let kid = mq::instance_key_id_of(&vs, key)
+            .unwrap()
+            .expect("the slice exists");
         let rows = mq::cursor_rows(&vs, eid, kid).unwrap();
         assert_eq!(rows.len(), 1, "exactly one consumer cursor on slice {key}");
         assert!(rows[0].1 >= 1, "the instance consumed its delivery");
-        let bl = mq::backlog(&vs, "newsletter", &mq::InstanceKey::Named(key.into()), rows[0].1).unwrap();
+        let bl = mq::backlog(
+            &vs,
+            "newsletter",
+            &mq::InstanceKey::Named(key.into()),
+            rows[0].1,
+        )
+        .unwrap();
         assert!(bl.is_empty(), "the backlog was drained");
     }
-    let kid3 = mq::instance_key_id_of(&vs, "3").unwrap()
+    let kid3 = mq::instance_key_id_of(&vs, "3")
+        .unwrap()
         .expect("the dictionary row exists (the enroll invoke registered the instance)");
-    assert!(mq::cursor_rows(&vs, eid, kid3).unwrap().is_empty(),
-        "b@x's row matched nothing — no delivery, no cursor");
+    assert!(
+        mq::cursor_rows(&vs, eid, kid3).unwrap().is_empty(),
+        "b@x's row matched nothing — no delivery, no cursor"
+    );
 }
 
 #[tokio::test]
@@ -654,7 +925,9 @@ async fn ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish() {
     // data), whose counter observes the delivery. The emitter recorded
     // in the audit signature is the TYPE name ("relay") — publishing is
     // instance-free (0011's observation kept under the new placement).
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script(
             "relay",
@@ -669,13 +942,19 @@ async fn ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish() {
         ))
         .await
         .unwrap();
-    engine.register(counter_of("pong", &["ping"])).await.unwrap();
+    engine
+        .register(counter_of("pong", &["ping"]))
+        .await
+        .unwrap();
     {
         let mut r = engine.realm.try_lock().unwrap();
         r.router.on("ping", "pong", "user_id");
     }
 
-    let relay_id = InstanceId { booth_type: "relay".into(), key: BKey::Singleton };
+    let relay_id = InstanceId {
+        booth_type: "relay".into(),
+        key: BKey::Singleton,
+    };
     let out = engine
         .invoke(relay_id.clone(), "fire", serde_json::json!({}))
         .await
@@ -685,13 +964,20 @@ async fn ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let count = engine
         .invoke(
-            InstanceId { booth_type: "pong".into(), key: BKey::Named("pong/alice".into()) },
+            InstanceId {
+                booth_type: "pong".into(),
+                key: BKey::Named("pong/alice".into()),
+            },
             "count",
             serde_json::json!({ "user_id": "alice" }),
         )
         .await
         .unwrap();
-    assert_eq!(count, serde_json::json!({ "count": 1 }), "the handler-published event was consumed");
+    assert_eq!(
+        count,
+        serde_json::json!({ "count": 1 }),
+        "the handler-published event was consumed"
+    );
 
     // Dead-ring boundary rides ctx.emit exactly as it rides Realm::emit
     // (ADR-0012: no whitelist — an unrouted publish lands observable).
@@ -702,5 +988,9 @@ async fn ctx_emit_from_inside_a_handler_delivers_like_a_realm_publish() {
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let dead_after = engine.realm.lock().await.dead_events.len();
-    assert_eq!(dead_after, dead_before + 1, "the unrouted publish landed in the dead ring");
+    assert_eq!(
+        dead_after,
+        dead_before + 1,
+        "the unrouted publish landed in the dead ring"
+    );
 }

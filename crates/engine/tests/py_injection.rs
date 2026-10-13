@@ -55,24 +55,37 @@ def bind_scan(args):
 
 #[tokio::test]
 async fn binding_face_and_ctx_store_share_one_keyspace() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("py-inject", "python", SCRIPT))
         .await
         .unwrap();
 
-    let target = |key: &str| InstanceId { booth_type: "py-inject".into(), key: aura_booth::InstanceKey::Named(key.into()) };
+    let target = |key: &str| InstanceId {
+        booth_type: "py-inject".into(),
+        key: aura_booth::InstanceKey::Named(key.into()),
+    };
 
     // Binding write → ctx.store read (same session instance).
     let out = engine
-        .invoke(target("k"), "bind_write_emit_read", serde_json::json!({"user_id": "a"}))
+        .invoke(
+            target("k"),
+            "bind_write_emit_read",
+            serde_json::json!({"user_id": "a"}),
+        )
         .await
         .expect("bind_write_emit_read");
     assert_eq!(out, serde_json::json!({ "count": 41 }));
 
     // ctx.store write → binding read.
     let out = engine
-        .invoke(target("k"), "emit_write_bind_read", serde_json::json!({"user_id": "a"}))
+        .invoke(
+            target("k"),
+            "emit_write_bind_read",
+            serde_json::json!({"user_id": "a"}),
+        )
         .await
         .expect("emit_write_bind_read");
     assert_eq!(out, serde_json::json!({ "count": 42 }));
@@ -81,7 +94,11 @@ async fn binding_face_and_ctx_store_share_one_keyspace() {
     // realm engine — the durable rows survive the ephemeral bindings.
     aura_realm::Realm::evict_instance(engine.realm.clone(), &target("k")).await;
     let out = engine
-        .invoke(target("k"), "bind_scan", serde_json::json!({"user_id": "a"}))
+        .invoke(
+            target("k"),
+            "bind_scan",
+            serde_json::json!({"user_id": "a"}),
+        )
         .await
         .expect("bind_scan after eviction — rows survived");
     assert_eq!(out, serde_json::json!({ "hits": 1 }));
@@ -93,7 +110,9 @@ async fn interface_schema_still_assembles_after_injection() {
     // the collection names in the SAME module namespace; introspection
     // must still report the storage block (load-time capture, not a late
     // re-assembly that would see instances instead of classes).
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("py-inject2", "python", SCRIPT))
         .await
@@ -106,6 +125,9 @@ async fn interface_schema_still_assembles_after_injection() {
         .cloned()
         .flatten()
         .expect("persisted schema");
-    assert_eq!(schema["storage"]["collections"]["Counters"]["schema"]["key_len"], 8);
+    assert_eq!(
+        schema["storage"]["collections"]["Counters"]["schema"]["key_len"],
+        8
+    );
     assert!(schema["receives"]["bind_scan"].is_object());
 }

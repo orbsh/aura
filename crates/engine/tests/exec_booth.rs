@@ -15,7 +15,10 @@ use aura_engine::Engine;
 use std::time::Duration;
 
 fn bin(name: &str) -> String {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../effector/target/debug/examples/"
+    );
     let full = format!("{path}{name}");
     assert!(
         std::path::Path::new(&full).exists(),
@@ -28,15 +31,24 @@ fn bin(name: &str) -> String {
 /// like any carrier — the child answers the request frame with a result.
 #[tokio::test]
 async fn induction_booth_invoke() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
+        .register(BoothType::script(
+            "bin-echo",
+            "induction",
+            bin("induction_loop"),
+        ))
         .await
         .unwrap();
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k1".into()) },
+            InstanceId {
+                booth_type: "bin-echo".into(),
+                key: InstanceKey::Named("k1".into()),
+            },
             "echo",
             serde_json::json!({ "x": 1 }),
         )
@@ -48,7 +60,10 @@ async fn induction_booth_invoke() {
     // call must not cold-start — the registry key is type/key identity).
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k1".into()) },
+            InstanceId {
+                booth_type: "bin-echo".into(),
+                key: InstanceKey::Named("k1".into()),
+            },
             "echo",
             serde_json::json!({ "y": 2 }),
         )
@@ -65,7 +80,9 @@ async fn induction_booth_invoke() {
 /// a real Named instance is driven through a full wake→sleep cycle.
 #[tokio::test]
 async fn induction_booth_declared_hooks_run_through_the_realm() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(
             BoothType::script("bin-hooks", "induction", bin("induction_loop"))
@@ -112,9 +129,15 @@ async fn induction_booth_declared_hooks_run_through_the_realm() {
 #[cfg(feature = "python")]
 #[tokio::test]
 async fn induction_booth_invoke_to_sibling() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
-        .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
+        .register(BoothType::script(
+            "bin-echo",
+            "induction",
+            bin("induction_loop"),
+        ))
         .await
         .unwrap();
     engine
@@ -131,7 +154,10 @@ def handle(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k2".into()) },
+            InstanceId {
+                booth_type: "bin-echo".into(),
+                key: InstanceKey::Named("k2".into()),
+            },
             "ctx_round_trip",
             serde_json::json!({
                 "type": "py-target", "key": "p1", "handler": "handle",
@@ -148,14 +174,23 @@ def handle(args):
 /// bookkeeping the script carriers get — carrier-independent by design).
 #[tokio::test]
 async fn induction_booth_iterate_through_realm() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
-        .register(BoothType::script("bin-prod", "induction", bin("induction_loop")))
+        .register(BoothType::script(
+            "bin-prod",
+            "induction",
+            bin("induction_loop"),
+        ))
         .await
         .unwrap();
 
     let realm = engine.realm.clone();
-    let target = InstanceId { booth_type: "bin-prod".into(), key: InstanceKey::Named("p1".into()) };
+    let target = InstanceId {
+        booth_type: "bin-prod".into(),
+        key: InstanceKey::Named("p1".into()),
+    };
     let mut items = Vec::new();
     let mut sid: Option<String> = None;
     loop {
@@ -165,7 +200,9 @@ async fn induction_booth_iterate_through_realm() {
                 handler: "count".into(),
                 args: serde_json::json!({ "total": 3 }),
             },
-            Some(s) => aura_booth::IterateOp::Next { stream_id: s.clone() },
+            Some(s) => aura_booth::IterateOp::Next {
+                stream_id: s.clone(),
+            },
         };
         let slot = aura_realm::Realm::iterate(&realm, op).await.unwrap();
         let aura_booth::call::Waited::Done(r) = slot.wait().await.unwrap() else {
@@ -185,14 +222,20 @@ async fn induction_booth_iterate_through_realm() {
         }
     }
     assert_eq!(items, vec!["i0", "i1", "i2"]);
-    assert_eq!(realm.lock().await.streams.len(), 0, "done drains the registry");
+    assert_eq!(
+        realm.lock().await.streams.len(),
+        0,
+        "done drains the registry"
+    );
 }
 
 /// Induction residency: eviction reaps the child, re-invocation cold-starts
 /// (the same session lifecycle as every embedded carrier).
 #[tokio::test]
 async fn induction_booth_eviction_reaps_the_child() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(
             BoothType::script("bin-echo", "induction", bin("induction_loop"))
@@ -200,8 +243,14 @@ async fn induction_booth_eviction_reaps_the_child() {
         )
         .await
         .unwrap();
-    let target = InstanceId { booth_type: "bin-echo".into(), key: InstanceKey::Named("k3".into()) };
-    engine.invoke(target.clone(), "echo", serde_json::json!(1)).await.unwrap();
+    let target = InstanceId {
+        booth_type: "bin-echo".into(),
+        key: InstanceKey::Named("k3".into()),
+    };
+    engine
+        .invoke(target.clone(), "echo", serde_json::json!(1))
+        .await
+        .unwrap();
     assert!(engine.realm.lock().await.is_resident(&target));
 
     // Drive eviction directly (not the 5s tick): the instance evict runs
@@ -209,7 +258,10 @@ async fn induction_booth_eviction_reaps_the_child() {
     aura_realm::Realm::evict_instance(engine.realm.clone(), &target).await;
 
     // Cold start: the next call spawns a fresh child and works.
-    let out = engine.invoke(target.clone(), "echo", serde_json::json!("post-evict")).await.unwrap();
+    let out = engine
+        .invoke(target.clone(), "echo", serde_json::json!("post-evict"))
+        .await
+        .unwrap();
     assert_eq!(out, serde_json::json!({ "echoed": "post-evict" }));
 }
 
@@ -220,7 +272,9 @@ async fn induction_booth_eviction_reaps_the_child() {
 /// call's (a one-shot guard could not exist even if asked).
 #[tokio::test]
 async fn exec_oneshot_booth_through_realm() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("bin-shot", "exec", bin("one_shot")))
         .await
@@ -228,7 +282,10 @@ async fn exec_oneshot_booth_through_realm() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-shot".into(), key: InstanceKey::Named("s1".into()) },
+            InstanceId {
+                booth_type: "bin-shot".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
             "echo",
             serde_json::json!({ "now": 1 }),
         )
@@ -245,7 +302,10 @@ async fn exec_oneshot_booth_through_realm() {
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
-            target: InstanceId { booth_type: "bin-shot".into(), key: InstanceKey::Named("s1".into()) },
+            target: InstanceId {
+                booth_type: "bin-shot".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
             handler: "count".into(),
             args: serde_json::json!({ "total": 2 }),
         },
@@ -264,16 +324,25 @@ async fn exec_oneshot_booth_through_realm() {
     // A terminal first reply unwinds its own registration — no stream
     // opened, no entry left (the rollback discipline of every Start
     // that never became a stream).
-    assert_eq!(realm.lock().await.streams.len(), 0, "terminal start unwinds the entry");
+    assert_eq!(
+        realm.lock().await.streams.len(),
+        0,
+        "terminal start unwinds the entry"
+    );
 
     let err = aura_realm::Realm::iterate(
         &realm,
-        aura_booth::IterateOp::Next { stream_id: "stream-ghost".into() },
+        aura_booth::IterateOp::Next {
+            stream_id: "stream-ghost".into(),
+        },
     )
     .await
     .unwrap_err()
     .to_string();
-    assert!(err.contains("not live"), "the id is dead by construction: {err}");
+    assert!(
+        err.contains("not live"),
+        "the id is dead by construction: {err}"
+    );
 }
 
 /// Phase 4.14 gate 1: `ctx.store` over the induction seam into the REALM
@@ -287,9 +356,15 @@ async fn exec_oneshot_booth_through_realm() {
 /// capability now provably crosses the process boundary.
 #[tokio::test]
 async fn induction_booth_store_emit_roundtrip() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
-        .register(BoothType::script("bin-store", "induction", bin("induction_loop")))
+        .register(BoothType::script(
+            "bin-store",
+            "induction",
+            bin("induction_loop"),
+        ))
         .await
         .unwrap();
 
@@ -301,7 +376,10 @@ async fn induction_booth_store_emit_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-store".into(), key: InstanceKey::Named("s1".into()) },
+            InstanceId {
+                booth_type: "bin-store".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",
@@ -327,14 +405,23 @@ async fn induction_booth_store_emit_roundtrip() {
 /// (NushellResident, bridge.nu, pump_quiet) retires without a gap.
 #[tokio::test]
 async fn induction_nu_booth_store_emit_roundtrip() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../effector/crates/runtime/examples/induction_nu.nu"
     );
-    assert!(std::path::Path::new(fixture).exists(), "nu induction fixture missing: {fixture}");
+    assert!(
+        std::path::Path::new(fixture).exists(),
+        "nu induction fixture missing: {fixture}"
+    );
     engine
-        .register(BoothType::script("nu-store", "induction", format!("nu {fixture}")))
+        .register(BoothType::script(
+            "nu-store",
+            "induction",
+            format!("nu {fixture}"),
+        ))
         .await
         .unwrap();
 
@@ -347,7 +434,10 @@ async fn induction_nu_booth_store_emit_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s1".into()) },
+            InstanceId {
+                booth_type: "nu-store".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",
@@ -367,15 +457,32 @@ async fn induction_nu_booth_store_emit_roundtrip() {
     // — the count guard lives in the child's $env (the PTY carrier's
     // $env rule, now without the PTY).
     let c1 = engine
-        .invoke(InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s2".into()) }, "count", serde_json::json!({}))
+        .invoke(
+            InstanceId {
+                booth_type: "nu-store".into(),
+                key: InstanceKey::Named("s2".into()),
+            },
+            "count",
+            serde_json::json!({}),
+        )
         .await
         .unwrap();
     let c2 = engine
-        .invoke(InstanceId { booth_type: "nu-store".into(), key: InstanceKey::Named("s2".into()) }, "count", serde_json::json!({}))
+        .invoke(
+            InstanceId {
+                booth_type: "nu-store".into(),
+                key: InstanceKey::Named("s2".into()),
+            },
+            "count",
+            serde_json::json!({}),
+        )
         .await
         .unwrap();
-    assert_eq!((c1["count"].as_u64(), c2["count"].as_u64()), (Some(1), Some(2)),
-        "one child per instance; $env state persists across calls");
+    assert_eq!(
+        (c1["count"].as_u64(), c2["count"].as_u64()),
+        (Some(1), Some(2)),
+        "one child per instance; $env state persists across calls"
+    );
 }
 
 /// ADR-0037 §2 (4.16c): a booth DECLARED with the CBOR codec runs the
@@ -385,7 +492,9 @@ async fn induction_nu_booth_store_emit_roundtrip() {
 /// declared codec drives both directions, no silent JSON fallback).
 #[tokio::test]
 async fn induction_cbor_booth_store_emit_roundtrip() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(
             BoothType::script("bin-store-cbor", "induction", bin("induction_loop"))
@@ -396,13 +505,21 @@ async fn induction_cbor_booth_store_emit_roundtrip() {
 
     // Introspection resolved the plan over the CBOR throwaway channel.
     assert!(
-        engine.realm.lock().await.plan_of("bin-store-cbor").is_some(),
+        engine
+            .realm
+            .lock()
+            .await
+            .plan_of("bin-store-cbor")
+            .is_some(),
         "the CBOR-declared booth's schema frame round trip resolved a plan"
     );
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "bin-store-cbor".into(), key: InstanceKey::Named("s1".into()) },
+            InstanceId {
+                booth_type: "bin-store-cbor".into(),
+                key: InstanceKey::Named("s1".into()),
+            },
             "store_round_trip",
             serde_json::json!({
                 "put": { "collection": "counters", "op": "put_document",

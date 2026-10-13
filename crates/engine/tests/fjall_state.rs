@@ -69,9 +69,18 @@ mod fjall_tests {
         {
             let engine = Engine::start(&fjall_config(dir.path())).await.unwrap();
             engine.register(counter()).await.unwrap();
-            let target = InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) };
-            engine.invoke(target.clone(), "execute", serde_json::json!(null)).await.unwrap();
-            engine.invoke(target, "execute", serde_json::json!(null)).await.unwrap();
+            let target = InstanceId {
+                booth_type: "counter".into(),
+                key: InstanceKey::Named("k".into()),
+            };
+            engine
+                .invoke(target.clone(), "execute", serde_json::json!(null))
+                .await
+                .unwrap();
+            engine
+                .invoke(target, "execute", serde_json::json!(null))
+                .await
+                .unwrap();
         } // Engine dropped — process-restart semantics.
 
         // Engine #2: fresh engine over the same data dir; state restored
@@ -80,7 +89,10 @@ mod fjall_tests {
         engine.register(counter()).await.unwrap();
         let out = engine
             .invoke(
-                InstanceId { booth_type: "counter".into(), key: InstanceKey::Named("k".into()) },
+                InstanceId {
+                    booth_type: "counter".into(),
+                    key: InstanceKey::Named("k".into()),
+                },
                 "execute",
                 serde_json::json!(null),
             )

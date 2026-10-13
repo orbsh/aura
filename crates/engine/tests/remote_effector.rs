@@ -2,8 +2,8 @@
 //! realm routes an invoke through the wire; the effector's resident session
 //! executes; the result round-trips.
 
-use aura_booth::{BoothType, InstanceId, InstanceKey, Body};
-use aura_engine::{Engine, effectors};
+use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
+use aura_engine::{effectors, Engine};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -34,34 +34,39 @@ async fn remote_effector_roundtrip() {
     // spawning with the addr it already bound — reuse accept via a thin
     // wrapper: pass "127.0.0.1:0" would rebind; instead serve on our
     // pre-bound listener via the exported helper (accept over the listener).
-    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), listener));
+    tokio::spawn(effectors::serve_effectors_listener(
+        engine.realm.clone(),
+        listener,
+    ));
 
     // Register a remote effector booth type pointing at the node the effector
     // will claim.
-    engine.register(BoothType {
-        name: "remote-counter".into(),
-        body: Body::RemoteProbe {
-            encoding: aura_booth::Encoding::Json,
-            node_alias: "test-node".into(),
-            language: "steel".into(),
-            source: SRC.into(),
-        },
-        idle_ttl: Some(Duration::from_secs(60)),
-        max_exec: None,
-        hooks: BTreeMap::new(),
-        receives: vec![],
-    })
-    .await.unwrap();
+    engine
+        .register(BoothType {
+            name: "remote-counter".into(),
+            body: Body::RemoteProbe {
+                encoding: aura_booth::Encoding::Json,
+                node_alias: "test-node".into(),
+                language: "steel".into(),
+                source: SRC.into(),
+            },
+            idle_ttl: Some(Duration::from_secs(60)),
+            max_exec: None,
+            hooks: BTreeMap::new(),
+            receives: vec![],
+        })
+        .await
+        .unwrap();
 
     // Local target for ctx.invoke from the effector script.
-    engine.register(
-        BoothType::script(
+    engine
+        .register(BoothType::script(
             "echo",
             "steel",
             r#"(define (execute args) args)"#,
-        )
-    )
-    .await.unwrap();
+        ))
+        .await
+        .unwrap();
 
     // Effector side: dial in (runs until the test ends).
     let config = effector_config_shim(port);
@@ -70,7 +75,13 @@ async fn remote_effector_roundtrip() {
 
     // Wait for registration, then invoke through the wire.
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine
+            .realm
+            .try_lock()
+            .unwrap()
+            .effectors
+            .contains_key("test-node")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -78,7 +89,10 @@ async fn remote_effector_roundtrip() {
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "remote-counter".into(), key: InstanceKey::Named("k".into()) },
+            InstanceId {
+                booth_type: "remote-counter".into(),
+                key: InstanceKey::Named("k".into()),
+            },
             "double",
             serde_json::json!({"n": 4}),
         )
@@ -105,16 +119,30 @@ async fn remote_effector_roundtrip() {
     // EOF → the gateway removes the alias.
     effector.abort();
     for _ in 0..50 {
-        if !engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if !engine
+            .realm
+            .try_lock()
+            .unwrap()
+            .effectors
+            .contains_key("test-node")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let gone = !engine.realm.try_lock().unwrap().effectors.contains_key("test-node");
+    let gone = !engine
+        .realm
+        .try_lock()
+        .unwrap()
+        .effectors
+        .contains_key("test-node");
     assert!(gone, "dropped connection unregisters the node alias");
     let err = engine
         .invoke(
-            InstanceId { booth_type: "remote-counter".into(), key: InstanceKey::Named("k".into()) },
+            InstanceId {
+                booth_type: "remote-counter".into(),
+                key: InstanceKey::Named("k".into()),
+            },
             "double",
             serde_json::json!({"n": 1}),
         )
@@ -190,7 +218,10 @@ async fn remote_code_travels_as_reference() {
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    tokio::spawn(effectors::serve_effectors_listener(
+        engine.realm.clone(),
+        gw,
+    ));
     let effector = tokio::spawn(effector_runtime::remote::run(effector_config_shim(port)));
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
 
@@ -200,7 +231,7 @@ async fn remote_code_travels_as_reference() {
         .register(aura_booth::BoothType {
             name: "ref-counter".into(),
             body: Body::RemoteProbe {
-            encoding: aura_booth::Encoding::Json,
+                encoding: aura_booth::Encoding::Json,
                 node_alias: "test-node".into(),
                 language: "steel".into(),
                 source: code_src.into(),
@@ -220,14 +251,23 @@ async fn remote_code_travels_as_reference() {
     }
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine
+            .realm
+            .try_lock()
+            .unwrap()
+            .effectors
+            .contains_key("test-node")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let out = engine
         .invoke(
-            InstanceId { booth_type: "ref-counter".into(), key: InstanceKey::Named("k".into()) },
+            InstanceId {
+                booth_type: "ref-counter".into(),
+                key: InstanceKey::Named("k".into()),
+            },
             "double",
             serde_json::json!({"n": 21}),
         )
@@ -261,7 +301,10 @@ def tokens(args):
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    tokio::spawn(effectors::serve_effectors_listener(
+        engine.realm.clone(),
+        gw,
+    ));
     let mut config = effector_config_shim(port);
     config.capabilities.carriers = vec!["python".into()];
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
@@ -271,7 +314,7 @@ def tokens(args):
         .register(BoothType {
             name: "remote-prod".into(),
             body: Body::RemoteProbe {
-            encoding: aura_booth::Encoding::Json,
+                encoding: aura_booth::Encoding::Json,
                 node_alias: "test-node".into(),
                 language: "python".into(),
                 source: SRC.into(),
@@ -285,13 +328,22 @@ def tokens(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine
+            .realm
+            .try_lock()
+            .unwrap()
+            .effectors
+            .contains_key("test-node")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let target = InstanceId { booth_type: "remote-prod".into(), key: InstanceKey::Named("p1".into()) };
+    let target = InstanceId {
+        booth_type: "remote-prod".into(),
+        key: InstanceKey::Named("p1".into()),
+    };
     let mut got = Vec::new();
     let mut sid: Option<String> = None;
     loop {
@@ -301,7 +353,9 @@ def tokens(args):
                 handler: "tokens".into(),
                 args: serde_json::json!({ "list": ["x", "y", "z"] }),
             },
-            Some(s) => aura_booth::IterateOp::Next { stream_id: s.clone() },
+            Some(s) => aura_booth::IterateOp::Next {
+                stream_id: s.clone(),
+            },
         };
         let slot = aura_realm::Realm::iterate(&engine.realm, op).await.unwrap();
         let aura_booth::call::Waited::Done(result) = slot.wait().await.unwrap() else {
@@ -320,8 +374,16 @@ def tokens(args):
             panic!("remote stream must terminate: {got:?}");
         }
     }
-    assert_eq!(got, vec!["x", "y", "z"], "generator across the wire, item by item");
-    assert_eq!(engine.realm.lock().await.streams.len(), 0, "done drains the registry");
+    assert_eq!(
+        got,
+        vec!["x", "y", "z"],
+        "generator across the wire, item by item"
+    );
+    assert_eq!(
+        engine.realm.lock().await.streams.len(),
+        0,
+        "done drains the registry"
+    );
 
     effector.abort();
 }
@@ -359,18 +421,24 @@ def consume(args):
 
     let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = gw.local_addr().unwrap().port();
-    tokio::spawn(effectors::serve_effectors_listener(engine.realm.clone(), gw));
+    tokio::spawn(effectors::serve_effectors_listener(
+        engine.realm.clone(),
+        gw,
+    ));
     let mut config = effector_config_shim(port);
     config.capabilities.carriers = vec!["python".into()];
     std::env::set_var("PROBE_E2E_CREDENTIAL", "tok");
     let effector = tokio::spawn(effector_runtime::remote::run(config));
 
-    engine.register(BoothType::script("local-prod", "python", PROD)).await.unwrap();
+    engine
+        .register(BoothType::script("local-prod", "python", PROD))
+        .await
+        .unwrap();
     engine
         .register(BoothType {
             name: "remote-cons".into(),
             body: Body::RemoteProbe {
-            encoding: aura_booth::Encoding::Json,
+                encoding: aura_booth::Encoding::Json,
                 node_alias: "test-node".into(),
                 language: "python".into(),
                 source: CONS.into(),
@@ -384,7 +452,13 @@ def consume(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine
+            .realm
+            .try_lock()
+            .unwrap()
+            .effectors
+            .contains_key("test-node")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -392,13 +466,20 @@ def consume(args):
 
     let out = engine
         .invoke(
-            InstanceId { booth_type: "remote-cons".into(), key: InstanceKey::Named("c1".into()) },
+            InstanceId {
+                booth_type: "remote-cons".into(),
+                key: InstanceKey::Named("c1".into()),
+            },
             "consume",
             serde_json::json!({ "list": ["a", "b", "c", "d"] }),
         )
         .await
         .expect("remote consumer");
-    assert_eq!(out, serde_json::json!({ "got": ["a", "b"] }), "break after two of four");
+    assert_eq!(
+        out,
+        serde_json::json!({ "got": ["a", "b"] }),
+        "break after two of four"
+    );
 
     // The remote consumer's wrapper auto-disposed on GeneratorExit; the
     // local producer's stream must be gone from the registry.

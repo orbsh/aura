@@ -3,19 +3,19 @@
 //! drop, on_wake on reactivation). Event routing (emit/on) arrives in
 //! Phase 3; the unified CallSlot model in Phase 3.5.
 
-pub mod event;
-pub mod mq;
-pub mod timer;
-pub mod meta;
-pub mod value;
-pub mod realm_set;
-pub mod store_exec;
-pub mod registry;
-pub mod instance;
 pub mod call_slot;
-pub mod events;
-pub mod remote;
 pub mod ctx;
+pub mod event;
+pub mod events;
+pub mod instance;
+pub mod meta;
+pub mod mq;
+pub mod realm_set;
+pub mod registry;
+pub mod remote;
+pub mod store_exec;
+pub mod timer;
+pub mod value;
 
 use aura_booth::call::{CallId, CallSpec, PendingEntry, Waited};
 use aura_booth::{BoothType, Instance, InstanceId};
@@ -80,8 +80,7 @@ pub struct Realm {
     /// In-flight remote calls awaiting the effector's Result frame. The
     /// instance id scopes the ctx-bridge host calls the effector makes while
     /// executing this call (state fields are the instance's own).
-    pub pending_remote:
-        HashMap<String, RemotePending>,
+    pub pending_remote: HashMap<String, RemotePending>,
     /// Static call declarations per booth type (Phase 3.5). Defaults to
     /// hot + 30s when a type registers without a spec.
     call_specs: HashMap<String, CallSpec>,
@@ -116,7 +115,11 @@ pub(crate) async fn dispatch_call(
     // terminal-unwraps into the parked caller (Start+unwrap sugar at
     // the realm; the reply channel carries envelopes, the surface does
     // not). Cold targets answer Pending: no parked value exists.
-    match Realm::call(&realm, None, target, handler, args).await?.wait().await? {
+    match Realm::call(&realm, None, target, handler, args)
+        .await?
+        .wait()
+        .await?
+    {
         Waited::Done(result) => result,
         Waited::Pending(id) => Err(anyhow::anyhow!(
             "cold target cannot return a value to a parked caller (call {}); emit instead",
@@ -142,7 +145,12 @@ impl Default for Realm {
 /// declaration = `None`, never a registration error — declaration is
 /// optional metadata.
 pub async fn introspect_schema(booth: &aura_booth::BoothType) -> Option<serde_json::Value> {
-    let aura_booth::Body::Script { language, source, encoding } = &booth.body else {
+    let aura_booth::Body::Script {
+        language,
+        source,
+        encoding,
+    } = &booth.body
+    else {
         return None; // Rust types declare TTL via the builder
     };
     let raw = tokio::task::spawn_blocking({
@@ -218,4 +226,3 @@ pub(crate) async fn next_seq(self_arc: &SharedRealm) -> u64 {
     realm.call_seq += 1;
     realm.call_seq
 }
-

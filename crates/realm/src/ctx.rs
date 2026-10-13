@@ -18,9 +18,9 @@ async fn aura_realm_call(
     use aura_booth::call::Waited;
     match Realm::iterate(realm, op).await?.wait().await? {
         Waited::Done(result) => result,
-        Waited::Pending(_) => {
-            Err(anyhow::anyhow!("iterate is hot-tier only (ADR-0034 §5) — no pending slot exists"))
-        }
+        Waited::Pending(_) => Err(anyhow::anyhow!(
+            "iterate is hot-tier only (ADR-0034 §5) — no pending slot exists"
+        )),
     }
 }
 
@@ -80,9 +80,8 @@ impl Realm {
             let realm = emit_realm.clone();
             let emitter = emitter.clone();
             Box::pin(async move {
-                let realm = std::sync::Weak::upgrade(&realm).ok_or_else(|| {
-                    anyhow::anyhow!("realm dropped: emit after engine shutdown")
-                })?;
+                let realm = std::sync::Weak::upgrade(&realm)
+                    .ok_or_else(|| anyhow::anyhow!("realm dropped: emit after engine shutdown"))?;
                 Realm::emit(&realm, Some(&emitter), &event, data).await
             })
         }));
@@ -143,15 +142,25 @@ impl Realm {
                 // script thread on the unified call model (Phase 3.5) — the
                 // script itself runs in spawn_blocking, so this is bounded
                 // by the call's own tier/timeout semantics.
-                let obj = arg.as_object().ok_or_else(|| anyhow::anyhow!("ctx.invoke expects an object"))?;
-                let ty = obj.get("type").and_then(|v| v.as_str())
+                let obj = arg
+                    .as_object()
+                    .ok_or_else(|| anyhow::anyhow!("ctx.invoke expects an object"))?;
+                let ty = obj
+                    .get("type")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `type`"))?;
-                let key = obj.get("key").and_then(|v| v.as_str())
+                let key = obj
+                    .get("key")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `key`"))?;
-                let handler = obj.get("handler").and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("ctx.invoke: missing `handler` (the function to call)"))?;
+                let handler = obj.get("handler").and_then(|v| v.as_str()).ok_or_else(|| {
+                    anyhow::anyhow!("ctx.invoke: missing `handler` (the function to call)")
+                })?;
                 let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                let target = InstanceId { booth_type: ty.to_string(), key: aura_booth::InstanceKey::parse(key) };
+                let target = InstanceId {
+                    booth_type: ty.to_string(),
+                    key: aura_booth::InstanceKey::parse(key),
+                };
                 handle.block_on(dispatch(target, handler, args))
             }) as HostFn,
         );
@@ -211,15 +220,16 @@ impl Realm {
                                     key: aura_booth::InstanceKey::parse(gs("key")),
                                 },
                                 handler: gs("handler").to_string(),
-                                args: obj
-                                    .get("args")
-                                    .cloned()
-                                    .unwrap_or(serde_json::Value::Null),
+                                args: obj.get("args").cloned().unwrap_or(serde_json::Value::Null),
                             },
                             // Next/Dispose route by stream id alone —
                             // the realm's registry names the producer.
-                            1 => IterateOp::Next { stream_id: gs("stream_id").to_string() },
-                            _ => IterateOp::Dispose { stream_id: gs("stream_id").to_string() },
+                            1 => IterateOp::Next {
+                                stream_id: gs("stream_id").to_string(),
+                            },
+                            _ => IterateOp::Dispose {
+                                stream_id: gs("stream_id").to_string(),
+                            },
                         };
                         handle.block_on(iterate(op))
                     }) as HostFn,
@@ -264,7 +274,11 @@ impl Realm {
                         .as_array()
                         .ok_or_else(|| anyhow::anyhow!("ctx.store.frame: expected byte array"))?
                         .iter()
-                        .map(|v| v.as_u64().map(|x| x as u8).ok_or_else(|| anyhow::anyhow!("ctx.store.frame: bad byte")))
+                        .map(|v| {
+                            v.as_u64()
+                                .map(|x| x as u8)
+                                .ok_or_else(|| anyhow::anyhow!("ctx.store.frame: bad byte"))
+                        })
                         .collect::<Result<Vec<u8>, _>>()?;
                     let frame = OpFrame::decode(&bytes)
                         .ok_or_else(|| anyhow::anyhow!("ctx.store.frame: malformed op frame"))?;
@@ -281,7 +295,10 @@ impl Realm {
                         }
                     }
                     Ok(serde_json::Value::Array(
-                        out.encode().into_iter().map(serde_json::Value::from).collect(),
+                        out.encode()
+                            .into_iter()
+                            .map(serde_json::Value::from)
+                            .collect(),
                     ))
                 }) as HostFn,
             );
@@ -356,13 +373,20 @@ impl Realm {
                         // queue for it, so its valve answers "no route of
                         // '<type>' binds '<event>'" — the subscription truth,
                         // not a silent no-op.
-                        let part = crate::mq::bound_instance_key(&store, &booth_type, &booth_key, event)?
-                            .ok_or_else(|| anyhow::anyhow!("ctx.{name}: no route of '{booth_type}' binds '{event}'"))?;
+                        let part =
+                            crate::mq::bound_instance_key(&store, &booth_type, &booth_key, event)?
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "ctx.{name}: no route of '{booth_type}' binds '{event}'"
+                                    )
+                                })?;
                         if skip {
                             crate::mq::skip_to_head(&store, event, &part, &booth_type)?;
                             Ok(serde_json::Value::Null)
                         } else {
-                            Ok(serde_json::Value::from(crate::mq::depth(&store, event, &part)?))
+                            Ok(serde_json::Value::from(crate::mq::depth(
+                                &store, event, &part,
+                            )?))
                         }
                     }) as HostFn,
                 );

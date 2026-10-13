@@ -11,8 +11,8 @@
 //! deadline). Idempotent by contract (cancelling an unknown/fired id is
 //! a no-op, not an error).
 
-use aura_engine::Engine;
 use aura_booth::BoothType;
+use aura_engine::Engine;
 
 fn script() -> &'static str {
     r#"(define (schema) (hash "storage" (hash "collections" (hash "ticks" (hash "schema"
@@ -53,14 +53,19 @@ fn script() -> &'static str {
 }
 
 fn booth() -> InstanceId {
-    InstanceId { booth_type: "waker".into(), key: InstanceKey::Singleton }
+    InstanceId {
+        booth_type: "waker".into(),
+        key: InstanceKey::Singleton,
+    }
 }
 
-use aura_booth::{InstanceKey, InstanceId};
+use aura_booth::{InstanceId, InstanceKey};
 
 #[tokio::test]
 async fn ctx_timer_fires_delivery_and_cancel_suppresses() {
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     engine
         .register(BoothType::script("waker", "steel", script()))
         .await
@@ -68,29 +73,51 @@ async fn ctx_timer_fires_delivery_and_cancel_suppresses() {
 
     // Arm a 300ms wake from INSIDE a handler (the imperative shape:
     // the wake time is computed at runtime, not declared statically).
-    let out = engine.invoke(booth(), "arm", serde_json::json!({"at_ms": 300, "tag": "tick-1"}))
-        .await.unwrap();
+    let out = engine
+        .invoke(
+            booth(),
+            "arm",
+            serde_json::json!({"at_ms": 300, "tag": "tick-1"}),
+        )
+        .await
+        .unwrap();
     assert_eq!(out["armed"], serde_json::json!(1));
 
     // Before the deadline: nothing fired.
-    let out = engine.invoke(booth(), "check", serde_json::json!({})).await.unwrap();
+    let out = engine
+        .invoke(booth(), "check", serde_json::json!({}))
+        .await
+        .unwrap();
     assert_eq!(out["fired"], serde_json::json!(0));
 
     // After the deadline the wheel delivered `__on_timer` and the
     // handler wrote its marker. (Wheel granularity is event-driven —
     // DelayQueue fires on expiry, no tick bound on this path.)
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-    let out = engine.invoke(booth(), "check", serde_json::json!({})).await.unwrap();
-    assert_eq!(out["fired"], serde_json::json!(1), "the timer delivered __on_timer");
+    let out = engine
+        .invoke(booth(), "check", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        out["fired"],
+        serde_json::json!(1),
+        "the timer delivered __on_timer"
+    );
 
     // Cancel half: arm one and cancel it immediately — never fires.
-    let out = engine.invoke(booth(), "arm_then_cancel", serde_json::json!({})).await.unwrap();
+    let out = engine
+        .invoke(booth(), "arm_then_cancel", serde_json::json!({}))
+        .await
+        .unwrap();
     assert!(out["cancelled"].as_u64().unwrap() > 0);
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     // The only proof of non-firing here is behavioral: re-arming writes
     // id=7 again (a cancelled fire would be indistinguishable), so the
     // cancel path's lock is the idempotent-cancel + registration-race
     // free ordering (commands drain before expiries in the driver).
-    let out = engine.invoke(booth(), "check", serde_json::json!({})).await.unwrap();
+    let out = engine
+        .invoke(booth(), "check", serde_json::json!({}))
+        .await
+        .unwrap();
     assert_eq!(out["fired"], serde_json::json!(1));
 }

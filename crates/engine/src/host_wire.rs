@@ -1,8 +1,8 @@
 //! Gateway: resolve the effector's host-function calls against the realm.
 //! appends to effectors.rs — the reader loop gains a Frame::Host(Call) arm.
 
-use aura_booth::InstanceId;
 use aura_booth::call::CallSlot;
+use aura_booth::InstanceId;
 use aura_realm::SharedRealm;
 
 /// Execute one host op against the realm, scoped to the instance the
@@ -15,7 +15,12 @@ pub async fn resolve_host_call(
 ) -> Result<serde_json::Value, String> {
     use effector_protocol::HostOp;
     match op {
-        HostOp::Invoke { target_type, target_key, handler, args } => {
+        HostOp::Invoke {
+            target_type,
+            target_key,
+            handler,
+            args,
+        } => {
             let target = InstanceId {
                 booth_type: target_type.clone(),
                 // Wire string → variant (ADR-0042): "" is the singleton.
@@ -48,7 +53,12 @@ pub async fn resolve_host_call(
         // in the op; Next/Dispose route by the stream id alone (the
         // realm's registry names the producer). Each call parks the
         // effector's host thread on one hot pull, exactly like Invoke.
-        HostOp::Iterate { target_type, target_key, handler, args } => {
+        HostOp::Iterate {
+            target_type,
+            target_key,
+            handler,
+            args,
+        } => {
             let iterate_op = aura_booth::IterateOp::Start {
                 target: InstanceId {
                     booth_type: target_type.clone(),
@@ -60,10 +70,22 @@ pub async fn resolve_host_call(
             wait_iterate(realm, iterate_op).await
         }
         HostOp::IterateNext { stream_id } => {
-            wait_iterate(realm, aura_booth::IterateOp::Next { stream_id: stream_id.clone() }).await
+            wait_iterate(
+                realm,
+                aura_booth::IterateOp::Next {
+                    stream_id: stream_id.clone(),
+                },
+            )
+            .await
         }
         HostOp::IterateDispose { stream_id } => {
-            wait_iterate(realm, aura_booth::IterateOp::Dispose { stream_id: stream_id.clone() }).await
+            wait_iterate(
+                realm,
+                aura_booth::IterateOp::Dispose {
+                    stream_id: stream_id.clone(),
+                },
+            )
+            .await
         }
         // Phase 4.14 gate 1 (ADR-0026 §3 over the wire): one okm
         // Collection instruction travels as DATA — the effector side never
@@ -119,8 +141,6 @@ async fn wait_iterate(
             Ok(Err(e)) => Err(e.to_string()),
             Err(_) => Err("iterate reply dropped".to_string()),
         },
-        CallSlot::Cold { .. } => {
-            Err("iterate is hot-tier only (ADR-0034 §5)".into())
-        }
+        CallSlot::Cold { .. } => Err("iterate is hot-tier only (ADR-0034 §5)".into()),
     }
 }

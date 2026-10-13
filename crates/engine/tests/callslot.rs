@@ -21,7 +21,10 @@ fn echo() -> BoothType {
 }
 
 fn induction_bin() -> String {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../effector/target/debug/examples/"
+    );
     let full = format!("{path}induction_loop");
     assert!(
         std::path::Path::new(&full).exists(),
@@ -43,8 +46,11 @@ async fn hot_call_parks_and_returns() {
     engine.register(echo()).await.unwrap();
     let waited = engine
         .call(
-            InstanceId { booth_type: "echo".into(), key: InstanceKey::Named("a".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "echo".into(),
+                key: InstanceKey::Named("a".into()),
+            },
+            "execute",
             serde_json::json!({"hot": true}),
         )
         .await
@@ -70,8 +76,11 @@ async fn hot_timeout_is_failure_value() {
 
     let err = engine
         .call(
-            InstanceId { booth_type: "slow_echo".into(), key: InstanceKey::Named("s".into()) },
-                "slow",
+            InstanceId {
+                booth_type: "slow_echo".into(),
+                key: InstanceKey::Named("s".into()),
+            },
+            "slow",
             serde_json::json!(null),
         )
         .await
@@ -85,11 +94,7 @@ async fn hot_timeout_is_failure_value() {
 #[tokio::test]
 async fn cold_call_returns_pending_without_parking() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    let approval = BoothType::script(
-        "approval",
-        "steel",
-        ECHO,
-    );
+    let approval = BoothType::script("approval", "steel", ECHO);
     engine.register(approval).await.unwrap();
     engine
         .realm
@@ -100,8 +105,11 @@ async fn cold_call_returns_pending_without_parking() {
     let started = std::time::Instant::now();
     let waited = engine
         .call(
-            InstanceId { booth_type: "approval".into(), key: InstanceKey::Named("human".into()) },
-                "execute",
+            InstanceId {
+                booth_type: "approval".into(),
+                key: InstanceKey::Named("human".into()),
+            },
+            "execute",
             serde_json::json!({"ask": "allow rm -rf?"}),
         )
         .await
@@ -122,16 +130,22 @@ async fn cold_call_returns_pending_without_parking() {
 
     // The external world answers (minutes later in reality): resolve
     // delivers through the framework's re-entry.
-    assert!(engine.resolve_call(&call_id, Ok(serde_json::json!("approved"))).await);
+    assert!(
+        engine
+            .resolve_call(&call_id, Ok(serde_json::json!("approved")))
+            .await
+    );
 }
 
 #[tokio::test]
 async fn resolve_unknown_call_is_noop() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Completed calls never replay: resolving an unknown id is a no-op.
-    assert!(!engine
-        .resolve_call(&CallId("ghost".into()), Ok(serde_json::json!(1)))
-        .await);
+    assert!(
+        !engine
+            .resolve_call(&CallId("ghost".into()), Ok(serde_json::json!(1)))
+            .await
+    );
 }
 
 #[tokio::test]
@@ -148,8 +162,11 @@ async fn deadline_scan_fails_expired_hot_calls() {
     // Fire without awaiting: the call is in-flight past its deadline.
     let slot = engine
         .call(
-            InstanceId { booth_type: "slow_echo".into(), key: InstanceKey::Named("s".into()) },
-                "slow",
+            InstanceId {
+                booth_type: "slow_echo".into(),
+                key: InstanceKey::Named("s".into()),
+            },
+            "slow",
             serde_json::json!(null),
         )
         .await

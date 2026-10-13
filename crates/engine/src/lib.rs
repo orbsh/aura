@@ -68,8 +68,8 @@ impl Engine {
             aura_config::Engine::Fjall => {
                 #[cfg(feature = "fjall")]
                 {
-                    let path = dir
-                        .unwrap_or_else(|| std::env::temp_dir().join(format!("aura-{node_id}")));
+                    let path =
+                        dir.unwrap_or_else(|| std::env::temp_dir().join(format!("aura-{node_id}")));
                     let db = fjall::Database::create_or_recover(fjall::Config::new(&path))
                         .map_err(|e| anyhow::anyhow!("fjall open {path:?}: {e}"))?;
                     let mq_store = okm_core::FjallStore::from_db(db, "aura_mq")
@@ -104,10 +104,8 @@ impl Engine {
             }
         }
     }
-
 }
 impl Engine {
-
     /// Override the idle TTL (realm-wide default; per-type TTL overrides
     /// this — see `BoothType::with_idle_ttl`).
     pub fn with_idle_ttl(self, ttl: Duration) -> Self {
@@ -146,7 +144,11 @@ impl Engine {
         let mut introspected: Option<serde_json::Value> = None;
         if let Some(schema) = aura_realm::introspect_schema(&booth).await {
             if booth.idle_ttl.is_none() {
-                if let Some(ttl) = schema.get("lifecycle").and_then(|l| l.get("idle_ttl")).and_then(parse_ttl) {
+                if let Some(ttl) = schema
+                    .get("lifecycle")
+                    .and_then(|l| l.get("idle_ttl"))
+                    .and_then(parse_ttl)
+                {
                     booth.idle_ttl = Some(ttl);
                 }
             }
@@ -159,10 +161,11 @@ impl Engine {
                 for (event, spec) in receives {
                     if let Some(resolve) = spec.get("resolve") {
                         let get = |f: &str| {
-                            resolve.get(f).and_then(|v| v.as_str())
-                                .ok_or_else(|| anyhow::anyhow!(
+                            resolve.get(f).and_then(|v| v.as_str()).ok_or_else(|| {
+                                anyhow::anyhow!(
                                     "receives['{event}'].resolve: missing string field `{f}`"
-                                ))
+                                )
+                            })
                         };
                         booth = booth.on_resolve(
                             event.clone(),
@@ -232,7 +235,10 @@ impl Engine {
         match self.call(target, handler, args).await? {
             aura_booth::call::Waited::Done(result) => result,
             aura_booth::call::Waited::Pending(id) => {
-                anyhow::bail!("cold call returned a Pending slot to a hot caller: {}", id.0)
+                anyhow::bail!(
+                    "cold call returned a Pending slot to a hot caller: {}",
+                    id.0
+                )
             }
         }
     }
@@ -318,12 +324,14 @@ impl Engine {
 fn parse_ttl(v: &serde_json::Value) -> Option<std::time::Duration> {
     match v {
         serde_json::Value::Number(n) => n.as_u64().map(std::time::Duration::from_secs),
-        serde_json::Value::String(s) => match (s.chars().last()?, s[..s.len() - 1].parse::<u64>().ok()?) {
-            ('s', n) => Some(std::time::Duration::from_secs(n)),
-            ('m', n) => Some(std::time::Duration::from_secs(n * 60)),
-            ('h', n) => Some(std::time::Duration::from_secs(n * 3600)),
-            _ => None,
-        },
+        serde_json::Value::String(s) => {
+            match (s.chars().last()?, s[..s.len() - 1].parse::<u64>().ok()?) {
+                ('s', n) => Some(std::time::Duration::from_secs(n)),
+                ('m', n) => Some(std::time::Duration::from_secs(n * 60)),
+                ('h', n) => Some(std::time::Duration::from_secs(n * 3600)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

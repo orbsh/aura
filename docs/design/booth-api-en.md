@@ -63,9 +63,9 @@ assembly (`receives` from `@on` parameters, wildcards into
 declaration the script writes — decorators own receives, the script
 contributes lifecycle and anything else the decorators cannot express.
 The single merged function is the only thing aura calls. Rust assembles
-it from the bgi-guest shim's `Guest` builder (the same registry its
+it from the induction-guest `Guest` builder (the same registry its
 `.on`/`.hook` declarations feed — ADR-0043 §5, PLAN 4.21); steel/python
-via the carrier collectors; nushell/bgi child processes hand-write the
+via the carrier collectors; nushell/induction child processes hand-write the
 reply.
 
 ## Common Contract (All Languages)
@@ -127,12 +127,12 @@ following — each takes one JSON argument and returns a JSON value:
 
 **Language capability matrix**:
 
-| | python | steel | nushell (bgi) | bgi (native child) |
+| | python | steel | nushell (induction) | induction (native child) |
 |---|---|---|---|---|
 | In-process | ✅ | ✅ | ❌ | ❌ |
 | ctx host functions | ✅ ctx object | ✅ dotted symbols | frame up-call (fifo) | typed host frames |
 | Resident (Phase 2.6) | ✅ | ✅ | ✅ (resident child) | ✅ |
-| Registration entry | `@on` decorator / `ctx.on` | `on` builtin / `ctx.on` | hand-written schema (the interface_schema reply) | bgi-guest builder / hand-written schema |
+| Registration entry | `@on` decorator / `ctx.on` | `on` builtin / `ctx.on` | hand-written schema (the interface_schema reply) | induction-guest builder / hand-written schema |
 | Lifecycle hooks | `ctx.on("__sleep", h)` | `ctx.on("__sleep", h)` | schema `hooks` array | schema `hooks` array |
 | Phase gate (ADR-0043 §3) | ctx.on errors post-activation | on/ctx.on error post-activation | no runtime registration face | builder-closed (structural) |
 | Best for | business logic | AI-generated ops | pipeline/CLI shape | compiled languages (Rust/C/C++/Zig/Go…) |
@@ -243,7 +243,7 @@ No-entry semantics: define a `*result*` variable in the source.
 [中文](#nushell-2)
 
 ```nu
-# The bgi two-fifo shape (ADR-0035 §8; the PTY carrier retired): the
+# The induction two-fifo shape (ADR-0035 §8; the PTY carrier retired): the
 # spawn spec is `nu <author.nu>`, and `def main [req rep]` IS the loop —
 # the parent writes frames to req (writer-close = the batch-EOF wake-up),
 # ctx answers ride a SECOND channel, rep (two readers on one fifo
@@ -286,12 +286,12 @@ def main [req: string, rep: string] { … loop { for line in (open --raw $req | 
 > wasm e2e retired with it). Ruling and rationale: PLAN Phase 4.21 + ADR-0044 —
 > the cross-language promise never materialized, fine-grained import refusal is
 > not this system's security boundary (isolation lives at deployment), no real
-> consumer, wasmtime's binary weight. The channel for Rust booths is **bgi**
+> consumer, wasmtime's binary weight. The channel for Rust booths is **induction**
 > (a native child process speaking the frame protocol); the user face is the
-> **bgi-guest shim** (`Guest` builder + typed `Ctx`, zero aura deps). The
+> **induction-guest** crate (`Guest` builder + typed `Ctx`, zero aura deps). The
 > boundary ruling of ADR-0044 (never compile booths into the host — that
 > collapses the platform into a framework) stands; only the out-of-process
-> channel changed, wasm → bgi.
+> channel changed, wasm → induction.
 
 
 ## Relationship to effector (restated)

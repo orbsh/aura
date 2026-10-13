@@ -229,7 +229,7 @@ state — each gets its table.**
 | Rust booth | `BoothType::rust(...).on("order.created", key_field)` builder | the type object the declaration hangs on |
 | python | `@on("order.created", key="user_id")` collector | the module the declaration lives in |
 | steel | `(on "order.created" "user_id" handler)` collector | same |
-| bgi/exec/wasm | hand-written `interface_schema` frame (the `receives` block) | same (no collector — the declaration IS data) |
+| induction/exec | hand-written `interface_schema` frame (the `receives` block) | same (no collector — the declaration IS data) |
 
 Script declarations materialize into `interface_schema.receives` at UPLOAD time
 via `carrier::introspect`; the host never branches per language. A declaration

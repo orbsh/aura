@@ -154,7 +154,7 @@
 | Rust 摊位 | `BoothType::rust(...).on("order.created", key_field)` builder | 声明挂在哪个类型对象上 |
 | python | `@on("order.created", key="user_id")` 装饰器收集 | 声明长在哪个模块里 |
 | steel | `(on "order.created" "user_id" handler)` 收集器 | 同上 |
-| bgi/exec/wasm | 手写的 `interface_schema` 帧（含 `receives` 块） | 同上（无收集器，声明即数据） |
+| induction/exec | 手写的 `interface_schema` 帧（含 `receives` 块） | 同上（无收集器，声明即数据） |
 
 脚本面声明经 `carrier::introspect` 在**上传时**物化为 `interface_schema.receives`；
 宿主不按语言分支。声明的内容只有两问：**订什么事件**（事件名/通配模式）、

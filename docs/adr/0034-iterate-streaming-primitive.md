@@ -184,3 +184,15 @@ The decisions above stand unchanged. Two FORMS are superseded:
   that looseness in the landed protocol).
 
 The body above is preserved as decided on 2026-09-28.
+
+## Errata (2026-10-13, gravity carrier)
+
+§6's heading and the Consequences gravity line are superseded as FORMS: the
+producer side of LLM serving is NOT script-carrier-bound. The provider (and
+the turn booth alike) is a resident Rust guest process over the induction
+pipe (`~/world/induction`) — the process holds the stream state, answers
+each pull round with an envelope, and closes with `done: true`. §6's real
+constraint was always resident state for the producer, which a child process
+has by definition; the python carrier was the first shape that satisfied it,
+not the only one. Gravity's carrier ruling lives in the gravity PLAN
+(Phase 4 SUPERSEDED note, Phase 4.1).

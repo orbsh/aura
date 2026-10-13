@@ -152,3 +152,12 @@ Phase 3.5（hot 层——每次拉取）、modeling.md（流式消费模式节�
   （ADR-0036 §4 收口落地协议里的这处松散）。
 
 上文正文按 2026-09-28 的裁决原样保留。
+
+## Errata（2026-10-13，gravity 载体）
+
+§6 的标题与 Consequences 的 gravity 行作为【形式】被取代：LLM 服务的生产侧
+不再绑定脚本载体。provider（与 turn 摊位同样）是骑 induction 管道
+（`~/world/induction`）的 Rust 驻留子进程——进程持有流状态，逐轮 pull
+以信封应答，`done: true` 收尾。§6 的真实约束从来是「生产者要有驻留状态」，
+子进程天然满足；python 载体是满足它的第一个形态，不是唯一形态。gravity
+的载体裁决住在 gravity PLAN（Phase 4 SUPERSEDED 注记、Phase 4.1）。

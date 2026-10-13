@@ -95,7 +95,7 @@ async fn remote_effector_roundtrip() {
     // Phase 4.14 gate 1 — ctx.store, which executes against the
     // type's resolved storage plan; remote types register no schema, so
     // that arm answers the named no-plan error here — the store round
-    // trip over a live plan is locked in exec_booth.rs's bgi test). The
+    // trip over a live plan is locked in exec_booth.rs's induction test). The
     // retired instance-document assertions are gone with the model
     // (ADR-0026 §3).
 

@@ -145,7 +145,7 @@ async fn state_survives_scale_to_zero() {
 // Script booths execute through the effector carriers — the same carrier set
 // the remote effector uses; language execution is not reimplemented here.
 // Script booths are pure functions in this phase (args in, value out).
-// The nu booth rides the bgi carrier's two-fifo adapter (the retired PTY
+// The nu booth rides the induction carrier's two-fifo adapter (the retired PTY
 // path): the spawn spec is `nu <author.nu>`, pipelines run untouched.
 #[tokio::test]
 async fn nu_bgi_script_booth_through_realm() {
@@ -548,7 +548,7 @@ async fn script_booth_definition_survives_restart() {
 
 // Phase 4.5b (c) heritage, retargeted at retirement: interface_schema()
 // declared in the script is callable at registration through the carrier
-// (bgi shape: a schema frame to the child, the retired PTY's one-spawn
+// (induction shape: a schema frame to the child, the retired PTY's one-spawn
 // introspection). Nu booths declare TTL in script like python/steel.
 #[tokio::test]
 async fn bgi_nu_interface_schema_declares_idle_ttl() {

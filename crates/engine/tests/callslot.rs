@@ -9,7 +9,7 @@ use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use std::time::Duration;
 
-// Steel script booths (4.5a). slow_echo: a bgi child whose `slow`
+// Steel script booths (4.5a). slow_echo: an induction child whose `slow`
 // handler really sleeps 500ms — the deadline tests need latency a hot
 // timeout can beat (the nushell PTY's spawn latency role, retired).
 const ECHO: &str = r#"
@@ -30,8 +30,8 @@ fn bgi_bin() -> String {
     full
 }
 
-// slow_echo IS the slow handler the deadline tests need (bgi child,
-// 500ms sleep) — the shape is feature-free: bgi spawns by exec, no
+// slow_echo IS the slow handler the deadline tests need (induction child,
+// 500ms sleep) — the shape is feature-free: induction spawns by exec, no
 // embedded interpreter gate.
 fn slow_echo() -> BoothType {
     BoothType::script("slow_echo", "induction", bgi_bin())

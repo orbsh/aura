@@ -358,7 +358,7 @@ impl Realm {
                 // state lives in the session (module globals / the child's
                 // own memory); eviction drops it. spawn_blocking so host
                 // fns may block on the async ctx. The out-of-process
-                // shapes carry the bridge over their channels (bgi frames,
+                // shapes carry the bridge over their channels (induction frames,
                 // the retired PTY's file round trips are gone).
                 let host = {
                     // Wasm full-power raw surface: the type's resolved

@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 ///
 /// The script form imports the effector runtime instead of reimplementing
 /// language execution: one set of carriers (steel/python embedded,
-/// bgi/exec out-of-process)
+/// induction/exec out-of-process)
 /// serves both the remote effector and embedded booths. Script booths are
 /// pure functions in this phase (args in, value out); the ctx bridge
 /// (state/invoke from inside scripts via host functions) is the remaining
@@ -25,7 +25,7 @@ pub enum Body {
     Script {
         language: String,
         source: String,
-        /// Frame codec for the PROCESS carriers (bgi/exec, ADR-0037 §2 —
+        /// Frame codec for the PROCESS carriers (induction/exec, ADR-0037 §2 —
         /// dual-protocol by declaration). Json = newline-delimited JSON
         /// lines (the stdlib-reachable default every older booth rides);
         /// Cbor = one self-delimited CBOR document per frame. Embedded
@@ -176,7 +176,7 @@ impl BoothType {
     }
 
     /// Declare the frame codec of a PROCESS-carrier booth (ADR-0037 §2 —
-    /// dual-protocol): `Cbor` switches the bgi/exec channel to
+    /// dual-protocol): `Cbor` switches the induction/exec channel to
     /// CBOR documents (self-delimited, no line terminator). A declaration
     /// error, not a silent downgrade: the nushell fifo shape rejects a
     /// Cbor spec at spawn (nu has no CBOR codec). Inert for embedded

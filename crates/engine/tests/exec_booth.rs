@@ -1,6 +1,6 @@
-//! ADR-0035 exec/BGI carriers through the realm path: a framed resident
+//! ADR-0035 exec/Induction carriers through the realm path: a framed resident
 //! booth registers with `language = "induction"` (source = the spawn spec —
-//! the `bgi_loop` fixture speaking the line protocol), and a bare
+//! the `induction_loop` fixture speaking the line protocol), and a bare
 //! one-shot booth registers with `language = "exec"` (the `one_shot`
 //! fixture: one JSON in, one JSON out, nothing survives). Both run
 //! through the realm's resident-session dispatch — the shapes differ,
@@ -24,7 +24,7 @@ fn bin(name: &str) -> String {
     full
 }
 
-/// Plain call: the realm's script arm dispatches into the bgi session
+/// Plain call: the realm's script arm dispatches into the induction session
 /// like any carrier — the child answers the request frame with a result.
 #[tokio::test]
 async fn bgi_booth_invoke() {
@@ -102,7 +102,7 @@ async fn bgi_booth_declared_hooks_run_through_the_realm() {
     assert_eq!(out, serde_json::json!({ "echoed": { "w": 2 } }));
 }
 
-/// The ctx seam across the process boundary, into the REALM: the bgi
+/// The ctx seam across the process boundary, into the REALM: the induction
 /// booth's `ctx_round_trip` sends a host frame (ctx.invoke) which the
 /// host bridge answers against a sibling python booth — child → pipes →
 /// realm → child, one full round. The sibling is a python booth: the
@@ -143,7 +143,7 @@ def handle(args):
     assert_eq!(out, serde_json::json!({ "from": "python", "got": 42 }));
 }
 
-/// ADR-0034 over the bgi seam through the realm: the iterate jobs drive
+/// ADR-0034 over the induction seam through the realm: the iterate jobs drive
 /// the child's guard state; done drains the realm registry (the same
 /// bookkeeping the script carriers get — carrier-independent by design).
 #[tokio::test]
@@ -188,7 +188,7 @@ async fn bgi_booth_iterate_through_realm() {
     assert_eq!(realm.lock().await.streams.len(), 0, "done drains the registry");
 }
 
-/// BGI residency: eviction reaps the child, re-invocation cold-starts
+/// Induction residency: eviction reaps the child, re-invocation cold-starts
 /// (the same session lifecycle as every embedded carrier).
 #[tokio::test]
 async fn bgi_booth_eviction_reaps_the_child() {
@@ -205,7 +205,7 @@ async fn bgi_booth_eviction_reaps_the_child() {
     assert!(engine.realm.lock().await.is_resident(&target));
 
     // Drive eviction directly (not the 5s tick): the instance evict runs
-    // sessions.evict — the bgi slot's Drop closes stdin + reaps.
+    // sessions.evict — the induction slot's Drop closes stdin + reaps.
     aura_realm::Realm::evict_instance(engine.realm.clone(), &target).await;
 
     // Cold start: the next call spawns a fresh child and works.
@@ -215,7 +215,7 @@ async fn bgi_booth_eviction_reaps_the_child() {
 
 /// exec (the bare cgi shape) through the realm: invoke works like any
 /// carrier (one JSON in, one JSON out per call); iterate is a NAMED
-/// error — statelessness by definition, the fix is bgi. The counter
+/// error — statelessness by definition, the fix is induction. The counter
 /// handler proves it: every call counts its own args, never a previous
 /// call's (a one-shot guard could not exist even if asked).
 #[tokio::test]
@@ -241,7 +241,7 @@ async fn exec_oneshot_booth_through_realm() {
     // shape — it runs and the carrier wraps stdout terminal. The
     // statelessness lives in the stream verb after it: the follow-up
     // Next names the design as an error value (no residency holds a
-    // stream — the fix is bgi, not a retry).
+    // stream — the fix is induction, not a retry).
     let slot = aura_realm::Realm::iterate(
         &realm,
         aura_booth::IterateOp::Start {
@@ -276,11 +276,11 @@ async fn exec_oneshot_booth_through_realm() {
     assert!(err.contains("not live"), "the id is dead by construction: {err}");
 }
 
-/// Phase 4.14 gate 1: `ctx.store` over the bgi seam into the REALM
+/// Phase 4.14 gate 1: `ctx.store` over the induction seam into the REALM
 /// store. The fixture's `store_round_trip` forwards two okm Collection
 /// instructions (put, read-back) as host frames — pure transport, the
 /// child never parses them — and the parent answers from the type's own
-/// plan (the bgi fixture's hand-written `interface_schema` declares the
+/// plan (the induction fixture's hand-written `interface_schema` declares the
 /// `counters` collection; the plan resolves at registration through the
 /// same 4.5b introspection path the script carriers use). This is the
 /// gate for the nushell PTY retirement: the in-process bridge's storage
@@ -296,7 +296,7 @@ async fn bgi_booth_store_emit_roundtrip() {
     // The type's schema introspected at upload: a plan resolved.
     assert!(
         engine.realm.lock().await.plan_of("bin-store").is_some(),
-        "the bgi fixture's declared storage resolves a plan"
+        "the induction fixture's declared storage resolves a plan"
     );
 
     let out = engine
@@ -332,7 +332,7 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../../effector/crates/runtime/examples/induction_nu.nu"
     );
-    assert!(std::path::Path::new(fixture).exists(), "nu bgi fixture missing: {fixture}");
+    assert!(std::path::Path::new(fixture).exists(), "nu induction fixture missing: {fixture}");
     engine
         .register(BoothType::script("nu-store", "induction", format!("nu {fixture}")))
         .await

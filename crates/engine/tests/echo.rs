@@ -148,7 +148,7 @@ async fn state_survives_scale_to_zero() {
 // The nu booth rides the induction carrier's two-fifo adapter (the retired PTY
 // path): the spawn spec is `nu <author.nu>`, pipelines run untouched.
 #[tokio::test]
-async fn nu_bgi_script_booth_through_realm() {
+async fn nu_induction_script_booth_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -551,7 +551,7 @@ async fn script_booth_definition_survives_restart() {
 // (induction shape: a schema frame to the child, the retired PTY's one-spawn
 // introspection). Nu booths declare TTL in script like python/steel.
 #[tokio::test]
-async fn bgi_nu_interface_schema_declares_idle_ttl() {
+async fn induction_nu_interface_schema_declares_idle_ttl() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -758,4 +758,4 @@ async fn store_emit_roundtrip_and_interface_schema_read() {
 
 // The PTY ctx file-bridge store test retired with the carrier: the same
 // aura-side lock (plan resolution + store_exec behind the ctx seam) now
-// lives on the bgi shape — exec_booth.rs::bgi_nu_booth_store_emit_roundtrip.
+// lives on the bgi shape — exec_booth.rs::induction_nu_booth_store_emit_roundtrip.

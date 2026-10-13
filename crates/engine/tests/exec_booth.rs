@@ -27,7 +27,7 @@ fn bin(name: &str) -> String {
 /// Plain call: the realm's script arm dispatches into the induction session
 /// like any carrier — the child answers the request frame with a result.
 #[tokio::test]
-async fn bgi_booth_invoke() {
+async fn induction_booth_invoke() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
@@ -64,7 +64,7 @@ async fn bgi_booth_invoke() {
 /// (before the first job), __sleep around eviction (idle_ttl expiry) —
 /// a real Named instance is driven through a full wake→sleep cycle.
 #[tokio::test]
-async fn bgi_booth_declared_hooks_run_through_the_realm() {
+async fn induction_booth_declared_hooks_run_through_the_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
@@ -111,7 +111,7 @@ async fn bgi_booth_declared_hooks_run_through_the_realm() {
 /// build: python`, swallowed to Null by the fixture's old host helper).
 #[cfg(feature = "python")]
 #[tokio::test]
-async fn bgi_booth_invoke_to_sibling() {
+async fn induction_booth_invoke_to_sibling() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("bin-echo", "induction", bin("induction_loop")))
@@ -147,7 +147,7 @@ def handle(args):
 /// the child's guard state; done drains the realm registry (the same
 /// bookkeeping the script carriers get — carrier-independent by design).
 #[tokio::test]
-async fn bgi_booth_iterate_through_realm() {
+async fn induction_booth_iterate_through_realm() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("bin-prod", "induction", bin("induction_loop")))
@@ -191,7 +191,7 @@ async fn bgi_booth_iterate_through_realm() {
 /// Induction residency: eviction reaps the child, re-invocation cold-starts
 /// (the same session lifecycle as every embedded carrier).
 #[tokio::test]
-async fn bgi_booth_eviction_reaps_the_child() {
+async fn induction_booth_eviction_reaps_the_child() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(
@@ -286,7 +286,7 @@ async fn exec_oneshot_booth_through_realm() {
 /// gate for the nushell PTY retirement: the in-process bridge's storage
 /// capability now provably crosses the process boundary.
 #[tokio::test]
-async fn bgi_booth_store_emit_roundtrip() {
+async fn induction_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(BoothType::script("bin-store", "induction", bin("induction_loop")))
@@ -326,7 +326,7 @@ async fn bgi_booth_store_emit_roundtrip() {
 /// boundary on the framed resident shape, so the PTY machinery
 /// (NushellResident, bridge.nu, pump_quiet) retires without a gap.
 #[tokio::test]
-async fn bgi_nu_booth_store_emit_roundtrip() {
+async fn induction_nu_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -384,7 +384,7 @@ async fn bgi_nu_booth_store_emit_roundtrip() {
 /// and the store round trip crosses TYPED frames over CBOR (the
 /// declared codec drives both directions, no silent JSON fallback).
 #[tokio::test]
-async fn bgi_cbor_booth_store_emit_roundtrip() {
+async fn induction_cbor_booth_store_emit_roundtrip() {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     engine
         .register(

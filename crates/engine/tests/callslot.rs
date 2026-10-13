@@ -20,7 +20,7 @@ fn echo() -> BoothType {
     BoothType::script("echo", "steel", ECHO)
 }
 
-fn bgi_bin() -> String {
+fn induction_bin() -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/target/debug/examples/");
     let full = format!("{path}induction_loop");
     assert!(
@@ -34,7 +34,7 @@ fn bgi_bin() -> String {
 // 500ms sleep) — the shape is feature-free: induction spawns by exec, no
 // embedded interpreter gate.
 fn slow_echo() -> BoothType {
-    BoothType::script("slow_echo", "induction", bgi_bin())
+    BoothType::script("slow_echo", "induction", induction_bin())
 }
 
 #[tokio::test]

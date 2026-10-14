@@ -132,28 +132,36 @@ async fn handle_connection(
                 // Ctx bridge over the wire: resolve against the instance
                 // the enclosing remote call was routed to (looked up from
                 // pending_remote by the call_id the effector carries), then
-                // reply on this connection's writer.
-                let instance = {
-                    let r = realm.lock().await;
-                    r.pending_remote
-                        .get(&call.call_id)
-                        .map(|p| p.instance.clone())
-                };
-                let outcome = match instance {
-                    Some(inst) => {
-                        crate::host_wire::resolve_host_call(&realm, &inst, &call.op).await
-                    }
-                    None => {
-                        Err("unknown call_id: the enclosing remote call is not in flight".into())
-                    }
-                };
-                tx.send(Frame::Host(HostFrame::Result(
-                    effector_protocol::HostResult {
-                        host_call_id: call.host_call_id,
-                        outcome,
-                    },
-                )))
-                .ok();
+                // reply on this connection's writer. SPAWNED, never awaited
+                // inline: the resolution parks on a hot realm call whose
+                // Result frame can only be read by THIS loop, so a ctx
+                // target on this same node would wait for a message only
+                // this loop can deliver (self-deadlock to the deadline).
+                let realm = realm.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let instance = {
+                        let r = realm.lock().await;
+                        r.pending_remote
+                            .get(&call.call_id)
+                            .map(|p| p.instance.clone())
+                    };
+                    let outcome = match instance {
+                        Some(inst) => {
+                            crate::host_wire::resolve_host_call(&realm, &inst, &call.op).await
+                        }
+                        None => Err(
+                            "unknown call_id: the enclosing remote call is not in flight".into(),
+                        ),
+                    };
+                    tx.send(Frame::Host(HostFrame::Result(
+                        effector_protocol::HostResult {
+                            host_call_id: call.host_call_id,
+                            outcome,
+                        },
+                    )))
+                    .ok();
+                });
             }
             other => anyhow::bail!("unexpected frame from effector: {other:?}"),
         }

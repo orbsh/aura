@@ -27,6 +27,7 @@ meta 平面原设计为走 raft 同步的数据（如用户认证信息），服
 - 身份模型保持平面内 registry 模式（TypeName registry + MAX watermark reduce；id 永不复用）——与 BoothName、state 表的身份解析同构。一个模式，三处使用。
 - `aura-storage` crate 已删除（aura 内不再有任何 JSON 存储）。
 - 内省 schema 继续按原文 JSON 文本携带——接口产物（LLM/脚本侧契约），不是存储编码。
+- **勘误（2026-10-17，commit `a0b0c03`）**：上一条描述的是**已过期**的存储形态。`BoothDef.schema: String` 已删除，内省 schema 走该行的动态段、以一条 `DynamicValue::Obj` 条目承载——结构化 TLV 帧、可按字段读取、符合 ADR-0018；「接口产物」这一属性不变，JSON 现在只存在于 `PersistedBooth` 这个 seam 上。另：本 ADR 正文里的 ns 41 已按 ADR-0040 段位重编为 ns 31（`BoothName` 30 / `BoothDef` 31 / `CodeBlob` 32）。见 `docs/design/event-flow.md` 的 ns 31 表行与 PLAN「meta schema 动态段化」。
 
 ## 被否决的替代方案：aura 完全不持存储
 

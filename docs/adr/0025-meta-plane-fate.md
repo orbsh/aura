@@ -27,6 +27,7 @@ The meta plane was originally designed as raft-synchronized data (for example, u
 - The identity model stays the registry pattern INSIDE the plane (TypeName registry + MAX watermark reduce; ids never reused) — the same shape as BoothName and the state table's identity resolution. One pattern, three uses.
 - The `aura-storage` crate is deleted (no JSON store remains anywhere in aura).
 - The introspected schema keeps riding as verbatim JSON text — an interface artifact (the LLM/script-side contract), not a storage encoding.
+- **Erratum (2026-10-17, commit `a0b0c03`)**: the bullet above describes a STORAGE shape that is no longer current. `BoothDef.schema: String` was dropped; the introspected schema rides the row's dynamic segment as one `DynamicValue::Obj` entry — structured TLV frames, field-wise readable, ADR-0018-clean. The interface-artifact attribute is unchanged and JSON now exists only at the `PersistedBooth` seam. Also: the ns 41 in the body above was renumbered to ns 31 by ADR-0040 bands (`BoothName` 30 / `BoothDef` 31 / `CodeBlob` 32). See `docs/design/event-flow-en.md` (the ns 31 table row) and PLAN "meta schema 动态段化".
 
 ## Rejected alternative: aura holds no storage at all
 

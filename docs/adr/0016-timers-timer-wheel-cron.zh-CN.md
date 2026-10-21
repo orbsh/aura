@@ -129,6 +129,17 @@ Host 可控）；其 Update 注记把旧的拒绝收窄到阻塞/自调度形态
 任务」）仍被拒绝，理由不变（任务数无界、无持久注册路径）——驱动是
 全体定时器共享的一个任务，该条目当时没有考虑这个形态。
 
+**1a. wheel 的真实结构（粒度）。** `DelayQueue` 背后的 `Wheel` 是分层
+（多级）时间轮：6 级 × 64 slot。level 0 的 slot 宽 1 ms、覆盖范围
+64 ms，每上一级 slot 宽度 ×64（约 4 秒、4 分、4 小时、12 天），顶层
+覆盖约 2 年。条目插入到其截止时刻落在范围内的那一级，每次到期扫描
+向下一级 tier down，直到 level 0 才被交出。aura 完全不碰这些级——
+只调 `insert_at` / `remove` / `poll_expired`，因此分级语义（以及
+逐级调参）都不在我们这侧。到期由驱动 `Sleep` 唤醒即刻观测，分辨率
+为 level 0 的 1 ms（受调度延迟影响）——不是 5 秒 evictor tick，也不
+是原 Consequences 所写的 ±5 秒界。仍无亚毫秒或精确墙钟保证，所以
+「没有消费者需要比 tick 更好的精度」这个意图成立，但它的数字不成立。
+
 **2. 两种条目。** 调度面实际存在两种形态，wheel 同时承载：
 
 - **投递型条目** `(deliver_at, target, tag, durable)`——唤醒一个摊位，投递 `__on_timer` 作业（插话检查、压缩唤醒、cron）。
@@ -182,10 +193,12 @@ evictor 任务仅保留 `pending_calls` 的 deadline 扫描（其自身也是
   `interface_schema` 中的声明式 `lifecycle.cron` 在注册时翻译为
   持久定时器。ctx bridge 的 host-fn 表从扁平 `ctx_state_*` 名字
   改为点号命名空间组（`ctx.store.*`、`ctx.timer.*`），可自省。
-- evictor tick 增加 wheel 扫描（同一个 5 秒循环；wheel 在驱逐
-  之前检查，同一 tick 内到期投递先于驱逐）。
+- ~~evictor tick 增加 wheel 扫描（同一个 5 秒循环；wheel 在驱逐
+  之前检查，同一 tick 内到期投递先于驱逐）。~~ *由修订 §1 取代：
+  wheel 自驱动。*
 - gravity（按 channel 实例）经此接口注册插话与压缩唤醒；
   krystallizer 的策略参数（ADR-0008/0009）决定时长，aura 的
   定时器负责送达。
-- 定时粒度受 evictor tick 约束（±5 秒）；亚 tick 精度不是目标
-  （无消费者需要）。
+- ~~定时粒度受 evictor tick 约束（±5 秒）；亚 tick 精度不是目标
+  （无消费者需要）。~~ *由修订 §1a 取代：level 0 分辨率（1 ms
+  量化，其上叠加调度延迟），无 tick 界。*

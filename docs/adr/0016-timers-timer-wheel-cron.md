@@ -169,6 +169,22 @@ task per timer") remains rejected for the reason given (unbounded
 task count, no persistence path) — the driver is one task for ALL
 timers, which that entry never considered.
 
+**1a. What the wheel's structure actually is (granularity).** `DelayQueue`'s
+backing `Wheel` is a hierarchical (multi-level) timing wheel, 6 levels ×
+64 slots: level 0 slots are 1 ms wide over a 64 ms range, each level up
+multiplies the slot width by 64 (~4 s, ~4 min, ~4 hr, ~12 day), the top
+level reaches ~2 years. An entry is inserted at the level whose range
+covers its deadline and tiers down one level per expiry sweep until
+level 0, where it is handed out. Aura never touches the levels — it only
+calls `insert_at` / `remove` / `poll_expired`, so no hierarchy semantics
+(and no per-level tuning) live on our side. An expiry is therefore
+observed as soon as the driving `Sleep` wakes, at level-0 resolution
+(1 ms quantisation, subject to scheduler latency) — NOT on the 5-second
+evictor tick, and NOT with the ±5 s bound the original Consequences
+stated. There is still no sub-millisecond or exact-wall-clock guarantee,
+which is why the "no consumer needs better than tick precision" intent
+survives even though its number does not.
+
 **2. Two entry kinds.** The scheduling surface turned out to have two
 shapes, and the wheel holds both:
 
@@ -238,12 +254,14 @@ O(instances).
   `interface_schema` translates to durable timers at registration.
   The ctx bridge host-fn table moves from flat `ctx_state_*` names to
   dot-namespaced groups (`ctx.store.*`, `ctx.timer.*`), introspectable.
-- The evictor tick gains a wheel scan (same 5-second loop; the wheel
+- ~~The evictor tick gains a wheel scan (same 5-second loop; the wheel
   is checked before eviction so a due delivery preempts an eviction
-  that same tick).
+  that same tick).~~ *Superseded by Revision §1: the wheel self-drives.*
 - Gravity (per-channel instances) registers its interrupt and
   compression wakes through this surface; the krystallizer policy
   parameters (ADR-0008/0009) drive the durations, the aura timer
   drives the delivery.
-- Timer granularity is bounded by the evictor tick (±5s); sub-tick
-  precision is a non-goal (no consumer needs it).
+- ~~Timer granularity is bounded by the evictor tick (±5s); sub-tick
+  precision is a non-goal (no consumer needs it).~~ *Superseded by
+  Revision §1a: level-0 resolution (1 ms quantisation, scheduler
+  latency on top), no tick bound.*

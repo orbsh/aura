@@ -29,13 +29,15 @@ static REDUCE_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), Reduce
 static INDEX_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), IndexSpecData>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
-/// The names the schema declares (key + payload): everything `fetch` returns
-/// that is NOT part of the dynamic half.
+/// The names the row carries: the PAYLOAD declaration, hot or cold. Key fields
+/// are not among them — the identity is the key, and OKM is a KV store whose
+/// value may hold a field that happens to share a key field's name (okm
+/// MODELING, "the key is independent of the value"), so such a name belongs to
+/// the dynamic half like any other.
 fn declared_names(schema: &okm_core::schema::CollectionSchema) -> Vec<&str> {
     schema
-        .key_fields
+        .hot_fields
         .iter()
-        .chain(schema.hot_fields.iter())
         .chain(schema.cold_fields.iter())
         .map(|f| f.name.as_str())
         .collect()

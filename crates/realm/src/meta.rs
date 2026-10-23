@@ -336,17 +336,15 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
     // definition whose blob is missing is an unloadable booth (boot
     // reload errors instead of resurrecting a hash with no content).
     put_blob(meta, row.code_sha256, booth.source.as_bytes())?;
-    t.put(&BoothDefKey { booth_id }, &row);
-    // Schema rides the dynamic segment (structured nTLV, no JSON text);
-    // absent schema = the field is absent (sentinel by absence).
-    let dynamic = schema
-        .map(|v| {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert(SCHEMA_FIELD.to_string(), v);
-            m
-        })
-        .unwrap_or_default();
-    t.put_fields(&BoothDefKey { booth_id }, &dynamic);
+    // The document is ONE map (ADR-0035): the row's declared fields plus the
+    // schema on the dynamic segment, written as a whole — `replace` makes the
+    // segment exactly this map, which is what "absent schema = absent field"
+    // needs (a `merge` with no names would leave the old schema behind).
+    let mut whole = row.to_map();
+    if let Some(v) = schema {
+        whole.insert(SCHEMA_FIELD.to_string(), v);
+    }
+    t.replace(&BoothDefKey { booth_id }, &whole);
     Ok(())
 }
 
@@ -362,7 +360,7 @@ pub fn ns_and_schema_of(
     let booth_id = resolve_booth_id(meta, name)?;
     let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
-        .get_fields(&BoothDefKey { booth_id })
+        .fetch(&BoothDefKey { booth_id })
         .and_then(|f| f.get(SCHEMA_FIELD).cloned())
         .map(|v| crate::value::dyn_to_json(&v));
     Ok((ns, schema))
@@ -385,7 +383,7 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
         let booth_id = u32::from_be_bytes(b);
         let key = BoothDefKey { booth_id };
         let schema = t
-            .get_fields(&key)
+            .fetch(&key)
             .and_then(|f| f.get(SCHEMA_FIELD).cloned());
         let row = BoothDef::decode_payload(&payload);
         let (mut def, sha) = row.into_persisted(schema);

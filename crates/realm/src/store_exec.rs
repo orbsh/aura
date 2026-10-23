@@ -29,6 +29,44 @@ static REDUCE_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), Reduce
 static INDEX_SPECS: std::sync::LazyLock<Mutex<BTreeMap<(String, String), IndexSpecData>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// The names the schema declares (key + payload): everything `fetch` returns
+/// that is NOT part of the dynamic half.
+fn declared_names(schema: &okm_core::schema::CollectionSchema) -> Vec<&str> {
+    schema
+        .key_fields
+        .iter()
+        .chain(schema.hot_fields.iter())
+        .chain(schema.cold_fields.iter())
+        .map(|f| f.name.as_str())
+        .collect()
+}
+
+/// The document's dynamic half (the segment): `fetch` answers both slots
+/// (ADR-0035 — the document is one map), so the declared names are dropped.
+fn dynamic_half(
+    schema: &okm_core::schema::CollectionSchema,
+    doc: &ValueMap,
+) -> ValueMap {
+    let declared = declared_names(schema);
+    doc.iter()
+        .filter(|(name, _)| !declared.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// The document's declared half: what `replace` needs to rebuild the row
+/// unchanged while leaving no segment at all.
+fn declared_half(
+    schema: &okm_core::schema::CollectionSchema,
+    doc: &ValueMap,
+) -> ValueMap {
+    let declared = declared_names(schema);
+    doc.iter()
+        .filter(|(name, _)| declared.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 /// The cloneable schema data of one declared index — a fresh
 /// `AccessMethod` is constructed per execution (the non-cloneable kinds
 /// carry host objects; schema data is data).
@@ -351,13 +389,15 @@ pub fn execute(
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             let d = json_map(doc, "doc")?;
-            coll.put(&k, &d)?;
+            // `merge` is the document write (ADR-0035): declared names rebuild
+            // the row, the rest ride the dynamic segment.
+            coll.merge(&k, &d)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetDocument { key } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            match coll.get(&k)? {
+            match coll.fetch(&k)? {
                 Some(m) => Ok(map_to_json(&m)),
                 None => Ok(serde_json::Value::Null),
             }
@@ -365,23 +405,37 @@ pub fn execute(
         StoreOpKind::DeleteDocument { key } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            coll.delete(&k)?;
+            coll.purge(&k)?;
             Ok(serde_json::json!({ "ok": true }))
         }
-        // Field-level ops ride the DYNAMIC segment (okm-dynamic's
-        // put/get/delete_fields): name-keyed values outside the schema's
-        // declared vocabulary, whole-map replace on write. Scalar values
-        // only — an object is a document, not a field value.
+        // Field-level ops speak the DYNAMIC half of the document: name-keyed
+        // values outside the schema's declared vocabulary. okm's segment-only
+        // verbs are gone (ADR-0035 — the document is one map), so this arm
+        // reads the whole document and keeps the names the schema does not
+        // declare, and writes through `merge` (a delta) or `replace` (the map
+        // is the document). Scalar values only — an object is a document, not
+        // a field value.
         StoreOpKind::PutFields { key, fields } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            coll.put_fields(&k, &json_map(fields, "fields")?)?;
+            // `merge` is the whole point of the arm split: it classifies these
+            // names first — declared ones go through the row RMW (read, then
+            // overwrite), everything else through the segment arm — so a
+            // fields-only write touches no row at all. Reading the document
+            // here first would throw that away.
+            coll.merge(&k, &json_map(fields, "fields")?)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetFields { key, fields } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            match coll.get_fields(&k)? {
+            // An empty dynamic half is "no segment" — the same answer the
+            // retired segment-only read gave (null, not an empty object).
+            let segment = coll
+                .fetch(&k)?
+                .map(|m| dynamic_half(&schema, &m))
+                .filter(|m| !m.is_empty());
+            match segment {
                 Some(m) => {
                     if fields.is_empty() {
                         return Ok(map_to_json(&m));
@@ -402,7 +456,11 @@ pub fn execute(
         StoreOpKind::DeleteFields { key } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            coll.delete_fields(&k);
+            // Dropping the segment means the document IS its declared half:
+            // `replace` rebuilds the row from that map and leaves no segment.
+            // Absent document → an empty map → replace is a no-op purge.
+            let doc = coll.fetch(&k)?.unwrap_or_default();
+            coll.replace(&k, &declared_half(&schema, &doc))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::Scan {
@@ -873,7 +931,8 @@ mod scan_tests {
         assert_eq!(get_some.as_object().unwrap().len(), 1);
         assert_eq!(get_some["note"], "hello");
 
-        // Whole-map replace: `note` is gone.
+        // A delta: `weight` moves, `note` (not given) stays — that is what
+        // `merge` means now; dropping a name is a whole-document `replace`.
         execute(
             &store,
             &plan,
@@ -900,9 +959,11 @@ mod scan_tests {
         .unwrap();
         assert_eq!(
             get_all.as_object().unwrap().len(),
-            1,
-            "replace drops absent fields"
+            2,
+            "merge keeps the names it was not given"
         );
+        assert_eq!(get_all["note"], "hello");
+        assert_eq!(get_all["weight"], 10);
 
         // Field map is independent of the primary document (dynamic
         // segment REPLACES the slot-1 entry only; declared fields RMW).

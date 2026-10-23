@@ -580,7 +580,10 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
-    t.put_document(
+    // `merge`: the payload names are dynamic (they are the event's own shape),
+    // and the row half is whatever the map declares — one commit either way
+    // (ADR-0035 replaced put_document with this).
+    t.merge(
         &MqDataKey {
             event_id,
             instance_key_id,
@@ -665,7 +668,7 @@ pub fn backlog(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
@@ -685,7 +688,7 @@ pub fn backlog(
             .is_some()
         {
             // Reconstruct from the dynamic segment (name-keyed).
-            let v = match t.get_document(&MqDataKey {
+            let v = match t.fetch(&MqDataKey {
                 event_id,
                 instance_key_id,
                 seq,
@@ -880,7 +883,7 @@ pub fn routes_drop_booth(store: &MqStore, booth_type: &str) -> anyhow::Result<()
         .map(|(pk, _row)| pk.decoded.event_id)
         .collect();
     for event_id in stale {
-        t.delete_by_pkey(&EventRouteKey { event_id, booth_id });
+        t.purge(&EventRouteKey { event_id, booth_id });
     }
     Ok(())
 }
@@ -895,7 +898,7 @@ pub fn routes_of_event(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);
-    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     let mut out = Vec::new();
     for suffix in store.scan_suffix(&prefix) {
@@ -972,7 +975,7 @@ pub fn delete_before(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut removed = 0;
@@ -984,7 +987,7 @@ pub fn delete_before(
         b.copy_from_slice(&suffix[suffix.len() - 8..]);
         let seq = u64::from_be_bytes(b);
         if seq < min_seq {
-            t.delete_by_pkey(&MqDataKey {
+            t.purge(&MqDataKey {
                 event_id,
                 instance_key_id,
                 seq,
@@ -1007,7 +1010,7 @@ pub fn cursor_rows(
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqCursor as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
-    prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
@@ -1047,7 +1050,7 @@ pub fn drop_cursor(
     booth_id: u32,
 ) -> anyhow::Result<()> {
     let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    t.delete_by_pkey(&MqCursorKey {
+    t.purge(&MqCursorKey {
         event_id,
         instance_key_id,
         booth_id,

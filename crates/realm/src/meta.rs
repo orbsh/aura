@@ -378,6 +378,12 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
         if suffix.len() < 4 {
             continue;
         }
+        // `None` = a document that has only a dynamic segment. A booth DEFINITION
+        // is its payload, so such a document is not one — nothing in aura can
+        // create it (the write path always lands the row).
+        let Some(payload) = payload else {
+            continue;
+        };
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);

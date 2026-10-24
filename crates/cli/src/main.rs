@@ -18,6 +18,15 @@ const CALLER: &str = r#"
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Aura's background loops (the realm's consumer poll) have no caller to
+    // return a failure to, so the log is where their warnings land. `warn` by
+    // default; `AURA_LOG=debug` (or any EnvFilter directive) widens it.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
     let config = aura_config::EngineConfig::default();
     // Boot failure is a Result, not a panic: the CLI reports it and exits
     // non-zero like every other step of this program.

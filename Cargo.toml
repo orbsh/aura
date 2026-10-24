@@ -18,6 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+# A background loop has no caller to return to, so its failures need a place
+# to land that is not silence. The facade is a no-op until the host installs
+# a subscriber (aura-cli does).
+tracing = "0.1"
 
 
 [workspace.lints.clippy]

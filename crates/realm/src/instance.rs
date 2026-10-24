@@ -142,7 +142,13 @@ impl Realm {
                 if queues.is_empty() {
                     return;
                 }
-                loop {
+                // A plane that cannot answer is NOT an idle plane: every
+                // read below either yields its rows or says why not. There is
+                // no caller to return the failure to (this is a spawned task),
+                // so it goes to the log and the pass is dropped -- the loop
+                // backs off instead of mistaking a broken store for "no
+                // events".
+                'poll: loop {
                     let mut progressed = false;
                     for (event, part, is_wildcard, names) in &mut queues {
                         if *is_wildcard {
@@ -150,7 +156,16 @@ impl Realm {
                             let found = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                mq::events_matching(&vs, &prefix).unwrap_or_default()
+                                match mq::events_matching(&vs, &prefix) {
+                                    Ok(found) => found,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e, prefix = %prefix,
+                                            "consumer: the plane cannot list its queues; pass skipped"
+                                        );
+                                        continue 'poll;
+                                    }
+                                }
                             };
                             if found != *names {
                                 *names = found;
@@ -164,9 +179,26 @@ impl Realm {
                             let batch = {
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let after =
-                                    mq::cursor(&vs, concrete, part, &booth_type).unwrap_or(0);
-                                mq::backlog(&vs, concrete, part, after).unwrap_or_default()
+                                let after = match mq::cursor(&vs, concrete, part, &booth_type) {
+                                    Ok(after) => after,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e, queue = %concrete,
+                                            "consumer: no cursor for this queue; pass skipped"
+                                        );
+                                        continue 'poll;
+                                    }
+                                };
+                                match mq::backlog(&vs, concrete, part, after) {
+                                    Ok(batch) => batch,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e, queue = %concrete,
+                                            "consumer: the backlog cannot be read; pass skipped"
+                                        );
+                                        continue 'poll;
+                                    }
+                                }
                             };
                             for (seq, payload) in batch {
                                 let job = aura_booth::QueuedJob {
@@ -177,8 +209,16 @@ impl Realm {
                                     .await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
-                                let _ = mq::advance(&vs, concrete, part, &booth_type, seq);
-                                progressed = true;
+                                // A cursor that will not advance is not
+                                // progress: claiming it here would re-run this
+                                // same entry on the next pass with no backoff.
+                                match mq::advance(&vs, concrete, part, &booth_type, seq) {
+                                    Ok(()) => progressed = true,
+                                    Err(e) => tracing::warn!(
+                                        error = %e, queue = %concrete, seq = seq,
+                                        "consumer: the cursor would not advance; entry stays queued"
+                                    ),
+                                }
                             }
                         }
                     }

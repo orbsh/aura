@@ -51,22 +51,27 @@ pub const PLANE_VERSION_KEY: &[u8] = &[
 
 /// Read the stored plane version. `None` = a fresh store (no marker yet —
 /// the caller writes it after the check passes).
-pub fn plane_version_of(store: &MqStore) -> Option<u32> {
+pub fn plane_version_of(store: &MqStore) -> anyhow::Result<Option<u32>> {
     use okm_core::storage::VirtualStorage;
-    let raw = store.get(PLANE_VERSION_KEY)?;
+    let Some(raw) = store.get(PLANE_VERSION_KEY)? else {
+        return Ok(None);
+    };
     if raw.len() != 4 {
-        return None; // not a marker row we understand — treat as absent
+        return Ok(None); // not a marker row we understand — treat as absent
     }
-    Some(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    Ok(Some(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]])))
 }
 
-/// Write the plane-version marker (first boot on a fresh store).
-pub fn write_plane_version(store: &MqStore) {
+/// Write the plane-version marker (first boot on a fresh store). A store
+/// that cannot accept its own marker has not booted — the failure is the
+/// caller's, never a silently unversioned plane.
+pub fn write_plane_version(store: &MqStore) -> anyhow::Result<()> {
     use okm_core::storage::VirtualStorage;
     store.put(
         PLANE_VERSION_KEY.to_vec(),
         PLANE_VERSION.to_be_bytes().to_vec(),
-    );
+    )?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +117,7 @@ pub const BOOTH_NS_BASE: u32 = 100;
 /// per type, monotonic with the id, never reclaimed).
 pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
-    for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
+    for hit in t.scan::<BoothNameByName>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -133,7 +138,7 @@ pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
             ns: 0,
             global: 0,
         },
-    )
+    )?
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
     t.put(
@@ -144,16 +149,16 @@ pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
             ns: BOOTH_NS_BASE + id,
             global: 0,
         },
-    );
+    )?;
     Ok(id)
 }
 
 /// The registered name for a booth type id (None = never registered) —
 /// the unique dictionary's reverse direction (the retired mq ns 33
 /// `booth_name_of` service relocated here; one dictionary, both ways).
-pub fn booth_name_of(meta: &MqStore, id: u32) -> Option<String> {
+pub fn booth_name_of(meta: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
-    t.get(&BoothNameKey { id }).map(|row| row.name)
+    Ok(t.get(&BoothNameKey { id })?.map(|row| row.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +245,7 @@ pub fn code_hex(sha: &[u8; 32]) -> String {
 /// dedup, never a correctness requirement — same bytes, same row).
 pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<()> {
     let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
-    if t.get(&CodeBlobKey { sha256: sha }).is_some() {
+    if t.get(&CodeBlobKey { sha256: sha })?.is_some() {
         return Ok(());
     }
     t.put(
@@ -249,14 +254,14 @@ pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<(
             sha256: sha,
             data: Bytes(bytes.to_vec()),
         },
-    );
+    )?;
     Ok(())
 }
 
 /// Read the blob bytes (None = never stored under this hash).
-pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> Option<Vec<u8>> {
+pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> anyhow::Result<Option<Vec<u8>>> {
     let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
-    t.get(&CodeBlobKey { sha256: *sha }).map(|row| row.data.0)
+    Ok(t.get(&CodeBlobKey { sha256: *sha })?.map(|row| row.data.0))
 }
 
 /// The dynamic-segment key the schema rides under ("schema" as a dynamic
@@ -316,7 +321,7 @@ impl BoothDef {
 /// unregistered types have no ns; the caller registers first).
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
-    for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
+    for hit in t.scan::<BoothNameByName>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(row.ns);
@@ -344,7 +349,7 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
     if let Some(v) = schema {
         whole.insert(SCHEMA_FIELD.to_string(), v);
     }
-    t.replace(&BoothDefKey { booth_id }, &whole);
+    t.replace(&BoothDefKey { booth_id }, &whole)?;
     Ok(())
 }
 
@@ -360,7 +365,7 @@ pub fn ns_and_schema_of(
     let booth_id = resolve_booth_id(meta, name)?;
     let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
-        .fetch(&BoothDefKey { booth_id })
+        .fetch(&BoothDefKey { booth_id })?
         .and_then(|f| f.get(SCHEMA_FIELD).cloned())
         .map(|v| crate::value::dyn_to_json(&v));
     Ok((ns, schema))
@@ -373,7 +378,7 @@ pub fn ns_and_schema_of(
 pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
     let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let mut out = Vec::new();
-    for (suffix, payload) in t.scan_documents_raw() {
+    for (suffix, payload) in t.scan_documents_raw()? {
         // suffix = [booth_id 4B]: the primary key of the row (u32 BE).
         if suffix.len() < 4 {
             continue;
@@ -389,14 +394,14 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
         let booth_id = u32::from_be_bytes(b);
         let key = BoothDefKey { booth_id };
         let schema = t
-            .fetch(&key)
+            .fetch(&key)?
             .and_then(|f| f.get(SCHEMA_FIELD).cloned());
         let row = BoothDef::decode_payload(&payload);
         let (mut def, sha) = row.into_persisted(schema);
         // Hydrate the source through the row's own content address —
         // definitions outlive the process, and so does their blob (same
         // engine). A missing blob is corruption, not an empty program.
-        match get_blob(meta, &sha) {
+        match get_blob(meta, &sha)? {
             Some(bytes) => {
                 def.source = String::from_utf8(bytes).map_err(|_| {
                     anyhow::anyhow!("booth `{}`: code blob is not valid UTF-8", def.name)

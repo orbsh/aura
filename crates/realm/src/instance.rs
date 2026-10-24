@@ -398,6 +398,10 @@ impl Realm {
                 // fns may block on the async ctx. The out-of-process
                 // shapes carry the bridge over their channels (induction frames,
                 // the retired PTY's file round trips are gone).
+                // The injected byte engine answers `Result<_, String>`
+                // (ADR-0038/0039): the store's own error crosses the seam
+                // as its text, so a failed read surfaces as the guest
+                // call's error — never as an absent row.
                 let host = {
                     // Wasm full-power raw surface: the type's resolved
                     // plan carries its ns; the raw engine handle rides
@@ -418,18 +422,20 @@ impl Realm {
                         use okm_core::storage::VirtualStorage;
                         let store = realm_mq.clone();
                         let engine = std::sync::Arc::new(StorageEngineFns {
-                            put: std::sync::Arc::new(move |k, v| store.put(k, v)),
+                            put: std::sync::Arc::new(move |k, v| {
+                                store.put(k, v).map_err(|e| e.to_string())
+                            }),
                             get: std::sync::Arc::new({
                                 let store = realm_mq.clone();
-                                move |k| store.get(k)
+                                move |k| store.get(k).map_err(|e| e.to_string())
                             }),
                             del: std::sync::Arc::new({
                                 let store = realm_mq.clone();
-                                move |k| store.del(k)
+                                move |k| store.del(k).map_err(|e| e.to_string())
                             }),
                             scan_range: std::sync::Arc::new({
                                 let store = realm_mq.clone();
-                                move |b, e| store.scan_range(b, e)
+                                move |b, e| store.scan_range(b, e).map_err(|e| e.to_string())
                             }),
                         });
                         let collections = plan
@@ -598,23 +604,27 @@ impl Realm {
         let realm_plan = self.plan_of(&id.booth_type).cloned();
         let wasm_raw = realm_plan.as_ref().map(|p| (p.ns, self.mq.clone()));
         let fns = Self::host_bridge_for(ctx, wasm_raw, &self.mq, &self.timers);
+        // Same seam, same rule as the per-job arm: the store's error crosses
+        // the byte face as its text, so the hook call itself carries it.
         let storage = realm_plan.as_ref().map(|plan| {
             use effector_runtime::carrier::{StorageCollection, StorageEngineFns, StorageSlot};
             use okm_core::storage::VirtualStorage;
             let store = self.mq.clone();
             let engine = std::sync::Arc::new(StorageEngineFns {
-                put: std::sync::Arc::new(move |k, v| store.put(k, v)),
+                put: std::sync::Arc::new(move |k, v| {
+                    store.put(k, v).map_err(|e| e.to_string())
+                }),
                 get: std::sync::Arc::new({
                     let store = self.mq.clone();
-                    move |k| store.get(k)
+                    move |k| store.get(k).map_err(|e| e.to_string())
                 }),
                 del: std::sync::Arc::new({
                     let store = self.mq.clone();
-                    move |k| store.del(k)
+                    move |k| store.del(k).map_err(|e| e.to_string())
                 }),
                 scan_range: std::sync::Arc::new({
                     let store = self.mq.clone();
-                    move |b, e| store.scan_range(b, e)
+                    move |b, e| store.scan_range(b, e).map_err(|e| e.to_string())
                 }),
             });
             let collections = plan

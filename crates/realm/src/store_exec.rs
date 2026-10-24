@@ -435,7 +435,7 @@ pub fn execute(
             // retired segment-only read gave (null, not an empty object).
             let segment = coll
                 .fetch(&k)?
-                .map(|m| dynamic_half(&schema, &m))
+                .map(|m| dynamic_half(schema, &m))
                 .filter(|m| !m.is_empty());
             match segment {
                 Some(m) => {
@@ -462,7 +462,7 @@ pub fn execute(
             // `replace` rebuilds the row from that map and leaves no segment.
             // Absent document → an empty map → replace is a no-op purge.
             let doc = coll.fetch(&k)?.unwrap_or_default();
-            coll.replace(&k, &declared_half(&schema, &doc))?;
+            coll.replace(&k, &declared_half(schema, &doc))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::Scan {
@@ -545,7 +545,7 @@ pub fn execute(
                 &okm_dynamic::encode_fields(schema, &spec_group, &key_values)
                     .map_err(|e| e.to_string())?,
             );
-            match okm_dynamic::reduce_get(store, &entry) {
+            match okm_dynamic::reduce_get(store, &entry)? {
                 Some(bytes) => {
                     if bytes.len() == 8 {
                         // The width check above makes the conversion

@@ -34,7 +34,7 @@ const SCRIPT: &str = r#"
 ;; big-endian (schema key_len = 8) — the same hand-encoding the python
 ;; fixture's `_k` does.
 (define (bind_write_emit_read args)
-  (collection-put! "notes"
+  (collection-merge! "notes"
     (list->vector (list 0 0 0 0 0 0 0 1))
     (hash "id" 1 "count" 41))
   (ctx.store (hash "collection" "notes" "op" "get_document" "key" (hash "id" 1))))
@@ -42,12 +42,12 @@ const SCRIPT: &str = r#"
 (define (emit_write_bind_read args)
   (ctx.store (hash "collection" "notes" "op" "put_document"
                         "key" (hash "id" 2) "doc" (hash "count" 42)))
-  (collection-get! "notes" (list->vector (list 0 0 0 0 0 0 0 2))))
+  (collection-fetch! "notes" (list->vector (list 0 0 0 0 0 0 0 2))))
 
 ;; Post-eviction effector: reads id=1 THROUGH the rebuilt binding — the
 ;; durable rows survive the ephemeral per-VM registry.
 (define (bind_get args)
-  (collection-get! "notes" (list->vector (list 0 0 0 0 0 0 0 1))))
+  (collection-fetch! "notes" (list->vector (list 0 0 0 0 0 0 0 1))))
 "#;
 
 #[tokio::test]

@@ -82,8 +82,8 @@ impl Engine {
                     // the silent-decode failure mode the number-reuse
                     // discipline exists to prevent. Refuse the boot with
                     // the wipe instruction instead.
-                    match aura_realm::meta::plane_version_of(&mq_store) {
-                        None => aura_realm::meta::write_plane_version(&mq_store),
+                    match aura_realm::meta::plane_version_of(&mq_store)? {
+                        None => aura_realm::meta::write_plane_version(&mq_store)?,
                         Some(v) if v == aura_realm::meta::PLANE_VERSION => {}
                         Some(v) => anyhow::bail!(
                             "data-plane layout mismatch: store at {path:?} was written by plane version {v}, \

@@ -40,7 +40,8 @@ async fn stale_marker_is_a_boot_error_with_the_wipe_instruction() {
         store.put(
             aura_realm::meta::PLANE_VERSION_KEY.to_vec(),
             2026_10_02u32.to_be_bytes().to_vec(),
-        );
+        )
+        .unwrap();
     }
     let msg = match aura_engine::Engine::start(&config).await {
         Err(e) => format!("{e:#}"),

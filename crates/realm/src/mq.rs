@@ -238,31 +238,31 @@ pub enum MqEngine {
 }
 
 impl okm_core::storage::VirtualStorage for MqEngine {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::Result<()> {
         match self {
             Self::Fjall(s) => s.put(key, value),
             Self::Test(s) => s.put(key, value),
         }
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> okm_core::Result<Option<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.get(key),
             Self::Test(s) => s.get(key),
         }
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> okm_core::Result<()> {
         match self {
             Self::Fjall(s) => s.del(key),
             Self::Test(s) => s.del(key),
         }
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> okm_core::Result<Vec<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.scan_suffix(prefix),
             Self::Test(s) => s.scan_suffix(prefix),
         }
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::Result<Vec<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.scan_range(begin, end),
             Self::Test(s) => s.scan_range(begin, end),
@@ -348,32 +348,33 @@ impl MqStore {
 }
 
 impl okm_core::storage::VirtualStorage for MqStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.inner.put(self.qualified(&key), value);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::Result<()> {
+        self.inner.put(self.qualified(&key), value)
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> okm_core::Result<Option<Vec<u8>>> {
         self.inner.get(&self.qualified(key))
     }
-    fn del(&self, key: &[u8]) {
-        self.inner.del(&self.qualified(key));
+    fn del(&self, key: &[u8]) -> okm_core::Result<()> {
+        self.inner.del(&self.qualified(key))
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> okm_core::Result<Vec<Vec<u8>>> {
         // okm's suffix contract: the engine scans the QUALIFIED prefix
         // and returns keys minus it — the realm segment never leaks
         // to the caller, and no second strip happens here.
         let full = self.qualified(prefix);
         self.inner.scan_suffix(&full)
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::Result<Vec<Vec<u8>>> {
         // Qualified window over the inner engine; the returned keys are
         // sliced back into the caller's realm-local space.
         let full_begin = self.qualified(begin);
         let full_end = end.map(|e| self.qualified(e));
-        self.inner
-            .scan_range(&full_begin, full_end.as_deref())
+        Ok(self
+            .inner
+            .scan_range(&full_begin, full_end.as_deref())?
             .into_iter()
             .map(|k| k[self.prefix.len()..].to_vec())
-            .collect()
+            .collect())
     }
 }
 
@@ -390,7 +391,7 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     // Exact match through the text index: prefix scan by name, then
     // verify (no delimiter in the index bytes).
-    for hit in t.scan::<__OkmIndex_EventName_by_name>(name.as_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventName_by_name>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -400,7 +401,7 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     // Miss: assign the next id (registry vocabularies are tiny; a full
     // scan for the head is honest).
     let mut max_id = 0u32;
-    for (pk, _) in t.scan::<__OkmIndex_EventName_by_name>(&[]) {
+    for (pk, _) in t.scan::<__OkmIndex_EventName_by_name>(&[])? {
         if pk.decoded.id > max_id {
             max_id = pk.decoded.id;
         }
@@ -411,7 +412,7 @@ fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
         &EventName {
             name: name.to_string(),
         },
-    );
+    )?;
     Ok(id)
 }
 
@@ -439,7 +440,7 @@ pub fn instance_key_id(store: &MqStore, part: &InstanceKey) -> anyhow::Result<u3
 fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t =
         Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
+    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(hit.0.decoded.id);
@@ -458,7 +459,7 @@ fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
             id: 0,
             global: 0,
         },
-    )
+    )?
     .unwrap_or(0);
     let id = (watermark as u32) + 1;
     t.put(
@@ -468,7 +469,7 @@ fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
             id,
             global: 0,
         },
-    );
+    )?;
     Ok(id)
 }
 
@@ -476,7 +477,7 @@ fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// never allocate — the ops/observation direction.
 pub fn instance_key_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
     let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
+    for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {
                 return Ok(Some(hit.0.decoded.id));
@@ -491,7 +492,7 @@ pub fn instance_key_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<
 /// it is what lets ops render a queue in human terms.
 pub fn instance_key_of(store: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
-    Ok(t.get(&InstanceKeyRegistryKey { id }).map(|row| row.name))
+    Ok(t.get(&InstanceKeyRegistryKey { id })?.map(|row| row.name))
 }
 
 /// The booth's identity id (delegated to the meta plane's single dictionary,
@@ -535,7 +536,7 @@ fn head_seq(store: &MqStore, event_id: u32, instance_key_id: u32) -> anyhow::Res
             seq: 0,
         },
         &MqData {},
-    )
+    )?
     .unwrap_or(0))
 }
 
@@ -564,7 +565,7 @@ pub fn append(
             seq,
         },
         &MqData {},
-    );
+    )?;
     // Payload → dynamic segment, fully native. The emit chain guarantees
     // an object top (routing reads the instance key from data fields;
     // handlers receive objects) — no wrapping convention exists here or
@@ -590,7 +591,7 @@ pub fn append(
             seq,
         },
         &obj,
-    );
+    )?;
     Ok(seq)
 }
 
@@ -615,7 +616,7 @@ pub fn cursor(
         event_id,
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
-    })
+    })?
     .map(|c| c.cursor)
     .unwrap_or(0))
 }
@@ -640,7 +641,7 @@ pub fn advance(
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
     };
-    let current = t.get(&key).map(|c| c.cursor).unwrap_or(0);
+    let current = t.get(&key)?.map(|c| c.cursor).unwrap_or(0);
     if seq <= current {
         return Ok(());
     }
@@ -650,7 +651,7 @@ pub fn advance(
             cursor: seq,
             last_active_ms: now_ms(),
         },
-    );
+    )?;
     Ok(())
 }
 
@@ -672,7 +673,7 @@ pub fn backlog(
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix) {
+    for suffix in store.scan_suffix(&prefix)? {
         if suffix.len() < 8 {
             continue;
         }
@@ -684,7 +685,7 @@ pub fn backlog(
                 event_id,
                 instance_key_id,
                 seq,
-            })
+            })?
             .is_some()
         {
             // Reconstruct from the dynamic segment (name-keyed).
@@ -692,7 +693,7 @@ pub fn backlog(
                 event_id,
                 instance_key_id,
                 seq,
-            }) {
+            })? {
                 Some(obj) if !obj.contains_key("_root") => {
                     let mut m = serde_json::Map::new();
                     for (k, dv) in &obj {
@@ -735,7 +736,7 @@ pub fn depth(store: &MqStore, event: &str, part: &InstanceKey) -> anyhow::Result
             seq: 0,
         },
         &MqData {},
-    )
+    )?
     .unwrap_or(0))
 }
 
@@ -764,7 +765,7 @@ pub fn rewind_cursor(
             cursor: seq,
             last_active_ms: now_ms(),
         },
-    );
+    )?;
     Ok(())
 }
 
@@ -787,14 +788,14 @@ pub fn age_cursor(
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
     };
-    let cursor = t.get(&key).map(|c| c.cursor).unwrap_or(0);
+    let cursor = t.get(&key)?.map(|c| c.cursor).unwrap_or(0);
     t.put(
         &key,
         &MqCursor {
             cursor,
             last_active_ms,
         },
-    );
+    )?;
     Ok(())
 }
 
@@ -865,7 +866,7 @@ pub fn route_put(
             probe_field,
             wildcard: u8::from(is_wildcard),
         },
-    );
+    )?;
     Ok(())
 }
 
@@ -878,12 +879,12 @@ pub fn routes_drop_booth(store: &MqStore, booth_type: &str) -> anyhow::Result<()
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let stale: Vec<u32> = t
-        .scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())
+        .scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())?
         .into_iter()
         .map(|(pk, _row)| pk.decoded.event_id)
         .collect();
     for event_id in stale {
-        t.purge(&EventRouteKey { event_id, booth_id });
+        t.purge(&EventRouteKey { event_id, booth_id })?;
     }
     Ok(())
 }
@@ -901,7 +902,7 @@ pub fn routes_of_event(
     okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
     prefix.extend_from_slice(&event_id.to_be_bytes());
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix) {
+    for suffix in store.scan_suffix(&prefix)? {
         if suffix.len() < 4 {
             continue;
         }
@@ -909,7 +910,7 @@ pub fn routes_of_event(
         let mut b = [0u8; 4];
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);
-        if let Some(row) = t.get(&EventRouteKey { event_id, booth_id }) {
+        if let Some(row) = t.get(&EventRouteKey { event_id, booth_id })? {
             out.push((booth_id, row_resolution(&row), row.wildcard != 0));
         }
     }
@@ -925,7 +926,7 @@ pub fn routes_of_booth(
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let mut out = Vec::new();
-    for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())? {
         if let Some(row) = &hit.1 {
             out.push((
                 hit.0.decoded.event_id,
@@ -979,7 +980,7 @@ pub fn delete_before(
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut removed = 0;
-    for suffix in store.scan_suffix(&prefix) {
+    for suffix in store.scan_suffix(&prefix)? {
         if suffix.len() < 8 {
             continue;
         }
@@ -991,7 +992,7 @@ pub fn delete_before(
                 event_id,
                 instance_key_id,
                 seq,
-            });
+            })?;
             removed += 1;
         }
     }
@@ -1014,7 +1015,7 @@ pub fn cursor_rows(
     prefix.extend_from_slice(&event_id.to_be_bytes());
     prefix.extend_from_slice(&instance_key_id.to_be_bytes());
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix) {
+    for suffix in store.scan_suffix(&prefix)? {
         if suffix.len() < 4 {
             continue;
         }
@@ -1026,7 +1027,7 @@ pub fn cursor_rows(
             event_id,
             instance_key_id,
             booth_id,
-        });
+        })?;
         out.push((
             booth_id,
             row.as_ref().map(|c| c.cursor).unwrap_or(0),
@@ -1054,14 +1055,14 @@ pub fn drop_cursor(
         event_id,
         instance_key_id,
         booth_id,
-    });
+    })?;
     Ok(())
 }
 
 /// The registered name for an event id (None = never registered).
 pub fn event_name_of(store: &MqStore, event_id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
-    Ok(t.get(&EventNameKey { id: event_id }).map(|a| a.name))
+    Ok(t.get(&EventNameKey { id: event_id })?.map(|a| a.name))
 }
 
 /// The queue THIS booth instance subscribes to for one concrete event,
@@ -1129,7 +1130,7 @@ pub fn booth_subscribes(store: &MqStore, booth_id: u32, event: &str) -> anyhow::
         return Ok(false);
     };
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())? {
         let Some(row) = &hit.1 else { continue };
         let rid = hit.0.decoded.event_id;
         if rid == event_id {
@@ -1152,7 +1153,7 @@ pub fn booth_subscribes(store: &MqStore, booth_id: u32, event: &str) -> anyhow::
 pub fn events_matching(store: &MqStore, prefix: &str) -> anyhow::Result<Vec<String>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     let mut out = Vec::new();
-    for hit in t.scan::<__OkmIndex_EventName_by_name>(prefix.as_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventName_by_name>(prefix.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name.starts_with(prefix) {
                 out.push(row.name.clone());
@@ -1166,7 +1167,7 @@ pub fn events_matching(store: &MqStore, prefix: &str) -> anyhow::Result<Vec<Stri
 /// The registered id for an event name (None = never emitted/registered).
 pub fn event_id_of(store: &MqStore, event: &str) -> anyhow::Result<Option<u32>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
-    for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes()) {
+    for hit in t.scan::<__OkmIndex_EventName_by_name>(event.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == event {
                 return Ok(Some(hit.0.decoded.id));

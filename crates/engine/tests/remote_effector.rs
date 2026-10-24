@@ -247,7 +247,9 @@ async fn remote_code_travels_as_reference() {
     // The blob landed under the content address.
     {
         let r = engine.realm.try_lock().unwrap();
-        let stored = aura_realm::meta::get_blob(&r.mq, &sha).expect("blob stored at register");
+        let stored = aura_realm::meta::get_blob(&r.mq, &sha)
+            .expect("blob read")
+            .expect("blob stored at register");
         assert_eq!(stored, code_src.as_bytes());
     }
 

@@ -585,7 +585,7 @@ mod tests {
                 { "name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": null }
             ],
             "cold_fields": [],
-            "slots": { "primary": 0, "dynamic": 1, "dict_id": 2, "dict_name": 3, "declared_index_base": 4096, "declared_reduce_base": 8192, "junction_base": 12288 }
+            "slots": { "primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3, "declared_index_base": 4096, "declared_reduce_base": 8192, "junction_base": 12288 }
         })
     }
 

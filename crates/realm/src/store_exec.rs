@@ -384,7 +384,7 @@ pub fn execute(
                 .collect()
         })
         .unwrap_or_default();
-    let mut coll =
+    let coll =
         DynamicCollection::with_reduces(store.clone(), plan.ns, schema.clone(), indexes, reduces);
     match &op.op {
         StoreOpKind::PutDocument { key, doc } => {

@@ -111,7 +111,7 @@ pub const BOOTH_NS_BASE: u32 = 100;
 /// on, ADR-0038 §2) plus the type's storage ns (base + id; one allocation
 /// per type, monotonic with the id, never reclaimed).
 pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
             if row.name == name {
@@ -239,7 +239,7 @@ pub fn code_hex(sha: &[u8; 32]) -> String {
 /// Store the blob if absent (content addressing makes the pre-check a
 /// dedup, never a correctness requirement — same bytes, same row).
 pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<()> {
-    let mut t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
+    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
     if t.get(&CodeBlobKey { sha256: sha }).is_some() {
         return Ok(());
     }
@@ -330,7 +330,7 @@ pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// stable across versions — the registry resolve).
 pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
     let booth_id = resolve_booth_id(meta, &booth.name)?;
-    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let (row, schema) = BoothDef::of(booth);
     // The bytes must exist before the pointer to them is published: a
     // definition whose blob is missing is an unloadable booth (boot
@@ -358,7 +358,7 @@ pub fn ns_and_schema_of(
 ) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
     let ns = ns_of(meta, name)?;
     let booth_id = resolve_booth_id(meta, name)?;
-    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let schema = t
         .fetch(&BoothDefKey { booth_id })
         .and_then(|f| f.get(SCHEMA_FIELD).cloned())
@@ -371,7 +371,7 @@ pub fn ns_and_schema_of(
 /// materializes through the row's own typed decoder — the same codec
 /// put wrote, no second one.
 pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
-    let mut t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     let mut out = Vec::new();
     for (suffix, payload) in t.scan_documents_raw() {
         // suffix = [booth_id 4B]: the primary key of the row (u32 BE).

@@ -387,7 +387,7 @@ impl okm_core::storage::VirtualStorage for MqStore {
 // ---------------------------------------------------------------------------
 
 fn resolve_event_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
+    let t = Collection::<MqStore, EventNameKey, EventName>::new(store.clone());
     // Exact match through the text index: prefix scan by name, then
     // verify (no delimiter in the index bytes).
     for hit in t.scan::<__OkmIndex_EventName_by_name>(name.as_bytes()) {
@@ -437,7 +437,7 @@ pub fn instance_key_id(store: &MqStore, part: &InstanceKey) -> anyhow::Result<u3
 }
 
 fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let mut t =
+    let t =
         Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
     for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes()) {
         if let Some(row) = &hit.1 {
@@ -556,7 +556,7 @@ pub fn append(
     let event_id = resolve_event_id(store, event)?;
     let instance_key_id = instance_key_id(store, part)?;
     let seq = head_seq(store, event_id, instance_key_id)? + 1;
-    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
+    let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     t.put(
         &MqDataKey {
             event_id,
@@ -634,7 +634,7 @@ pub fn advance(
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
-    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     let key = MqCursorKey {
         event_id,
         instance_key_id: instance_key_id(store, part)?,
@@ -664,7 +664,7 @@ pub fn backlog(
 ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
     let event_id = resolve_event_id(store, event)?;
     let instance_key_id = instance_key_id(store, part)?;
-    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
+    let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
@@ -753,7 +753,7 @@ pub fn rewind_cursor(
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
-    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.put(
         &MqCursorKey {
             event_id,
@@ -781,7 +781,7 @@ pub fn age_cursor(
 ) -> anyhow::Result<()> {
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
-    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     let key = MqCursorKey {
         event_id,
         instance_key_id: instance_key_id(store, part)?,
@@ -853,7 +853,7 @@ pub fn route_put(
             probe_field.clone(),
         ),
     };
-    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     t.put(
         &EventRouteKey { event_id, booth_id },
         &EventRoute {
@@ -876,7 +876,7 @@ pub fn route_put(
 /// delete rows belonging to whoever's event id matched the type id.
 pub fn routes_drop_booth(store: &MqStore, booth_type: &str) -> anyhow::Result<()> {
     let booth_id = booth_id_of(store, booth_type)?;
-    let mut t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
+    let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
     let stale: Vec<u32> = t
         .scan::<__OkmIndex_EventRoute_by_booth>(&booth_id.to_be_bytes())
         .into_iter()
@@ -971,7 +971,7 @@ pub fn delete_before(
     instance_key_id: u32,
     min_seq: u64,
 ) -> anyhow::Result<usize> {
-    let mut t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
+    let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
     prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
@@ -1049,7 +1049,7 @@ pub fn drop_cursor(
     instance_key_id: u32,
     booth_id: u32,
 ) -> anyhow::Result<()> {
-    let mut t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
+    let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
     t.purge(&MqCursorKey {
         event_id,
         instance_key_id,

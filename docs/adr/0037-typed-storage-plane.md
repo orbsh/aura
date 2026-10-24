@@ -179,9 +179,13 @@ typed.
   dedicated driver thread (okm 92b2551, locks in
   `okm-core/tests/driver_thread_test.rs`).
 - **effector** (4.16a landed): `HostBridge` carries a `storage` slot — the
-  host's engine behind four byte-closure fns (`StorageEngineFns`: no okm
-  types on the seam, so effector and aura build against different okm revs
-  freely) + the plan's raw collection entries; the python carrier's load
+  host's engine behind four byte-closure fns (`StorageEngineFns`: the closures
+  themselves carry bytes and a `String` error, never an okm value; corrected —
+  the trait they implement is `okm_entry::Engine`, an okm crate, and the
+  closure types appear in its `impl`, so a rev split is NOT buildable: effector
+  and aura age together on the same okm rev. What survives of the original
+  claim is only "no okm value crosses the seam") + the plan's raw collection
+  entries; the python carrier's load
   step builds one `Collection` per entry over it and `module.add`s it
   under the collection name (the engine handle never crosses a seam
   back — a pyclass carries `*mut PyObject`, not Send); the steel carrier

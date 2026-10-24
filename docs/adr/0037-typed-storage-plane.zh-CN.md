@@ -141,8 +141,10 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   保留 context——realm 恰好在其中驱动注入）；门面改为专用驱动线程（okm
   92b2551，锁：`okm-core/tests/driver_thread_test.rs`）。
 - **effector**（4.16a 已落地）：`HostBridge` 带 `storage` 槽——宿主引擎藏在
-  四个字节闭包后面（`StorageEngineFns`：缝上无 okm 类型，effector 与 aura
-  各用不同 okm rev 编译互不干扰）+ plan 的原始条目；python 载体 load 步
+  四个字节闭包后面（`StorageEngineFns`：闭包本身只过字节与 `String` 错误，
+  不过 okm 值；**更正**——它们实现的 trait 是 `okm_entry::Engine`，那是 okm
+  的 crate，闭包类型出现在它的 `impl` 里，所以 rev 分裂根本编不过：effector
+  与 aura 钉同一个 okm rev。原说法里站得住的只有「无 okm 值跨缝」）+ plan 的原始条目；python 载体 load 步
   逐条目建 `Collection` 并 `module.add` 到集合名下（引擎句柄不跨缝回传
   ——pyclass 带 `*mut PyObject`，非 Send）；steel 载体消费同一槽（4.16b）：
   `ClosureEngine` 把四个字节闭包适配到 okm-steel 的 Engine trait，

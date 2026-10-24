@@ -19,9 +19,11 @@ const CALLER: &str = r#"
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = aura_config::EngineConfig::default();
+    // Boot failure is a Result, not a panic: the CLI reports it and exits
+    // non-zero like every other step of this program.
     let engine = aura_engine::Engine::start(&config)
         .await
-        .expect("engine boot");
+        .map_err(|e| anyhow::anyhow!("engine boot: {e}"))?;
 
     // Echo Booth: define → invoke → return. The Phase 0 acceptance path,
     // now as a script booth.

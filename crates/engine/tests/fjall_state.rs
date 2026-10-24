@@ -3,6 +3,7 @@
 //! process-restart survival, which is what a real storage engine adds).
 //!
 //! Requires the `fjall` feature.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 #[cfg(feature = "fjall")]
 mod fjall_tests {

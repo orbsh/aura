@@ -4,6 +4,11 @@
 //! store / invoke / iterate(+dispose). emit/on, contracts, and hooks stay
 //! off ctx (realm-level or static contract concerns).
 
+
+// Unit tests may use the unwrap/panic vocabulary the production targets are
+// denied (a panicking test is a failing test). `cfg(test)` is on only for this
+// crate's own test build; `tests/` crates set the same line at their own root.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -555,16 +560,18 @@ impl StreamCursor {
             anyhow::bail!("iterate: stream already exhausted");
         }
         let started = self.stream_id.is_some();
-        let v = if started {
-            let id = self.stream_id.clone().expect("checked above");
-            (self.iterate)(IterateOp::Next { stream_id: id }).await?
-        } else {
-            (self.iterate)(IterateOp::Start {
-                target: self.target.clone(),
-                handler: self.handler.clone(),
-                args: self.args.clone(),
-            })
-            .await?
+        // The stream id IS the branch: matching on it removes the
+        // "checked above" expect that a separate `is_some` forced.
+        let v = match self.stream_id.clone() {
+            Some(id) => (self.iterate)(IterateOp::Next { stream_id: id }).await?,
+            None => {
+                (self.iterate)(IterateOp::Start {
+                    target: self.target.clone(),
+                    handler: self.handler.clone(),
+                    args: self.args.clone(),
+                })
+                .await?
+            }
         };
         let env = Envelope::from_value(&v)?;
         if env.done {
@@ -733,11 +740,22 @@ impl Ctx {
     /// cursor's first pull (lazy start). `dispose` is the mandatory
     /// dual — mid-stream abandonment without it is the dead-ring
     /// problem wearing a request badge (released only by eviction).
-    pub fn iterate(&self, target: InstanceId, handler: &str, args: Value) -> StreamCursor {
-        let iterate = self.iterate.clone().expect(
-            "booth ctx always carries the iterate handle (only the introspection ctx lacks it)",
-        );
-        StreamCursor::new(iterate, target, handler.to_string(), args)
+    ///
+    /// Fallible because the handle is Optional: only the introspection
+    /// ctx lacks it, and that ctx asking for a cursor is a caller error,
+    /// not a state the runtime should panic over.
+    pub fn iterate(
+        &self,
+        target: InstanceId,
+        handler: &str,
+        args: Value,
+    ) -> anyhow::Result<StreamCursor> {
+        let iterate = self.iterate.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "this ctx carries no iterate handle (the introspection ctx has none)"
+            )
+        })?;
+        Ok(StreamCursor::new(iterate, target, handler.to_string(), args))
     }
 
     /// The iterate dispatch handle, for the script ctx bridge (host fns

@@ -14,3 +14,6 @@ tokio = { workspace = true }
 # "aura-booth stays effector-free" ruling holds: this is the protocol crate,
 # not effector's product line, and the persisted serde values are unchanged.
 induction-protocol = { path = "../../../induction/crates/induction-protocol" }
+
+[lints]
+workspace = true

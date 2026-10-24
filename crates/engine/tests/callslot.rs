@@ -3,6 +3,7 @@
 //! timeout = failure value. Cold: wait never enters park — Pending(call_id)
 //! returns immediately, the result arrives via resolve_call, unknown id
 //! never replays.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::call::{CallId, CallSpec};
 use aura_booth::{BoothType, InstanceId, InstanceKey};

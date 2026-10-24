@@ -3,6 +3,7 @@
 //! dispose dual, the typed envelope, and mid-stream failure as a value.
 //! Every pull is one hot call riding the existing machinery — these
 //! tests assert the delivery shape, not a new queue.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

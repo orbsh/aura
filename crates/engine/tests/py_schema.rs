@@ -4,6 +4,7 @@
 //! okm's CollectionSchema; `engine.register` persists it with the
 //! definition; the ctx.store plan resolves from it — `ctx.store`
 //! round-trips through the type's own ns. Requires the `python` feature.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 #[cfg(feature = "python")]
 mod py_schema_tests {

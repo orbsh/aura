@@ -1,4 +1,5 @@
 //! Root config acceptance: knus parsing of `aura.kdl`, two-plane storage.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_config::kdl::RootConfig;
 

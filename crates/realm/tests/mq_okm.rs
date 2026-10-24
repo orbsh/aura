@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 use aura_realm::mq::{self, InstanceKey};
 
 /// A named slice (the shape a keyed route produces).

@@ -197,14 +197,13 @@ impl TimerDriver {
                     // (The original `break` here killed the driver on the
                     // first poll of an empty queue — every timer became a
                     // silent no-op.)
-                    if expired.is_none() {
+                    let Some(expired) = expired else {
                         match self.commands.recv().await {
                             Some(cmd) => self.apply(cmd).await,
                             None => break,
                         }
                         continue;
-                    }
-                    let Some(expired) = expired else { unreachable!("handled above") };
+                    };
                     let (id, entry) = expired.into_inner();
                     self.index.remove(&id);
                     self.fire(entry).await;

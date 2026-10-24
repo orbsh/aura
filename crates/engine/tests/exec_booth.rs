@@ -9,6 +9,7 @@
 //! exec (the bare cgi shape) has no protocol and no residency — handled
 //! by the spawn declaration, not by new realm machinery; this file locks
 //! both citizenships plus the statelessness boundary.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

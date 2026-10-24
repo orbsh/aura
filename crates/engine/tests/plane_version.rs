@@ -5,6 +5,7 @@
 //! discipline exists to prevent). Locks: fresh store seeds the marker; a
 //! matching marker boots; a stale marker is a boot error naming the version
 //! and the wipe.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 #[tokio::test]
 #[cfg(feature = "fjall")]

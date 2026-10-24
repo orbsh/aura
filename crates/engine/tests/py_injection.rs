@@ -7,6 +7,7 @@
 //! structurally unexpressible here: the slot only builds the plan's
 //! declared collections, ns bound at construction (DSL rule).
 #![cfg(feature = "python")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{BoothType, InstanceId};
 use aura_engine::Engine;

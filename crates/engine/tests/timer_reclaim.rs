@@ -3,6 +3,7 @@
 //! mid-execution; the idle entry only exists while the instance is idle),
 //! and the execution watchdog (max_exec budget: expiry = evict). Rust
 //! bodies keep the tests carrier-independent (exact sleep control).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

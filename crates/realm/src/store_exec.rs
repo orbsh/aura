@@ -133,7 +133,7 @@ impl StorePlan {
                 entries.insert(name.clone(), raw.clone());
                 let mut idx = BTreeMap::new();
                 if let Some(list) = raw.get("indexes").and_then(|x| x.as_array()) {
-                    let mut specs = INDEX_SPECS.lock().unwrap();
+                    let mut specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     for e in list {
                         let (n, am) = build_access_method(e)
                             .map_err(|e| anyhow::anyhow!("collection `{name}` index: {e}"))?;
@@ -155,7 +155,7 @@ impl StorePlan {
                         let (n, spec, kind) = build_reduce(e)
                             .map_err(|e| anyhow::anyhow!("collection `{name}` reduce: {e}"))?;
                         red.insert(n.clone(), (spec.slot, spec.group_fields.clone()));
-                        REDUCE_SPECS.lock().unwrap().insert(
+                        REDUCE_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
                             (name.clone(), n.clone()),
                             (spec.slot, spec.group_fields.clone(), kind),
                         );
@@ -289,7 +289,7 @@ pub fn resolve_scan_targets(
         ));
     }
     let key_field = &schema.key_fields[0].name;
-    let specs = INDEX_SPECS.lock().unwrap();
+    let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let am = specs
         .get(&(collection.to_string(), index.to_string()))
         .ok_or_else(|| {
@@ -356,7 +356,7 @@ pub fn execute(
         .indexes
         .get(&op.collection)
         .map(|m| {
-            let specs = INDEX_SPECS.lock().unwrap();
+            let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             m.keys()
                 .filter_map(|n| {
                     specs
@@ -370,7 +370,7 @@ pub fn execute(
         .reduces
         .get(&op.collection)
         .map(|m| {
-            let specs = REDUCE_SPECS.lock().unwrap();
+            let specs = REDUCE_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             m.keys()
                 .filter_map(|n| {
                     specs
@@ -487,7 +487,7 @@ pub fn execute(
                 .as_array()
                 .ok_or("scan value must be an array (one value per indexed field, in order)")?;
             let (index_fields, _index_slot) = {
-                let specs = INDEX_SPECS.lock().unwrap();
+                let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let am = specs
                     .get(&(op.collection.clone(), index.clone()))
                     .ok_or_else(|| format!("index `{index}` spec missing"))?;
@@ -502,7 +502,7 @@ pub fn execute(
             let ns_prefix = plan.ns.to_be_bytes().to_vec();
             let am = INDEX_SPECS
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&(op.collection.clone(), index.clone()))
                 .ok_or("index spec missing")?
                 .access_method();
@@ -548,9 +548,12 @@ pub fn execute(
             match okm_dynamic::reduce_get(store, &entry) {
                 Some(bytes) => {
                     if bytes.len() == 8 {
-                        Ok(serde_json::json!(u64::from_be_bytes(
-                            bytes.try_into().unwrap()
-                        )))
+                        // The width check above makes the conversion
+                        // total: copy into a fixed buffer instead of
+                        // asking `try_into` for an error we just ruled out.
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&bytes);
+                        Ok(serde_json::json!(u64::from_be_bytes(buf)))
                     } else {
                         Ok(serde_json::Value::Array(
                             bytes.iter().map(|&b| serde_json::json!(b)).collect(),

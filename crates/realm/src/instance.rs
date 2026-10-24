@@ -188,9 +188,19 @@ impl Realm {
                 }
             });
         } else if let Some(inst) = self.instances.get_mut(&key) {
+            // Resident already: refresh the stamp only. The borrow ends at
+            // this block so the returned borrow below is the sole one.
             inst.last_activity = Instant::now();
         }
-        Ok(self.instances.get_mut(&key).expect("just inserted"))
+        // The insert path above guarantees the entry exists; a missing key
+        // here would be a state inconsistency, so it is an error value
+        // rather than a panic the caller has to trust.
+        self.instances.get_mut(&key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "instance {} missing right after creation",
+                id.key.render()
+            )
+        })
     }
 
     async fn run_job_queued(self_arc: SharedRealm, id: &InstanceId, job: aura_booth::QueuedJob) {

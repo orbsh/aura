@@ -19,3 +19,13 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 
+
+[workspace.lints.clippy]
+# The standing rule: a fallible step returns `Result`, an absent value returns
+# `Option`, and neither is short-circuited by a panic. deny (not forbid) so a
+# genuinely impossible state can carry a narrow, commented allow.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"

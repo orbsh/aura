@@ -1,6 +1,6 @@
 # Aura
 
-State-in-one distributed Actor engine. Design: [aura-architecture.md](../../.hermes/wiki/aura-architecture.md) (wiki).
+State-in-one distributed Actor engine. Design: [aura-architecture.md](https://github.com/orbsh/wiki/blob/main/aura-architecture.md) (wiki).
 
 Compute-storage-unified modern distributed Actor engine: no SQL, no external cache lock, no multi-DB sync. State managed by Actors automatically — modify context in memory, the Rust runtime handles concurrency and multi-machine backup.
 

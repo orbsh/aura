@@ -403,10 +403,9 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     `BoothType::encoded(ChannelEncoding)` (aura-booth's own enum — the
     crate stays effector-free; serde values `json`/`cbor` = effector-protocol's
     `ChannelEncoding` pair, mapped realm-side), persisted through
-    `PersistedBooth.encoding` (`#[serde(default)]`) and `BoothDef` as a
-    hot-tail append (`#[ok_layout(version = 2)]`, u64 0=json/1=cbor —
-    old rows reload as their actual behavior); carried to remote nodes on
-    `ToolCall.encoding` (`#[serde(default)]`). CBOR = one self-delimited
+    `PersistedBooth.encoding` and `BoothDef.encoding` (u64 0=json/1=cbor);
+    carried to remote nodes on `ToolCall.encoding` (`#[serde(default)]` —
+    a call that names no codec means json). CBOR = one self-delimited
     document per frame (NO length prefix — ciborium reads exactly the
     declared bytes, sequential decodes on the blocking pipe land
     document-by-document; measured in `bgi_cbor_round_trip`). The child
@@ -522,8 +521,8 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
     `idle_ttl`; KDL duration string; finite default, 30d; NO per-type override,
     since the denominator is a cross-type `min` comparison), decoupled from
     `idle_ttl` (seconds vs days).
-  - `MqCursor.last_active_ms` (v2 hot-tail append; the `0` sentinel never
-    participates in the predicate — old rows decode the missing field as 0).
+  - `MqCursor.last_active_ms` (the `0` sentinel never participates in the
+    predicate: an unmarked row never expires).
   - Watermark denominator: an expired row LEAVES the denominator (the row stays —
     deleting it would read the cursor back as 0 and re-deliver); physical deletion
     only for rows whose cursor is already below the watermark. The predicate is
@@ -548,7 +547,7 @@ Design lives in the wiki (summaries) and ADRs; detailed design moved into this r
   - [x] bgi hello frame carries the assembled registry (2026-10-12, effector `cfbfb41` + aura `63c5c09`): the child's `interface_schema` reply IS the registry — the bgi_loop fixture declares `hooks: ["__sleep","__wake"]` and dispatches the reserved names in its loop; engine.register seeds Declared entries; e2e `bgi_booth_declared_hooks_run_through_the_realm` observes __wake on first activation + __sleep around eviction. Two real bugs fixed on the path: run_hook re-entered the realm lock (instance() is awaited UNDER the caller's realm guard → deadlock; body/sessions/bridge now captured before await) and hook-spawned sessions rode a host-less bridge, poisoning the slot for later deliveries (delivery_bridge_for = the run_job Script-arm assembly, extracted and shared).
   - [ ] wasm `#[on]` convention: DEAD with Phase 4.21 (the carrier retires; no work).
   - [x] Rust signature wave (§4, landed 2026-10-12): `Handler`/`SleepHook` = `dyn for<'a> Fn(&'a Ctx, …) -> BoxFuture<'a, …>` — the future lifetime FOLLOWS the borrow (a `'static` future cannot hold `&Ctx`; the clone-every-handle alternative is per-handler boilerplate; all call sites await immediately on a local ctx, so the HRTB is object-safe). Call sites: `instance.rs` Rust-body arm + on_wake + 2× on_sleep. Scope: framework-internal (booth trait, hooks, engine test scaffolding) — user booths are out-of-process per ADR-0044. Gates: workspace 69/0, clippy 0.
-  - [x] docs sync (2026-10-12, aura `e99439c`): `docs/design/booth-api.md`(+`-en`) — host-fn table gains `ctx.emit`/`ctx.on`/`ctx.receives`, language matrix gains the bgi column + lifecycle-hook row + phase-gate row, python/steel examples show `ctx.on("__sleep", …)`, wasm section carries the 4.21 retirement banner; wiki `~/.hermes/wiki/aura-architecture.md` ctx-boundary + `__wake` prose rewritten to the object form; mudra `docs/ADR-extension-protocol.md` gains the arm-set alignment note (adopt aura's dotted arm names verbatim when its surface grows).
+  - [x] docs sync (2026-10-12, aura `e99439c`): `docs/design/booth-api.md`(+`-en`) — host-fn table gains `ctx.emit`/`ctx.on`/`ctx.receives`, language matrix gains the bgi column + lifecycle-hook row + phase-gate row, python/steel examples show `ctx.on("__sleep", …)`, wasm section carries the 4.21 retirement banner; wiki `https://github.com/orbsh/wiki/blob/main/aura-architecture.md` ctx-boundary + `__wake` prose rewritten to the object form; mudra `docs/ADR-extension-protocol.md` gains the arm-set alignment note (adopt aura's dotted arm names verbatim when its surface grows).
 - [x] **Phase 4.21 — wasm channel retirement (compiled languages go bgi-first; LANDED 2026-10-12)**
   - Ruling (2026-10-12): retire the wasm carrier. The cross-language promise never materialized: C/C++/Zig authors go native anyway (bgi zero friction), Go's wasm target drags its runtime while a native single binary is bgi's ideal shape, python-in-wasm is an interpreter inside an interpreter (the embedded python carrier already serves it). First-class multi-language waits on wasm-gc + WASI + component model — and even landed, those govern a wire contract aura already has (the frame vocabulary); the component model adds nothing the bgi shim does not.
   - The one differential (fine-grained import refusal) is not a security boundary here: script carriers already run `SandboxPolicy::None`; isolation lives at deployment (effector containers, no data-plane credentials, control-plane credential gates `set`). A bgi child process gives the same fault isolation.
@@ -884,12 +883,11 @@ Deferred gates:
   spawn env 传子进程，不追加 argv——fifo 形恰好传 `[req rep]`，生成参
   数会破作者 `def main` 的 arity。nu 头声明 Cbor = 启动期点名错误
   （`nu_cbor_declaration_is_an_error`），绝不静默降级。
-- **持久化兼容（布局规则先行查证）**：`BoothDef` 的 `encoding: u64`
-  追加在热段尾 + `#[ok_layout(version = 2)]`——先读 okm-derive
-  `emit_payload_decode` 确认截断尾读声明默认（append-only 规则），旧
-  v1 行重读为 0=json（其实际行为），字段插中间会移动 `code_sha256`
-  偏移的路线否决。`introspect_schema` 按声明编码起抛却子进程
-  （`introspect_encoded`）——CBOR 摊位的 schema 帧往返也骑 CBOR。
+- **持久化**：`BoothDef` 的 `encoding: u64`（0=json/1=cbor）与
+  `PersistedBooth.encoding` 都是声明字段，随定义一起持久化。布局号按
+  okm ADR-0042 是**戳记**、不是兼容承诺——旧库做原地迁移不是本设计，直接清除重建，
+  不存在「尾部追加式演进」这一层设计。`introspect_schema` 按声明编码起抛却
+  子进程（`introspect_encoded`）——CBOR 摊位的 schema 帧往返也骑 CBOR。
 - **验收矩阵**：effector workspace 全绿（新锁 5 条：CBOR 往返+持驻、CBOR
   ctx 缝、未类型帧=解码错误且桥 fn 不执行、exec CBOR、nu+Cbor=错误）；
   aura workspace 全绿（新锁 `bgi_cbor_booth_store_emit_roundtrip`：上传

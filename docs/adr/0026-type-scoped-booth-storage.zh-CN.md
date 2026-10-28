@@ -74,7 +74,7 @@ collection 及其键/索引声明搭乘既有的 Phase 4.5b upload 生命周期�
 - 串行化、instance 路由、timer、mq 语义均不动——本裁决只移动存储隔离。
 - projection 摊位恰好保留在它一贯正当的位置：跨类型预计算。同类型聚合成为类型 ns 内的普通 scan。
 - prism 协议命名（`ev`、无方向）随 prism 侧连接平面工作落地（Phase 8）；aura 侧仅是文档。
-- wiki 同步（`~/.hermes/wiki/aura-architecture.md`）随实现落地时执行，连同 storage.md/partitioning.md 重写——本 ADR 取代其中「实例状态是一个 document」的段落。
+- wiki 同步（`https://github.com/orbsh/wiki/blob/main/aura-architecture.md`）随实现落地时执行，连同 storage.md/partitioning.md 重写——本 ADR 取代其中「实例状态是一个 document」的段落。
 
 ## 更新 — 术语（2026-09-25，ADR-0028）
 

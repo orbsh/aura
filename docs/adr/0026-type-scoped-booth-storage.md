@@ -75,7 +75,7 @@ Protocol and concept layer carry ONLY `event`. The wire field is `ev` — in bot
 - Serialization, instance routing, timer, and mq semantics are untouched — this ruling moves storage isolation only.
 - Projection booths remain exactly where they were always justified: cross-type precomputation. Same-type aggregation becomes an ordinary scan inside the type's ns.
 - Prism protocol naming (`ev`, direction-free) lands on the prism side with its connection-plane work (Phase 8); aura's side is documentation only.
-- Wiki sync (`~/.hermes/wiki/aura-architecture.md`) is due when the implementation lands, together with the storage.md/partitioning.md rewrites — this ADR supersedes the "instance state is one document" passages there.
+- Wiki sync (`https://github.com/orbsh/wiki/blob/main/aura-architecture.md`) is due when the implementation lands, together with the storage.md/partitioning.md rewrites — this ADR supersedes the "instance state is one document" passages there.
 
 ## Update — terminology (2026-09-25, ADR-0028)
 

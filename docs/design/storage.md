@@ -1,6 +1,6 @@
 # 存储架构（设计细节）
 
-> 自 `~/.hermes/wiki/aura-architecture.md` §3 迁入的实现细节；wiki 保留综述。
+> 自 `https://github.com/orbsh/wiki/blob/main/aura-architecture.md` §3 迁入的实现细节；wiki 保留综述。
 > 综述：wiki [Aura 架构 §3](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
 
 ## 3. 存储架构

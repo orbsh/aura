@@ -1,6 +1,6 @@
 # 场域模型（设计细节）
 
-> 自 `~/.hermes/wiki/aura-architecture.md` §5 迁入的实现细节；wiki 保留综述。
+> 自 `https://github.com/orbsh/wiki/blob/main/aura-architecture.md` §5 迁入的实现细节；wiki 保留综述。
 > 综述：wiki [Aura 架构 §5](https://github.com/orbsh/wiki/blob/main/aura-architecture.md)。
 > 相关：[数据分区（内部机制）](partitioning.md)、[摊位 API（脚本语言参考）](booth-api.md)。
 

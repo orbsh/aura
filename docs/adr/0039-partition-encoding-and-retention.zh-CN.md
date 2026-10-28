@@ -11,7 +11,7 @@
 单例永不进值空间；所有队列调用收 `&Partition`；`part_hash`/FNV-1a/`part_id_of`/
 `part_hash_of` 已删，键宽收紧（MqData 20→16 B、MqCursor 16→12 B、MqHead 12→8 B）。
 §2 `cursor_ttl` 是一个 `EngineConfig` 字段（KDL `mq { cursor_ttl "30d" }`，默认 30 天），
-随每次 realm 构造带入；`MqCursor.last_active_ms`（v2 热尾）由 `advance` 落值；压缩谓词
+随每次 realm 构造带入；`MqCursor.last_active_ms` 由 `advance` 落值；压缩谓词
 让过期行退出分母，且「游标已低于水位」的惰性行由 `drop_cursor` 回收。
 
 **一处超出裁决文本的读法（记录在案）：** 分母的判据落成 `mq::booth_subscribes`——
@@ -79,10 +79,10 @@
   行：游标原本**领先**于水位的实例会重新消费已经消费过的行——重复投递。物理删除只留给
   「游标已低于当前水位」的行（它们的 backlog 已不存在，删掉无从重放），这也给游标行一个
   收敛的清理规则——否则每个见过的 key 都留一行。
-- **行：** `MqCursor` 增 `last_active_ms: u64`（热尾追加，`#[ok_layout(version = 2)]`，
-  照 `BoothDef.encoding` 先例），语义 = 最后一次 `advance`（skip-to-now 算活跃）。
-  哨兵规则：`0` 永不参与过期判定——旧行把缺失字段解码为 0，没有这条规则，新代码第一次
-  运行就会让全部行瞬时过期、所有积压当场作废。
+- **行：** `MqCursor` 增 `last_active_ms: u64`，语义 = 最后一次 `advance`
+  （skip-to-now 算活跃）。哨兵规则：`0` 永不参与过期判定——**未标记**的行（从未经该字段
+  记录过活跃）不算过期；没有这条规则，新代码第一次运行就会让全部行瞬时过期、所有积压
+  当场作废。
 - **判定时机：** 压缩时的谓词（emit 路径算水位时本来就枚举该分区的游标行），不是后台
   守夜进程——保留决策只在新行到达时到期。timer wheel 只在可选地回收惰性行时才用。
 - **契约：** 冷消费者在 `cursor_ttl` 内未推进，其积压作废。返回时它从自己的游标读现存

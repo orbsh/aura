@@ -112,12 +112,11 @@ watermark denominator, never deletes the row.**
   reserved for rows whose cursor is already BELOW the current watermark (their
   backlog no longer exists, so nothing can replay), which also gives cursor rows
   a convergent cleanup rule — otherwise every key ever seen leaves a row.
-- **Row:** `MqCursor` gains `last_active_ms: u64` (hot-tail append,
-  `#[ok_layout(version = 2)]`, the `BoothDef.encoding` precedent), meaning the
-  last `advance` (skip-to-now counts as activity). Sentinel rule: `0` never
-  participates in the expiry predicate — old rows decode the missing field as 0,
-  and without this rule the first run of the new code would expire everything
-  instantly and void every backlog.
+- **Row:** `MqCursor` gains `last_active_ms: u64`, meaning the last `advance`
+  (skip-to-now counts as activity). Sentinel rule: `0` never participates in
+  the expiry predicate — an UNMARKED row (never advanced through this field) is
+  not expired, and without this rule the first run of the new code would expire
+  everything instantly and void every backlog.
 - **Evaluation point:** a predicate evaluated at COMPACTION time (the emit path
   already enumerates that partition's cursor rows while computing the
   watermark), not a background watchdog — retention decisions are only due when

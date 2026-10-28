@@ -39,9 +39,12 @@ use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 /// The current data-plane layout version: the low-block renumbering's date
 /// stamp. BUMP on any `#[ok_ns]`/key-width/table-shape change that an old
-/// store cannot decode (the number is semantic — an operator reading the
-/// error should be able to date the incompatibility).
-pub const PLANE_VERSION: u32 = 20_261_012;
+/// store cannot decode — a payload `#[ok_layout]` reset counts as one of
+/// those (ADR-0042: the number is a stamp, not a compatibility promise, so a
+/// reset makes every stored payload of that table undecodable) — and the
+/// number is semantic: an operator reading the error should be able to date
+/// the incompatibility.
+pub const PLANE_VERSION: u32 = 20_261_028;
 
 /// The marker's raw key (ns 26's whole content is this one row; the ns is
 /// otherwise reserved — ADR-0040's free-band discipline).
@@ -182,9 +185,6 @@ pub struct BoothDefKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(BoothDefKey)]
 #[ok_ns(31)]
-// v2: `encoding` appended at the hot tail (append-only rule — old v1
-// rows decode it as its default 0 = json, the behavior they had).
-#[ok_layout(version = 2)]
 pub struct BoothDef {
     /// The raw type name (observability; the id is the addressing).
     pub name: String,
@@ -196,8 +196,7 @@ pub struct BoothDef {
     pub code_sha256: [u8; 32],
     pub idle_ttl_secs: u64,
     /// Declared frame codec of the process carriers (ADR-0037 §2):
-    /// 0 = json, 1 = cbor. Hot-tail append: definitions persisted
-    /// before the field reload as json (their actual behavior).
+    /// 0 = json, 1 = cbor.
     pub encoding: u64,
 }
 
@@ -301,7 +300,7 @@ impl BoothDef {
                 language: self.language,
                 source: String::new(), // filled by the blob hydrate below
                 encoding: match self.encoding {
-                    // 0 (and any legacy row's decode default) = json.
+                    // 0 = json (the default every registration starts from).
                     1 => aura_booth::Encoding::Cbor,
                     _ => aura_booth::Encoding::Json,
                 },

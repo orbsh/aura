@@ -150,10 +150,6 @@ pub struct MqCursorKey {
 #[ok_ns(23)]
 // No physical partition (ADR-0041 §4): a point table, the same class as booth
 // state, which lives in the default keyspace.
-// v2: `last_active_ms` appended at the hot tail (append-only rule — a row
-// persisted before the field decodes it as 0, which the `cursor_ttl`
-// predicate reads as UNMARKED = never expires).
-#[ok_layout(version = 2)]
 pub struct MqCursor {
     /// Seq of the last CONSUMED event (0 = nothing consumed yet).
     pub cursor: u64,

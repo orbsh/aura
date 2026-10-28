@@ -73,9 +73,9 @@ parent → child   {"host_reply": {"ok": <typed>}}
 - **编码按摊位声明，双协议（用户裁决 2026-09-30，替换整通道单编码
   计划）**：通道带两种编码，由声明选择——`BoothType::encoded
   (ChannelEncoding)`（aura-booth，serde 值 `json`/`cbor`，持久化为
-  `BoothDef` 热段尾部追加字段）与远程线上的 `ToolCall.encoding`
+  `BoothDef.encoding` 字段）与远程线上的 `ToolCall.encoding`
   （进程内：realm 下传；远程：随调用到节点）。`Json` = 换行分隔行，
-  stdlib 可达的默认，所有旧摊位与旧持久化行都骑它；`Cbor` = 每帧一个
+  stdlib 可达的默认，所有摊位都骑它；`Cbor` = 每帧一个
   自定界文档（无行终止符——ciborium 恰好读声明的字节数，阻塞管道上
   连续解码逐帧落位）。子进程经 spawn 注入的 `BGI_ENCODING` env 得知
   编码——不追加 argv（fifo 形恰好传 `[req rep]`，生成的参数会破作者
@@ -165,9 +165,8 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   期间 op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
   全部幸存——载荷的到达形状现在是类型化 `store` 帧。声明面（4.16c）：
   aura-booth 带自有的 `ChannelEncoding`（crate 保持 effector-free）、
-  `BoothType::encoded` 选择编码、`PersistedBooth`/`BoothDef` 以热段尾部
-  追加字段持久化（旧行重读为 json——其实际行为），`introspect_schema`
-  按声明编码起抛却子进程。
+  `BoothType::encoded` 选择编码、`PersistedBooth`/`BoothDef` 以声明字段
+  承载它，`introspect_schema` 按声明编码起抛却子进程。
 - **文档**：ADR-0026 §3 的 python 措辞按本 ADR 修订（绑定，无 adapter）；
   ADR-0035 §3 的 host 帧形状随 §2 更新；本文件取代两者的存储桥段落。
 - **排期**：按预定顺序落地——4.14 闸门 2/3 与 4.15 先行（nu 垫片 +

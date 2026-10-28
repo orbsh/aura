@@ -392,11 +392,11 @@ denominator is the **EventRoute registry**, not the raw cursor keys:
   deleted row reads the cursor back as 0, and `backlog(after = 0)` replays
   surviving rows — an instance whose cursor was ahead of the watermark would
   re-consume them. Physical deletion (`drop_cursor`) is reserved for rows whose
-  cursor is already below the watermark. `last_active_ms` (v2 hot tail) refreshes
-  on `advance`; the `0` sentinel never participates (old rows decode the missing
-  field as 0, and without the sentinel the first run of the new code would expire
-  everything at once). The predicate is evaluated at compaction time, not by a
-  background watchdog.
+  cursor is already below the watermark. `last_active_ms` refreshes on
+  `advance`; the `0` sentinel never participates (unmarked = not expired, and
+  without the sentinel the first run of the new code would expire everything at
+  once). The predicate is evaluated at compaction time, not by a background
+  watchdog.
 - The scan cost is bounded by the subscriber count (it runs per emit).
 
 ## 7. Keyspace layout (ns-layout merged)
@@ -618,7 +618,7 @@ reason are in §6.3 and §7.
 Landed fallout (done): the `#[ok_ns]` renumbering; the `InstanceKeyRegistry` table
 (named `PartitionName` when ruled) plus `mq::InstanceKey` as the structural marker; the
 tightened key widths; `mq { cursor_ttl }` in `crates/config` + the realm field;
-`MqCursor.last_active_ms` (v2 hot-tail + the `0` sentinel); the denominator change
+`MqCursor.last_active_ms` plus its `0` sentinel; the denominator change
 (`booth_subscribes`) plus inert-row reclamation (`drop_cursor`); the cursor-key
 identifiers `type_id` → `booth_id` (ADR-0032's booth-naming sweep reaching the field
 layer); seq changed from `max(now_ms, last+1)` to a pure sequence (the reason lives in

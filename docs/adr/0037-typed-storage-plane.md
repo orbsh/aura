@@ -87,11 +87,11 @@ parent → child   {"host_reply": {"ok": <typed>}}
 - **The encoding is DECLARED per booth (user ruling 2026-09-30 —
   dual-protocol).** The channel ships two codecs selected by the
   declaration — `BoothType::encoded(ChannelEncoding)` (aura-booth, serde
-  values `json`/`cbor`, persisted in `BoothDef` as the hot-tail append)
+  values `json`/`cbor`, persisted in `BoothDef.encoding`)
   and `ToolCall.encoding` on the remote wire (in-process: the realm
   passes it down; remote: it rides the call to the node). `Json` =
-  newline-delimited lines, the stdlib-reachable default every booth and
-  older persisted row rides; `Cbor` = one self-delimited document per
+  newline-delimited lines, the stdlib-reachable default every booth
+  rides; `Cbor` = one self-delimited document per
   frame (no line terminator — ciborium reads exactly the declared bytes,
   so sequential decodes on the blocking pipe land document-by-document).
   The child learns the codec through the `BGI_ENCODING` env at spawn —
@@ -214,9 +214,8 @@ typed.
   the payload's arrival shape is now a typed `store` frame. The
   declaration surface (4.16c): aura-booth carries its own
   `ChannelEncoding` (the crate stays effector-free), `BoothType::encoded`
-  selects it, `PersistedBooth`/`BoothDef` persist it as a hot-tail
-  append (old rows reload as json — their actual behavior), and
-  `introspect_schema` spawns the throwaway child in the DECLARED codec.
+  selects it, `PersistedBooth`/`BoothDef` carry it as a declared field,
+  and `introspect_schema` spawns the throwaway child in the DECLARED codec.
 - **Docs**: ADR-0026 §3's python wording is amended per this ADR (bind, no
   adapter); ADR-0035 §3's host frame shape updates with §2; this file
   supersedes both storage-bridge passages.

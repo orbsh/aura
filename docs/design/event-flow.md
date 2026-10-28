@@ -83,7 +83,7 @@
    → 消费位置必须独立持久，且单调：**落点：MqCursor（ns 23）**，行主语是订阅者，
    绝不回卷（skip-to-head 的持久性靠这条——跳过的 backlog 不得在下一轮 drain 重现）。
    键 `[event_id u32][instance_key_id u32][booth_id u32]`（12 B）；值 = `cursor u64`
-   （最后消费的 seq，0 = 未消费）+ `last_active_ms u64`（v2 热尾：`cursor_ttl` 谓词的输入，
+   （最后消费的 seq，0 = 未消费）+ `last_active_ms u64`（`cursor_ttl` 谓词的输入，
    0 = 未标记、永不判过期）。它是点表，与摊位状态同类，不带物理分区（ADR-0041 §4）。
 4. **同一事件的不同批次要能各自排队**（异实例并行，同实例串行）。
    → 队列按**实例键**切分：**切片段的值 = 路由解析出的 instance key**（订阅侧 = 本实例的
@@ -133,7 +133,7 @@
    **CodeBlob（ns 32）**（ADR-0027 内容寻址）。
    BoothDef：键 `booth_id u32`（4 B）；值 = `name String` + `language String` +
    `code_sha256 [u8;32]`（代码的指针，不再是代码本身）+ `idle_ttl_secs u64`（0 = 用 realm
-   默认——零 TTL 无意义）+ `encoding u64`（v2 热尾：0 = json、1 = cbor，ADR-0037 §2）+
+   默认——零 TTL 无意义）+ `encoding u64`（0 = json、1 = cbor，ADR-0037 §2）+
    `schema` 动态段（introspected schema，结构化 nTLV，非不透明文本）。
    CodeBlob：键 `sha256 [u8;32]`（32 B）；值 = `sha256 [u8;32]` 镜像 + `data Bytes`。
    sha256 即版本身份，同码重注册去重，构造性不可变。
@@ -277,8 +277,8 @@ emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass �
   比较）。过期 = 该行退出分母（允许压缩越过它 = 积压作废），**不是删行**：删行会让游标
   读回 0 而 `backlog(after=0)` 重放现存行，若该游标原本领先于水位就是重复投递；物理
   删除（`drop_cursor`）只留给「游标已低于当前水位」的行。活跃时间 `last_active_ms`
-  （v2 热尾）随 advance 刷新，`0` 哨兵不参与判定（旧行把缺失字段解码为 0，否则新代码
-  首次运行全体瞬时过期）。判定发生在压缩时（谓词），不是后台守夜进程。
+  随 advance 刷新，`0` 哨兵不参与判定（未标记 = 不判过期，否则新代码首次运行全体瞬时过期）。
+  判定发生在压缩时（谓词），不是后台守夜进程。
 - 扫描代价被订阅者数量界定（逐 emit 运行）。
 
 ## 7 键空间布局（原 ns-layout 并入）
@@ -433,7 +433,7 @@ emit 都激活一个新实例，而新实例游标从 0 起 = 重放该队列现
 
 落地连带（已完成）：`#[ok_ns]` 改号、`InstanceKeyRegistry` 表（裁定当时名 `PartitionName`）
 + `mq::InstanceKey` 结构标记、键宽收紧、`crates/config` 的 `mq { cursor_ttl }` + realm 字段、
-`MqCursor.last_active_ms`（v2 热尾 + 0 哨兵）、分母改造（`booth_subscribes`）+ 惰性行回收
+`MqCursor.last_active_ms`（+ 0 哨兵）、分母改造（`booth_subscribes`）+ 惰性行回收
 （`drop_cursor`）、游标键标识符 `type_id` → `booth_id`（ADR-0032 命名清扫落到字段层）、
 seq 由 `max(now_ms, last+1)` 改为纯序列（理由已并入 §2 第 5 步，不在此重复）。
 **2026-10-08（ADR-0041）**：词汇改用 instance key、`MqHead`（ns 24）撤销改由 MqData 的

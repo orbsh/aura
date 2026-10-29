@@ -8,8 +8,20 @@
 use aura_engine::{effectors, Engine};
 use std::time::Duration;
 
-fn dial(port: u16) -> tokio::task::JoinHandle<()> {
-    // A minimal effector-shaped client: register a WS handshake manually.
+/// A node key on disk: the handshake proves possession, so every dial needs one (the two
+/// dials use DIFFERENT keys on purpose — local mode has no registry, so neither is enrolled).
+fn node_key(tag: &str) -> effector_protocol::SigningKey {
+    let mut path = std::env::temp_dir();
+    path.push(format!("aura-alias-{tag}-{}.key", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    effector_protocol::write_keypair(&path).unwrap();
+    effector_protocol::read_signing_key(&path).unwrap()
+}
+
+fn dial(port: u16, tag: &str) -> tokio::task::JoinHandle<()> {
+    let key = node_key(tag);
+    // A minimal effector-shaped client: register a WS handshake manually, answering the
+    // challenge the host always speaks first.
     tokio::spawn(async move {
         use effector_protocol::Frame;
         use futures_util::{SinkExt, StreamExt};
@@ -17,10 +29,19 @@ fn dial(port: u16) -> tokio::task::JoinHandle<()> {
         let url = format!("ws://127.0.0.1:{port}");
         let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         let (mut sink, mut stream) = ws.split();
+        let nonce = match stream.next().await.unwrap().unwrap() {
+            Message::Text(text) => match serde_json::from_str::<Frame>(&text).unwrap() {
+                Frame::Challenge { nonce } => nonce,
+                other => panic!("expected Challenge, got {other:?}"),
+            },
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let node_alias = "shared".to_string();
         sink.send(Message::Text(
             serde_json::to_string(&Frame::Register {
-                node_alias: "shared".into(),
-                credential: String::new(),
+                public_key: effector_protocol::public_key_b64(&key),
+                signature: effector_protocol::sign_register(&key, &nonce, &node_alias),
+                node_alias,
                 carriers: vec!["steel".into()],
             })
             .unwrap(),
@@ -44,7 +65,7 @@ async fn alias_takeover_routes_to_the_new_peer() {
         listener,
     ));
 
-    let first = dial(port);
+    let first = dial(port, "first");
     for _ in 0..50 {
         if engine
             .realm
@@ -59,7 +80,7 @@ async fn alias_takeover_routes_to_the_new_peer() {
     }
     let first_peer = engine.realm.try_lock().unwrap().effectors["shared"].peer;
 
-    let second = dial(port);
+    let second = dial(port, "second");
     // Wait for the takeover: the stored peer address must change.
     let mut replaced = false;
     for _ in 0..50 {

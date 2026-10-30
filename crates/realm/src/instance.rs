@@ -361,7 +361,7 @@ impl Realm {
         let realm_timers = realm.timers.clone();
         drop(realm);
         let mut result = match body {
-            aura_booth::Body::RemoteProbe {
+            aura_booth::Body::Remote {
                 node_alias,
                 language,
                 source,

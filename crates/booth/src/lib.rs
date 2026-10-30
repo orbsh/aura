@@ -43,7 +43,7 @@ pub enum Body {
     /// dialed into THIS control plane. `node_alias` addresses the effector's
     /// outbound connection; `language` + `source` are delivered per call
     /// (inline payload). The effector executes in its resident sessions.
-    RemoteProbe {
+    Remote {
         node_alias: String,
         language: String,
         source: String,
@@ -197,7 +197,7 @@ impl BoothType {
     /// carriers (they carry no channel).
     pub fn encoded(mut self, encoding: Encoding) -> Self {
         match &mut self.body {
-            Body::Script { encoding: e, .. } | Body::RemoteProbe { encoding: e, .. } => {
+            Body::Script { encoding: e, .. } | Body::Remote { encoding: e, .. } => {
                 *e = encoding
             }
             Body::Rust(_) => {}

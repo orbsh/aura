@@ -217,10 +217,10 @@ impl Engine {
         // Content addressing covers remote types too (ADR-0027): the
         // dispatch arm references `sha256(source)`, and the serving
         // source reads CodeBlob — so the bytes must enter the blob store
-        // at upload. RemoteProbe definitions are not persisted (4.5b
+        // at upload. Remote definitions are not persisted (4.5b
         // scope: script booths); this write is the blob's only home for
         // them, deliberately without a definition row.
-        if let aura_booth::Body::RemoteProbe { ref source, .. } = booth.body {
+        if let aura_booth::Body::Remote { ref source, .. } = booth.body {
             let r = realm.lock().await;
             aura_realm::meta::put_blob(
                 &r.mq,

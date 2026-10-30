@@ -11,7 +11,7 @@ No implementation had started, so there is nothing to roll back.
 ## Context — what the proposal was
 
 The draft extended the surface beyond tier-1 remote **execution** (the effector,
-`Body::RemoteProbe`, PLAN Phase 3) to tier-2 remote **participation**: a booth
+`Body::Remote`, PLAN Phase 3) to tier-2 remote **participation**: a booth
 itself — definition, code, storage — living on an external service, with the
 realm dialing out to its WS endpoint, registering the endpoint on the
 registration frame, holding the connection, pinging 1–5s for liveness,
@@ -91,7 +91,7 @@ liveness policy for a connection whose semantics it cannot inspect. The
 remote booth was a broker wearing its client's clothes.
 
 **What the realm still does offer remote ends.** Tier-1 remote
-*execution* — the effector (`Body::RemoteProbe`, ADR-0027) — is untouched
+*execution* — the effector (`Body::Remote`, ADR-0027) — is untouched
 and is the only remote shape: the control plane ships content-addressed
 code into an execution node and holds that WS connection (node keypair,
 ADR-0015). It belongs because the control plane is the code's author;
@@ -132,7 +132,7 @@ Two observations from the draft were correct and remain on the record:
    case any more than a Go binary with its own Postgres would be.
 2. **The unified call model is target-agnostic** (Phase 3.5:
    `CallSpec{tier, timeout}`, `CallSlot`, `pending_remote`). It serves the
-   `RemoteProbe` arm today and would serve any future remote target —
+   `Remote` arm today and would serve any future remote target —
    which is precisely why no remote-booth *machinery* was needed to prove
    it: the machinery that exists serves tier-1, and nothing else asked to
    ride it.

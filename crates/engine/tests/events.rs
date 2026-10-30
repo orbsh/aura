@@ -847,6 +847,7 @@ async fn scan_route_fans_out_to_the_hit_rows() {
     // (This IS the scan-route declaration surface; router.on_resolve.)
     booth.receives.push(aura_booth::ReceiveDecl {
         event: "newsletter".into(),
+        entry: None,
         resolution: aura_booth::RouteResolution::Scan {
             collection: "subscribers".into(),
             index: "by_email".into(),

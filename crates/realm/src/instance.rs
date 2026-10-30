@@ -82,7 +82,8 @@ impl Realm {
             // queue — the old broadcast (every instance holding its own
             // participant cursor on one shared queue behind one shared
             // cursor row) made the retention denominator an open set.
-            let mut subs: Vec<(String, InstanceKey, bool)> = Vec::new();
+            // (event, partition, wildcard, declared entry — `None` = the event name).
+            let mut subs: Vec<(String, InstanceKey, bool, Option<String>)> = Vec::new();
             if let Some(_booth) = self.types.get(&id.booth_type) {
                 for route in self.router.routes_of(&id.booth_type) {
                     let partition = match route.resolution {
@@ -108,7 +109,12 @@ impl Realm {
                     // route.event is a PATTERN, expanded to concrete names
                     // at consume time (queues are keyed by concrete names —
                     // emit writes there).
-                    subs.push((route.event.clone(), partition, route.event.ends_with('*')));
+                    subs.push((
+                        route.event.clone(),
+                        partition,
+                        route.event.ends_with('*'),
+                        route.entry.clone(),
+                    ));
                 }
             }
             self.instances.insert(key.clone(), inst);
@@ -132,9 +138,11 @@ impl Realm {
                 // subscription is one name; a wildcard expands to every
                 // registered event matching its prefix (re-expanded each
                 // pass — new concrete names join automatically).
-                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>)> = subs
+                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>, Option<String>)> = subs
                     .into_iter()
-                    .map(|(event, part, is_wildcard)| (event, part, is_wildcard, Vec::new()))
+                    .map(|(event, part, is_wildcard, handler)| {
+                        (event, part, is_wildcard, Vec::new(), handler)
+                    })
                     .collect();
                 // An instance with no bound queue has nothing to drain —
                 // exit (releasing the realm Arc) instead of spinning the
@@ -150,7 +158,7 @@ impl Realm {
                 // events".
                 'poll: loop {
                     let mut progressed = false;
-                    for (event, part, is_wildcard, names) in &mut queues {
+                    for (event, part, is_wildcard, names, declared) in &mut queues {
                         if *is_wildcard {
                             let prefix = event.trim_end_matches('*').to_string();
                             let found = {
@@ -201,11 +209,13 @@ impl Realm {
                                 }
                             };
                             for (seq, payload) in batch {
+                                // The body is called at the declared entry when the declaration
+                                // bound one; otherwise the event name IS the entry.
                                 let job = aura_booth::QueuedJob {
-                                    handler: concrete.clone(),
+                                    handler: declared.clone().unwrap_or_else(|| concrete.clone()),
                                     args: payload,
                                 };
-                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job)
+                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job, concrete)
                                     .await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
@@ -243,8 +253,15 @@ impl Realm {
         })
     }
 
-    async fn run_job_queued(self_arc: SharedRealm, id: &InstanceId, job: aura_booth::QueuedJob) {
-        let reply_tx = tokio::sync::oneshot::channel();
+    async fn run_job_queued(
+        self_arc: SharedRealm,
+        id: &InstanceId,
+        job: aura_booth::QueuedJob,
+        event: &str,
+    ) {
+        let entry = job.handler.clone();
+        let args = job.args.clone();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         // Unified seam (ADR-0036): an event delivery is a Start whose
         // reply nobody parks on — the envelope is produced and
         // discarded by the drop (§4). The stream id still rides the job
@@ -259,9 +276,8 @@ impl Realm {
             stream: sid,
             handler: job.handler,
             args: job.args,
-            reply: reply_tx.0,
+            reply: reply_tx,
         };
-        // Drop the receiver: no one observes the reply.
         let mut realm = self_arc.lock().await;
         if let Some(i) = realm
             .instances
@@ -270,7 +286,34 @@ impl Realm {
             i.last_activity = std::time::Instant::now();
         }
         drop(realm);
-        Self::run_job(self_arc, id, job).await;
+        Self::run_job(self_arc.clone(), id, job).await;
+        // NOBODY PARKS ON A DELIVERY'S REPLY (§4) — except here: a body that could not be CALLED
+        // (an entry the code does not define, a carrier fault) is a fact the operator must be
+        // able to see. It is recorded in the dead ring with BOTH names, and said in the log,
+        // because the alternative is a subscription that silently never runs (ADR-0045).
+        match reply_rx.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                eprintln!(
+                    "aura: delivery of `{event}` failed at entry `{entry}` on {}: {e}",
+                    id.booth_type
+                );
+                let mut realm = self_arc.lock().await;
+                realm.dead_events.push(
+                    event,
+                    serde_json::json!({
+                        "entry": entry,
+                        "booth_type": id.booth_type,
+                        "error": e.to_string(),
+                        "payload": args,
+                    }),
+                    crate::event::DeadReason::DeliveryFailed,
+                );
+            }
+            // The reply sender was dropped without an answer: run_job returned early. Not a
+            // delivery failure to report (nothing was attempted) — and not our business here.
+            Err(_) => {}
+        }
     }
 
     pub(crate) async fn run_job(self_arc: SharedRealm, id: &InstanceId, job: Job) {
@@ -754,7 +797,7 @@ impl Realm {
             handler: "__on_timer".into(),
             args: serde_json::json!({ "tag": tag }),
         };
-        Self::run_job_queued(realm, &target, job).await;
+        Self::run_job_queued(realm, &target, job, "__on_timer").await;
     }
 
     /// The cold-tier submission arm (ADR-0036): like every dispatch job,

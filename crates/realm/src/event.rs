@@ -29,6 +29,9 @@ pub struct Route {
     /// can dispatch; script booths receive a map keyed by event name once
     /// Phase 2.5 lands).
     pub event: String,
+    /// The entry this route calls, when the declaration binds one (`on_as`). `None` = the event
+    /// name is the entry.
+    pub entry: Option<String>,
 }
 
 /// Route table: exact map + wildcard prefixes (linear scan — wildcard
@@ -61,6 +64,30 @@ impl EventRouter {
             booth_type: booth_type.into(),
             resolution,
             event: name,
+            entry: None,
+        });
+    }
+
+    /// `on`, with the body invoked under a different name than the event it subscribes to.
+    pub fn on_as(
+        &mut self,
+        event: impl Into<String>,
+        booth_type: &str,
+        key_field: impl Into<String>,
+        entry: impl Into<String>,
+    ) {
+        let name = event.into();
+        let key_field = key_field.into();
+        let resolution = if key_field.is_empty() {
+            RouteResolution::Singleton
+        } else {
+            RouteResolution::Field(key_field)
+        };
+        self.exact.entry(name.clone()).or_default().push(Route {
+            booth_type: booth_type.into(),
+            resolution,
+            event: name,
+            entry: Some(entry.into()),
         });
     }
 
@@ -83,6 +110,7 @@ impl EventRouter {
                 probe_field: probe_field.into(),
             },
             event: name,
+            entry: None,
         });
     }
 
@@ -96,6 +124,7 @@ impl EventRouter {
                 booth_type: booth_type.into(),
                 resolution: RouteResolution::Singleton,
                 event: pattern.to_string(),
+                entry: None,
             },
         ));
     }
@@ -156,6 +185,22 @@ pub enum DeadReason {
     MissingKeyField,
     /// A route matched but persisting the fact failed (a storage fault).
     AppendFailed,
+    /// A route matched, the fact persisted, and the body could not be CALLED: the declared entry
+    /// is not there, or the call itself failed. The event reached its subscriber's queue and then
+    /// stopped — which is invisible unless it is recorded here (ADR-0045's owed defect).
+    DeliveryFailed,
+}
+
+impl std::fmt::Display for DeadReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            DeadReason::NoRoute => "no-route",
+            DeadReason::MissingKeyField => "missing-key-field",
+            DeadReason::AppendFailed => "append-failed",
+            DeadReason::DeliveryFailed => "delivery-failed",
+        };
+        f.write_str(s)
+    }
 }
 
 pub struct DeadEvents {

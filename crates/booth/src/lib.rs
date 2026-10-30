@@ -107,6 +107,11 @@ pub struct BoothType {
 #[derive(Clone, Debug)]
 pub struct ReceiveDecl {
     pub event: String,
+    /// The ENTRY this declaration binds — what the body is called as — when it differs from the
+    /// event it subscribes to: `view:add-to-cart` bound to `add_to_cart`. A compiled body does
+    /// not need it (the dispatcher holds a closure); a script body does, because its only
+    /// binding form is this declaration. `None` = the event name is the entry.
+    pub entry: Option<String>,
     pub resolution: RouteResolution,
     pub wildcard: bool,
 }
@@ -205,6 +210,25 @@ impl BoothType {
     pub fn on(mut self, event: impl Into<String>, key_field: impl Into<String>) -> Self {
         self.receives.push(ReceiveDecl {
             event: event.into(),
+            entry: None,
+            resolution: RouteResolution::Field(key_field.into()),
+            wildcard: false,
+        });
+        self
+    }
+
+    /// `on`, for a subscription whose entry is NOT its event name: the booth is called as
+    /// `entry` whenever `event` fires. The marker case — subscribe to `view:add-to-cart`, call
+    /// `add_to_cart` — is the reason this exists.
+    pub fn on_as(
+        mut self,
+        event: impl Into<String>,
+        key_field: impl Into<String>,
+        entry: impl Into<String>,
+    ) -> Self {
+        self.receives.push(ReceiveDecl {
+            event: event.into(),
+            entry: Some(entry.into()),
             resolution: RouteResolution::Field(key_field.into()),
             wildcard: false,
         });
@@ -223,6 +247,7 @@ impl BoothType {
     ) -> Self {
         self.receives.push(ReceiveDecl {
             event: event.into(),
+            entry: None,
             resolution: RouteResolution::Scan {
                 collection: collection.into(),
                 index: index.into(),
@@ -237,6 +262,7 @@ impl BoothType {
     pub fn on_wildcard(mut self, pattern: impl Into<String>) -> Self {
         self.receives.push(ReceiveDecl {
             event: pattern.into(),
+            entry: None,
             resolution: RouteResolution::Singleton,
             wildcard: true,
         });

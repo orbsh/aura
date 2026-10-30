@@ -984,6 +984,19 @@ Deferred gates:
   两仓 Cargo.lock bump okm → ce08c24。ADR-0037 双语状态行 + 后果节改为
   落地态（4.16b/4.16c 留名）。
 
+## 会话记录（2026-10-29，ADR-0045：声明绑定 entry）
+
+- [x] `ReceiveDecl.entry: Option<String>` + `BoothType::on_as(event, key_field, entry)`；
+      `EventRouter::on_as`；两条路由装配路径都要走（`engine/src/lib.rs` 的内省分支、
+      `realm/src/registry.rs` 的注册表分支——后者先前完全没看这个字段，第一版因此"注册了但
+      handler 仍是事件名"）；实例的 `subs`/`queues` 元组带 entry，`QueuedJob.handler` 优先用它。
+- [x] prism 渲染器腿：页面发裸 `dest`，prism 发 `view:<dest>`；摊位声明
+      `receives: {view:echo_frame: {entry: echo_frame}}`，函数保持原名。
+- [x] ADR-0045 后果落地：投递应答不再被丢弃。`run_job_queued` 观察应答，失败时日志写明
+      （事件名 + 试图调用的 entry + 摊位类型），并记入死信环 `DeadReason::DeliveryFailed`
+      （载荷 `{entry, booth_type, error, payload}`）。读取面在 prism：`GET /admin/dead`。
+      prism 侧用例 `a_failed_delivery_is_readable_over_http` 实证。
+
 ## 会话记录（2026-09-29b，Phase 4.15 落地：统一信封）
 
 - **协议塌缩（两仓原子批）**：effector `CallKind::Invoke` 删除（IterateStart

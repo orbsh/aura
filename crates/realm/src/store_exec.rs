@@ -80,6 +80,11 @@ impl IndexSpecData {
             fields: self.fields.clone(),
             includes: self.includes.clone(),
             kind: okm_dynamic::AccessMethodKind::Plain,
+            // ADR-0048: the caller's claim that what this face produces changed
+            // for a reason the structure cannot show. Schema-declared plain
+            // indexes have no such reason — a renumbering moves the slot, which
+            // the fingerprint already covers — so the claim stays unset.
+            version: 0,
         }
     }
 }
@@ -704,6 +709,9 @@ fn build_access_method(v: &serde_json::Value) -> Result<(String, AccessMethod), 
             fields,
             includes,
             kind,
+            // Same reasoning as `IndexSpecData::access_method`: the declaration
+            // carries no version, so the fingerprint compares structure alone.
+            version: 0,
         },
     ))
 }

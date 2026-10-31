@@ -14,13 +14,13 @@ declaration. That declaration (`interface_schema` → `receives`) carried an eve
 resolution and nothing else, so the entry was, by necessity, the event name.
 
 That holds only while every event name is also a name the language can define. It is not. A venue
-that marks its UI-facing events (prism's `view:<name>`) hands the body `view:add-to-cart`, and a
+that marks its UI-facing events (prism's `ui:<name>`) hands the body `ui:add-to-cart`, and a
 script cannot define that function — the character is not part of an identifier. The subscription
 registers, the emit matches the route, the queue receives the message, the carrier is asked for
-`view:add-to-cart`, finds nothing, and **drops the job with no log line**. Measured on prism's
+`ui:add-to-cart`, finds nothing, and **drops the job with no log line**. Measured on prism's
 renderer leg: the booth was never entered and nothing anywhere said why.
 
-There is no `@on("view:x")`-style runtime registration to fall back on: `ctx` exposes `emit` and
+There is no `@on("ui:x")`-style runtime registration to fall back on: `ctx` exposes `emit` and
 `store`, and the schema's flat `{"on": [...]}` spelling is a list of event names, not of function
 references. For a script body, the declaration IS the registration.
 
@@ -29,7 +29,7 @@ references. For a script body, the declaration IS the registration.
 **A subscription declaration says what it binds.** `ReceiveDecl` (and `Route`) carry the entry as
 an optional second name, spelled `entry` — the word the remote frame already uses:
 
-    receives: { "view:add-to-cart": { "entry": "add_to_cart" } }
+    receives: { "ui:add-to-cart": { "entry": "add_to_cart" } }
 
 Absent, the event name is the entry — the behaviour of every declaration today. The binding travels
 the whole path (declaration → router, from BOTH the engine's introspection arm and the registry's →

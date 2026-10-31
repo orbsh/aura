@@ -52,9 +52,9 @@ async fn handle_connection(
     // that answers it is verified here too — local mode has no node REGISTRY (that is prism's,
     // ADR-0015 §3), but "no registry" has never meant "no proof".
     let nonce = effector_protocol::nonce();
-    sink.send(Message::Text(
-        serde_json::to_string(&Frame::Challenge { nonce: nonce.clone() })?,
-    ))
+    sink.send(Message::Text(serde_json::to_string(&Frame::Challenge {
+        nonce: nonce.clone(),
+    })?))
     .await?;
 
     // Registration: alias + carriers + proof. The alias keys the connection.

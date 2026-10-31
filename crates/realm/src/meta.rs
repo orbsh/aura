@@ -392,9 +392,7 @@ pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
         b.copy_from_slice(&suffix[suffix.len() - 4..]);
         let booth_id = u32::from_be_bytes(b);
         let key = BoothDefKey { booth_id };
-        let schema = t
-            .fetch(&key)?
-            .and_then(|f| f.get(SCHEMA_FIELD).cloned());
+        let schema = t.fetch(&key)?.and_then(|f| f.get(SCHEMA_FIELD).cloned());
         let row = BoothDef::decode_payload(&payload);
         let (mut def, sha) = row.into_persisted(schema);
         // Hydrate the source through the row's own content address —

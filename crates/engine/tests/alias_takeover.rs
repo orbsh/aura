@@ -3,7 +3,13 @@
 //! presence: after a second connection takes the alias, the FIRST
 //! connection ending must NOT unregister the alias (the guard's
 //! same_channel check), and the routing channel is the NEW one.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::{effectors, Engine};
 use std::time::Duration;

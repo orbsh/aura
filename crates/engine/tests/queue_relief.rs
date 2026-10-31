@@ -11,7 +11,13 @@
 //! advance, backlog never re-surfaces) are locked in `realm/tests/mq_okm.rs`;
 //! this test proves the bridge reaches them from a script and that the
 //! handler's read agrees with the store's.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey as BKey};
 use aura_engine::Engine;

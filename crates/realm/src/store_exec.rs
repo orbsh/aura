@@ -45,10 +45,7 @@ fn declared_names(schema: &okm_core::schema::CollectionSchema) -> Vec<&str> {
 
 /// The document's dynamic half (the segment): `fetch` answers both slots
 /// (ADR-0035 — the document is one map), so the declared names are dropped.
-fn dynamic_half(
-    schema: &okm_core::schema::CollectionSchema,
-    doc: &ValueMap,
-) -> ValueMap {
+fn dynamic_half(schema: &okm_core::schema::CollectionSchema, doc: &ValueMap) -> ValueMap {
     let declared = declared_names(schema);
     doc.iter()
         .filter(|(name, _)| !declared.contains(&name.as_str()))
@@ -58,10 +55,7 @@ fn dynamic_half(
 
 /// The document's declared half: what `replace` needs to rebuild the row
 /// unchanged while leaving no segment at all.
-fn declared_half(
-    schema: &okm_core::schema::CollectionSchema,
-    doc: &ValueMap,
-) -> ValueMap {
+fn declared_half(schema: &okm_core::schema::CollectionSchema, doc: &ValueMap) -> ValueMap {
     let declared = declared_names(schema);
     doc.iter()
         .filter(|(name, _)| declared.contains(&name.as_str()))
@@ -133,7 +127,9 @@ impl StorePlan {
                 entries.insert(name.clone(), raw.clone());
                 let mut idx = BTreeMap::new();
                 if let Some(list) = raw.get("indexes").and_then(|x| x.as_array()) {
-                    let mut specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut specs = INDEX_SPECS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     for e in list {
                         let (n, am) = build_access_method(e)
                             .map_err(|e| anyhow::anyhow!("collection `{name}` index: {e}"))?;
@@ -155,10 +151,13 @@ impl StorePlan {
                         let (n, spec, kind) = build_reduce(e)
                             .map_err(|e| anyhow::anyhow!("collection `{name}` reduce: {e}"))?;
                         red.insert(n.clone(), (spec.slot, spec.group_fields.clone()));
-                        REDUCE_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-                            (name.clone(), n.clone()),
-                            (spec.slot, spec.group_fields.clone(), kind),
-                        );
+                        REDUCE_SPECS
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(
+                                (name.clone(), n.clone()),
+                                (spec.slot, spec.group_fields.clone(), kind),
+                            );
                     }
                 }
                 reduces.insert(name.clone(), red);
@@ -289,7 +288,9 @@ pub fn resolve_scan_targets(
         ));
     }
     let key_field = &schema.key_fields[0].name;
-    let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let specs = INDEX_SPECS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let am = specs
         .get(&(collection.to_string(), index.to_string()))
         .ok_or_else(|| {
@@ -356,7 +357,9 @@ pub fn execute(
         .indexes
         .get(&op.collection)
         .map(|m| {
-            let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let specs = INDEX_SPECS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             m.keys()
                 .filter_map(|n| {
                     specs
@@ -370,7 +373,9 @@ pub fn execute(
         .reduces
         .get(&op.collection)
         .map(|m| {
-            let specs = REDUCE_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let specs = REDUCE_SPECS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             m.keys()
                 .filter_map(|n| {
                     specs
@@ -487,7 +492,9 @@ pub fn execute(
                 .as_array()
                 .ok_or("scan value must be an array (one value per indexed field, in order)")?;
             let (index_fields, _index_slot) = {
-                let specs = INDEX_SPECS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let specs = INDEX_SPECS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let am = specs
                     .get(&(op.collection.clone(), index.clone()))
                     .ok_or_else(|| format!("index `{index}` spec missing"))?;

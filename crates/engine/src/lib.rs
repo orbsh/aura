@@ -177,11 +177,9 @@ impl Engine {
                         let key_field = spec.get("key").and_then(|k| k.as_str()).unwrap_or("");
                         // A declaration may bind an ENTRY separately from the event it
                         // subscribes to: the marked-stream case — subscribe to
-                        // `view:add-to-cart`, be called as `add_to_cart`.
+                        // `ui:add-to-cart`, be called as `add_to_cart`.
                         match spec.get("entry").and_then(|h| h.as_str()) {
-                            Some(entry) => {
-                                booth = booth.on_as(event.clone(), key_field, entry)
-                            }
+                            Some(entry) => booth = booth.on_as(event.clone(), key_field, entry),
                             None => booth = booth.on(event.clone(), key_field),
                         }
                     }

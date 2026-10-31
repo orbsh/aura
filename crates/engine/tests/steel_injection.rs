@@ -10,7 +10,13 @@
 //! must let the script load for schema introspection without shadowing
 //! the real fns in the resident session.
 #![cfg(feature = "steel")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

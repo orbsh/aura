@@ -10,7 +10,13 @@
 //! cancelled registration would have written is absent after past its
 //! deadline). Idempotent by contract (cancelling an unknown/fired id is
 //! a no-op, not an error).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::BoothType;
 use aura_engine::Engine;

@@ -2,7 +2,13 @@
 //! event name IS the reference), instance key from event data, wildcard
 //! delivery to the singleton instance (ADR-0038 §1), the dead ring as the
 //! Realm boundary (ADR-0012 + ADR-0038 §4).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey as BKey};
 use aura_engine::Engine;

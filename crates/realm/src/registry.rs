@@ -82,7 +82,7 @@ impl Realm {
                 }
                 _ if decl.wildcard => self.router.on_wildcard(&decl.event, &booth.name),
                 // A declaration may bind an ENTRY separately from the event (`entry`):
-                // subscribe to `view:add-to-cart`, be called as `add_to_cart`.
+                // subscribe to `ui:add-to-cart`, be called as `add_to_cart`.
                 aura_booth::RouteResolution::Singleton => match &decl.entry {
                     Some(h) => self
                         .router
@@ -90,9 +90,10 @@ impl Realm {
                     None => self.router.on(decl.event.clone(), &booth.name, ""),
                 },
                 aura_booth::RouteResolution::Field(f) => match &decl.entry {
-                    Some(h) => self
-                        .router
-                        .on_as(decl.event.clone(), &booth.name, f.clone(), h.clone()),
+                    Some(h) => {
+                        self.router
+                            .on_as(decl.event.clone(), &booth.name, f.clone(), h.clone())
+                    }
                     None => self.router.on(decl.event.clone(), &booth.name, f.clone()),
                 },
                 // A wildcard scan declaration is a category error at the

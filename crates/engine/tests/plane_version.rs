@@ -5,7 +5,13 @@
 //! discipline exists to prevent). Locks: fresh store seeds the marker; a
 //! matching marker boots; a stale marker is a boot error naming the version
 //! and the wipe.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 #[tokio::test]
 #[cfg(feature = "fjall")]
@@ -37,11 +43,12 @@ async fn stale_marker_is_a_boot_error_with_the_wipe_instruction() {
         let db = fjall::Database::create_or_recover(fjall::Config::new(dir.path())).unwrap();
         let store = okm_core::FjallStore::from_db(db, "aura_mq").unwrap();
         use okm_core::storage::VirtualStorage;
-        store.put(
-            aura_realm::meta::PLANE_VERSION_KEY.to_vec(),
-            2026_10_02u32.to_be_bytes().to_vec(),
-        )
-        .unwrap();
+        store
+            .put(
+                aura_realm::meta::PLANE_VERSION_KEY.to_vec(),
+                2026_10_02u32.to_be_bytes().to_vec(),
+            )
+            .unwrap();
     }
     let msg = match aura_engine::Engine::start(&config).await {
         Err(e) => format!("{e:#}"),

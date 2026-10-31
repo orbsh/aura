@@ -1,7 +1,13 @@
 //! Phase 3 end-to-end: a real effector dials the engine's effector gateway; the
 //! realm routes an invoke through the wire; the effector's resident session
 //! executes; the result round-trips.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use aura_engine::{effectors, Engine};

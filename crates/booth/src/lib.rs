@@ -4,11 +4,19 @@
 //! store / invoke / iterate(+dispose). emit/on, contracts, and hooks stay
 //! off ctx (realm-level or static contract concerns).
 
-
 // Unit tests may use the unwrap/panic vocabulary the production targets are
 // denied (a panicking test is a failing test). `cfg(test)` is on only for this
 // crate's own test build; `tests/` crates set the same line at their own root.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -108,7 +116,7 @@ pub struct BoothType {
 pub struct ReceiveDecl {
     pub event: String,
     /// The ENTRY this declaration binds — what the body is called as — when it differs from the
-    /// event it subscribes to: `view:add-to-cart` bound to `add_to_cart`. A compiled body does
+    /// event it subscribes to: `ui:add-to-cart` bound to `add_to_cart`. A compiled body does
     /// not need it (the dispatcher holds a closure); a script body does, because its only
     /// binding form is this declaration. `None` = the event name is the entry.
     pub entry: Option<String>,
@@ -197,9 +205,7 @@ impl BoothType {
     /// carriers (they carry no channel).
     pub fn encoded(mut self, encoding: Encoding) -> Self {
         match &mut self.body {
-            Body::Script { encoding: e, .. } | Body::Remote { encoding: e, .. } => {
-                *e = encoding
-            }
+            Body::Script { encoding: e, .. } | Body::Remote { encoding: e, .. } => *e = encoding,
             Body::Rust(_) => {}
         }
         self
@@ -218,7 +224,7 @@ impl BoothType {
     }
 
     /// `on`, for a subscription whose entry is NOT its event name: the booth is called as
-    /// `entry` whenever `event` fires. The marker case — subscribe to `view:add-to-cart`, call
+    /// `entry` whenever `event` fires. The marker case — subscribe to `ui:add-to-cart`, call
     /// `add_to_cart` — is the reason this exists.
     pub fn on_as(
         mut self,
@@ -777,11 +783,14 @@ impl Ctx {
         args: Value,
     ) -> anyhow::Result<StreamCursor> {
         let iterate = self.iterate.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "this ctx carries no iterate handle (the introspection ctx has none)"
-            )
+            anyhow::anyhow!("this ctx carries no iterate handle (the introspection ctx has none)")
         })?;
-        Ok(StreamCursor::new(iterate, target, handler.to_string(), args))
+        Ok(StreamCursor::new(
+            iterate,
+            target,
+            handler.to_string(),
+            args,
+        ))
     }
 
     /// The iterate dispatch handle, for the script ctx bridge (host fns

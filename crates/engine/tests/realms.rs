@@ -3,7 +3,13 @@
 //! per user — an application choice, not the mechanism's meaning). A
 //! NamedRealm handle is bound at construction — cross-realm delivery is
 //! not expressible, not merely checked.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

@@ -434,8 +434,7 @@ pub fn instance_key_id(store: &MqStore, part: &InstanceKey) -> anyhow::Result<u3
 }
 
 fn resolve_instance_key_id(store: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let t =
-        Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
+    let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::new(store.clone());
     for hit in t.scan::<__OkmIndex_InstanceKeyRegistry_by_name>(name.as_bytes())? {
         if let Some(row) = &hit.1 {
             if row.name == name {

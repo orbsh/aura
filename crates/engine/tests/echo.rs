@@ -3,7 +3,13 @@
 //! Phase 0: define → invoke → return; ctx.invoke as the single call
 //! surface (ADR-0011). Phase 1: state survives eviction (scale-to-zero
 //! drops the resident, not the data); on_sleep/on_wake run around it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{BoothType, InstanceId, InstanceKey};
 use aura_engine::Engine;

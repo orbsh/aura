@@ -138,12 +138,12 @@ impl Realm {
                 // subscription is one name; a wildcard expands to every
                 // registered event matching its prefix (re-expanded each
                 // pass — new concrete names join automatically).
-                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>, Option<String>)> = subs
-                    .into_iter()
-                    .map(|(event, part, is_wildcard, handler)| {
-                        (event, part, is_wildcard, Vec::new(), handler)
-                    })
-                    .collect();
+                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>, Option<String>)> =
+                    subs.into_iter()
+                        .map(|(event, part, is_wildcard, handler)| {
+                            (event, part, is_wildcard, Vec::new(), handler)
+                        })
+                        .collect();
                 // An instance with no bound queue has nothing to drain —
                 // exit (releasing the realm Arc) instead of spinning the
                 // poll loop forever holding the store open.
@@ -215,8 +215,13 @@ impl Realm {
                                     handler: declared.clone().unwrap_or_else(|| concrete.clone()),
                                     args: payload,
                                 };
-                                Self::run_job_queued(consumer_realm.clone(), &consumer_id, job, concrete)
-                                    .await;
+                                Self::run_job_queued(
+                                    consumer_realm.clone(),
+                                    &consumer_id,
+                                    job,
+                                    concrete,
+                                )
+                                .await;
                                 let realm = consumer_realm.lock().await;
                                 let vs = realm.mq.clone();
                                 // A cursor that will not advance is not
@@ -246,10 +251,7 @@ impl Realm {
         // here would be a state inconsistency, so it is an error value
         // rather than a panic the caller has to trust.
         self.instances.get_mut(&key).ok_or_else(|| {
-            anyhow::anyhow!(
-                "instance {} missing right after creation",
-                id.key.render()
-            )
+            anyhow::anyhow!("instance {} missing right after creation", id.key.render())
         })
     }
 
@@ -694,9 +696,7 @@ impl Realm {
             use okm_core::storage::VirtualStorage;
             let store = self.mq.clone();
             let engine = std::sync::Arc::new(StorageEngineFns {
-                put: std::sync::Arc::new(move |k, v| {
-                    store.put(k, v).map_err(|e| e.to_string())
-                }),
+                put: std::sync::Arc::new(move |k, v| store.put(k, v).map_err(|e| e.to_string())),
                 get: std::sync::Arc::new({
                     let store = self.mq.clone();
                     move |k| store.get(k).map_err(|e| e.to_string())

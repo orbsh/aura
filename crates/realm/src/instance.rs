@@ -71,7 +71,17 @@ impl Realm {
                         id,
                     );
                     let host = self.delivery_bridge_for(&ctx, id);
-                    Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__wake").await?;
+                    Self::run_hook(
+                        &hook,
+                        Some(body),
+                        &sessions,
+                        host,
+                        id,
+                        &ctx,
+                        "__wake",
+                        booth.concurrency,
+                    )
+                    .await?;
                 }
             }
             // Subscribe to the event queues this type's @on declarations
@@ -689,7 +699,17 @@ impl Realm {
                 );
                 let host = locked.delivery_bridge_for(&ctx, id);
                 if let Err(e) =
-                    Self::run_hook(&hook, Some(body), &sessions, host, id, &ctx, "__sleep").await
+                    Self::run_hook(
+                        &hook,
+                        Some(body),
+                        &sessions,
+                        host,
+                        id,
+                        &ctx,
+                        "__sleep",
+                        booth.concurrency,
+                    )
+                    .await
                 {
                     eprintln!("__sleep failed for {}/{}: {e}", key.0, key.1);
                 }
@@ -764,6 +784,7 @@ impl Realm {
     /// (ADR-0036 §2) — the value is discarded, failures surface as errors
     /// (eviction proceeds regardless: the hook is advisory, state lives in
     /// the type's collections).
+    #[allow(clippy::too_many_arguments)]
     async fn run_hook(
         hook: &aura_booth::HookBody,
         body: Option<aura_booth::Body>,
@@ -772,6 +793,7 @@ impl Realm {
         id: &InstanceId,
         ctx: &aura_booth::Ctx,
         name: &str,
+        concurrency: aura_booth::Concurrency,
     ) -> anyhow::Result<()> {
         // NO realm lock here: every call site holds the realm mutex (the
         // activation path runs inside `instance()`, awaited under the
@@ -795,17 +817,40 @@ impl Realm {
                     // deliveries reuse — spawning it host-less would
                     // poison the slot (its bridge would lack every ctx
                     // method the booth's handlers call).
-                    tokio::task::spawn_blocking(move || {
-                        sessions.with_session_encoded(
-                            &instance_key,
-                            &language,
-                            &source,
-                            host.as_ref(),
-                            &effector_runtime::sandbox::SandboxPolicy::None,
-                            encoding,
-                            move |s| s.call(&name, &serde_json::Value::Null),
-                        )
-                    })
+                    // The hook rides the instance's residency on the SAME terms
+                    // the calls do (ADR-0046): a booth that declared `unbounded`
+                    // serves its hooks from its one shared session, never from a
+                    // second process opened beside it.
+                    match concurrency {
+                        aura_booth::Concurrency::Unbounded => {
+                            let call_host = host.clone();
+                            tokio::task::spawn_blocking(move || {
+                                sessions.with_shared(
+                                    &instance_key,
+                                    &language,
+                                    &source,
+                                    &effector_runtime::sandbox::SandboxPolicy::None,
+                                    encoding,
+                                    host.as_ref(),
+                                    move |s| {
+                                        s.call(&name, &serde_json::Value::Null, call_host.as_ref())
+                                    },
+                                )
+                            })
+                        }
+                        concurrency => tokio::task::spawn_blocking(move || {
+                            sessions.with_slot_encoded(
+                                &instance_key,
+                                &language,
+                                &source,
+                                host.as_ref(),
+                                &effector_runtime::sandbox::SandboxPolicy::None,
+                                encoding,
+                                concurrency.slots(),
+                                move |s| s.call(&name, &serde_json::Value::Null),
+                            )
+                        }),
+                    }
                     .await
                     .unwrap_or_else(|e| Err(anyhow::anyhow!("hook task join: {e}")))
                     .map(|_v| ())
@@ -934,6 +979,7 @@ impl Realm {
                         &inst.id,
                         &ctx,
                         "__sleep",
+                        booth.concurrency,
                     )
                     .await
                     {

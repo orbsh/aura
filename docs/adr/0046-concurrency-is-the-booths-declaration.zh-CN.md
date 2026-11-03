@@ -51,9 +51,11 @@ actor 模型是**拥有**并发的办法，不是回避并发的办法：邮箱�
 
 6. **这个值只属于 booth，因为只有 booth 知道。** gravity 的 turn 声明 `unbounded`：它的状态活在调用的
    栈上和自己打开的流里，guest 让每个请求跑在自己的线程上（`Guest::concurrent(true)`），于是一个进程
-   服务所有设备的所有轮次。Python booth 声明 `Queued`，并行改由载体给到进程级——它的线程本来也无法并发
-   跑 Python。IO 密集的异步 body 声明一个数字，把交错交给异步运行时。realm 不猜，也不长出一张按语言分支
-   的规则表：它只读一个值。
+   服务所有设备的所有轮次。**嵌入式** Python booth 声明 `Queued`——一台 VM 住在 realm 的进程里，它的线程
+   本来也无法并发跑 Python——并行改由载体在进程级提供。Python **驻留 runner** 是另一种东西：它是
+   induction child，把每个请求派到自己的线程上、并在 ctx 帧里盖上 `call`，于是它从自己的 schema 里声明
+   `unbounded`，一个进程服务所有调用。IO 密集的异步 body 声明一个数字，把交错交给异步运行时。realm 不猜，
+   也不长出一张按语言分支的规则表：它只读一个值。
 
 ## Consequences
 

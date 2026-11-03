@@ -68,10 +68,13 @@ its residency to match.**
 6. **The value belongs to the booth because only the booth knows.** gravity's turn declares
    `unbounded`: its state lives on the call's stack and in its own streams, and its guest runs
    each request on its own thread (`Guest::concurrent(true)`), so one process serves every round
-   of every device. A Python booth declares `Queued` and gets process-level parallelism from its
-   carrier instead, because its threads will not run Python concurrently anyway. An IO-bound
-   async body declares a number and lets the async runtime interleave. The realm does not guess
-   and does not grow a per-language rule table: it reads one value.
+   of every device. An EMBEDDED Python booth declares `Queued` — one VM inside the realm's
+   process, and its threads would not run Python concurrently anyway — and buys parallelism from
+   its carrier instead. The Python RESIDENT runner is the other shape entirely: an induction
+   child that dispatches each request on its own thread and stamps `call` on its ctx frames, so
+   its schema declares `unbounded` and one process serves every call. An IO-bound async body
+   declares a number and lets the async runtime interleave. The realm does not guess and does
+   not grow a per-language rule table: it reads one value.
 
 ## Consequences
 

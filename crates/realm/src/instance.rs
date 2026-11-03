@@ -348,6 +348,9 @@ impl Realm {
             return;
         };
         let body = booth.body.clone();
+        // ADR-0046: how many calls this instance may run at once — the type's
+        // declaration, read here while the type is borrowed.
+        let concurrency = booth.concurrency;
         let realm_plan = realm.plan_of(&id.booth_type).cloned();
         let realm_mq = realm.mq.clone();
         let ctx = Self::ctx_for(
@@ -551,20 +554,42 @@ impl Realm {
                 // bare Start reply wraps to `{done:true,value}` AT THE
                 // CARRIER — `s.call` is no longer a dispatch arm).
                 let sjob = stream_op(&job);
-                tokio::task::spawn_blocking(move || {
-                    sessions.with_session_encoded(
-                        &instance_key,
-                        &language,
-                        &source,
-                        host.as_ref(),
-                        &effector_runtime::sandbox::SandboxPolicy::None,
-                        // ADR-0037 §2: the declared codec drives the
-                        // process carriers' channel; embedded carriers
-                        // ignore it (no channel).
-                        encoding,
-                        move |s| s.iterate(sjob),
-                    )
-                })
+                // The instance's declared concurrency decides the residency
+                // (ADR-0046): a queue (the default) holds one session and orders
+                // calls; a pool holds up to N and lets the extra call wait;
+                // `Unbounded` holds ONE and never waits, because the carrier
+                // pairs each reply with the request that asked for it.
+                match concurrency {
+                    aura_booth::Concurrency::Unbounded => {
+                        let call_host = host.clone();
+                        tokio::task::spawn_blocking(move || {
+                            sessions.with_shared(
+                                &instance_key,
+                                &language,
+                                &source,
+                                &effector_runtime::sandbox::SandboxPolicy::None,
+                                encoding,
+                                host.as_ref(),
+                                move |s| s.iterate(sjob, call_host.as_ref()),
+                            )
+                        })
+                    }
+                    concurrency => tokio::task::spawn_blocking(move || {
+                        sessions.with_slot_encoded(
+                            &instance_key,
+                            &language,
+                            &source,
+                            host.as_ref(),
+                            &effector_runtime::sandbox::SandboxPolicy::None,
+                            // ADR-0037 §2: the declared codec drives the
+                            // process carriers' channel; embedded carriers
+                            // ignore it (no channel).
+                            encoding,
+                            concurrency.slots(),
+                            move |s| s.iterate(sjob),
+                        )
+                    }),
+                }
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")))
             }

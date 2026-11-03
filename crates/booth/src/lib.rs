@@ -107,6 +107,44 @@ pub struct BoothType {
     /// builders (Rust-side declaration), introspection at register (script
     /// types), or both merged. `register_type` assembles routes from this.
     pub receives: Vec<ReceiveDecl>,
+    /// How ONE instance of this type serves calls that arrive together
+    /// (ADR-0046). Only the booth knows whether its body can be re-entered,
+    /// so only the booth may say.
+    pub concurrency: Concurrency,
+}
+
+/// A booth instance's answer to concurrent calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Concurrency {
+    /// One at a time, in arrival order, one resident session. The default, and
+    /// the right answer for a body that cannot be re-entered: an interpreter
+    /// holding one VM behind a GIL, a session carrying mutable state between
+    /// calls, anything whose correctness assumes nobody else is inside.
+    #[default]
+    Queued,
+    /// Up to `slots` resident sessions run calls side by side; a call past
+    /// `slots` waits for one to free — the php-fpm pool, where the count is
+    /// both the parallelism and the residency the booth is willing to pay for.
+    Pool {
+        slots: usize,
+    },
+    /// ONE resident session, any number of calls in flight. For a carrier that
+    /// pairs every reply with the request that asked for it (induction's
+    /// request ids), so overlap costs no extra process and no queue: the
+    /// process's own concurrency IS the limit.
+    Unbounded,
+}
+
+impl Concurrency {
+    /// How many resident sessions an instance may hold.
+    pub fn slots(self) -> usize {
+        match self {
+            Concurrency::Queued => 1,
+            Concurrency::Pool { slots } => slots.max(1),
+            Concurrency::Unbounded => 1,
+        }
+    }
 }
 
 /// One event subscription: an event name (or wildcard pattern) + HOW the
@@ -194,6 +232,7 @@ impl BoothType {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: Vec::new(),
+            concurrency: Concurrency::Queued,
         }
     }
 
@@ -311,6 +350,24 @@ impl BoothType {
             "hook name `{name}` is not reserved (allowed: {RESERVED_HOOKS:?})"
         );
         self.hooks.insert(name, HookBody::Declared);
+        self
+    }
+
+    /// Declare a POOL of `slots` resident sessions (ADR-0046): calls up to
+    /// `slots` run side by side, and a call past that waits.
+    pub fn concurrent(mut self, slots: usize) -> Self {
+        self.concurrency = Concurrency::Pool {
+            slots: slots.max(1),
+        };
+        self
+    }
+
+    /// Declare that ONE resident session serves every call at once (ADR-0046):
+    /// no queue, no second process. Only a carrier that pairs replies with their
+    /// requests can do it — an induction child can; an embedded interpreter
+    /// cannot, and says so with an error rather than a silent queue.
+    pub fn unbounded(mut self) -> Self {
+        self.concurrency = Concurrency::Unbounded;
         self
     }
 }

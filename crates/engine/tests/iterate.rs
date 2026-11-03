@@ -311,6 +311,7 @@ async fn rust_body_iterate_is_error_value() {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: Vec::new(),
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();

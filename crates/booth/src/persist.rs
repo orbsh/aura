@@ -31,6 +31,11 @@ pub struct PersistedBooth {
     /// upload (receives/emits/lifecycle), kept verbatim (interface
     /// artifact — the LLM/script-side JSON contract).
     pub schema: Option<serde_json::Value>,
+    /// How one instance serves calls that arrive together (ADR-0046).
+    /// Defaulted so a record written before the field existed restores as a
+    /// queue — the behaviour it actually had.
+    #[serde(default)]
+    pub concurrency: crate::Concurrency,
 }
 
 impl PersistedBooth {
@@ -50,6 +55,7 @@ impl PersistedBooth {
             encoding: *encoding,
             idle_ttl_secs: booth.idle_ttl.map(|d| d.as_secs()),
             schema: None,
+            concurrency: booth.concurrency,
         })
     }
 
@@ -62,6 +68,7 @@ impl PersistedBooth {
         )
         .encoded(self.encoding);
         t.idle_ttl = self.idle_ttl_secs.map(std::time::Duration::from_secs);
+        t.concurrency = self.concurrency;
         t
     }
 }

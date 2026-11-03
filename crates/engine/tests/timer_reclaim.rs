@@ -25,6 +25,7 @@ fn booth(name: &str, idle_ttl: Duration, max_exec: Option<Duration>) -> BoothTyp
         max_exec,
         hooks: BTreeMap::new(),
         receives: Vec::new(),
+        concurrency: aura_booth::Concurrency::Queued,
     }
 }
 
@@ -41,6 +42,7 @@ fn sleeper(name: &str, idle_ttl: Duration, max_exec: Option<Duration>, secs: u64
         max_exec,
         hooks: BTreeMap::new(),
         receives: Vec::new(),
+        concurrency: aura_booth::Concurrency::Queued,
     }
 }
 

@@ -306,6 +306,9 @@ impl BoothDef {
                 },
                 idle_ttl_secs: (self.idle_ttl_secs > 0).then_some(self.idle_ttl_secs),
                 schema: schema.map(|v| crate::value::dyn_to_json(&v)),
+                // The declaration travels with the definition (ADR-0046); a record
+                // written before the field existed restores as a queue.
+                concurrency: aura_booth::Concurrency::Queued,
             },
             self.code_sha256,
         )
@@ -431,6 +434,8 @@ mod ns_schema_tests {
             schema: Some(
                 serde_json::json!({"storage": {"collections": {"notes": {"schema": {"key_len": 8}}}}}),
             ),
+        
+            concurrency: aura_booth::Concurrency::Queued,
         };
         persist(&meta, &def).unwrap();
         let (ns, schema) = ns_and_schema_of(&meta, "sc").unwrap();
@@ -468,6 +473,8 @@ mod ns_schema_tests {
                 encoding: Default::default(),
                 idle_ttl_secs: None,
                 schema: Some(effector.clone()),
+            
+                concurrency: aura_booth::Concurrency::Queued,
             };
             let m2 = MqStore::mem();
             persist(&m2, &def).unwrap();
@@ -493,6 +500,8 @@ mod ns_schema_tests {
             encoding: Default::default(),
             idle_ttl_secs: None,
             schema: Some(full),
+        
+            concurrency: aura_booth::Concurrency::Queued,
         };
         persist(&meta, &def).unwrap();
         let all = load_all(&meta).unwrap();
@@ -512,6 +521,7 @@ mod tests {
             encoding: Default::default(),
             idle_ttl_secs: Some(300),
             schema: Some(serde_json::json!({"lifecycle": {"idle_ttl": "300s"}})),
+            concurrency: aura_booth::Concurrency::Queued,
         }
     }
 

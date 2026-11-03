@@ -61,6 +61,7 @@ async fn remote_effector_roundtrip() {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();
@@ -256,6 +257,7 @@ async fn remote_code_travels_as_reference() {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();
@@ -341,6 +343,7 @@ def tokens(args):
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();
@@ -465,6 +468,7 @@ def consume(args):
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();

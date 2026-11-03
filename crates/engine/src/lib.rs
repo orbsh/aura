@@ -152,6 +152,30 @@ impl Engine {
                     booth.idle_ttl = Some(ttl);
                 }
             }
+            // The instance's concurrency is the BOOTH's declaration (ADR-0046): a
+            // body that can be re-entered says how many calls it may run at once,
+            // and the host's builder wins over the script's own word (explicit >
+            // introspected, the rule every lifecycle fact here follows).
+            if booth.concurrency == aura_booth::Concurrency::Queued {
+                match schema.get("lifecycle").and_then(|l| l.get("concurrency")) {
+                    // A number is a pool size: 1 queues, n > 1 overlaps with n
+                    // resident sessions.
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(slots) = n.as_u64().map(|s| usize::try_from(s).unwrap_or(1)) {
+                            booth.concurrency = if slots <= 1 {
+                                aura_booth::Concurrency::Queued
+                            } else {
+                                aura_booth::Concurrency::Pool { slots }
+                            };
+                        }
+                    }
+                    // `"unbounded"` is the word for "one session, no queue".
+                    Some(serde_json::Value::String(s)) if s == "unbounded" => {
+                        booth.concurrency = aura_booth::Concurrency::Unbounded;
+                    }
+                    _ => {}
+                }
+            }
             // Introspected declarations land ON THE TYPE (one declaration
             // surface); register_type assembles routes as a side effect.
             // Phase 4.13: each event's resolution is declared per event —

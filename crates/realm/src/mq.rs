@@ -52,7 +52,6 @@
 
 use crate::value::{dyn_to_json, json_to_dyn};
 use okm_core::document::Collection;
-use okm_core::storage::VirtualStorage as _;
 use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 // ---------------------------------------------------------------------------
@@ -661,34 +660,16 @@ pub fn backlog(
     let event_id = resolve_event_id(store, event)?;
     let instance_key_id = instance_key_id(store, part)?;
     let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
-    prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
+    let probe = MqDataKey::prefix()
+        .event_id(event_id)
+        .instance_key_id(instance_key_id)
+        .finish();
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix)? {
-        if suffix.len() < 8 {
-            continue;
-        }
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&suffix[suffix.len() - 8..]);
-        let seq = u64::from_be_bytes(b);
-        if seq > after_seq
-            && t.get(&MqDataKey {
-                event_id,
-                instance_key_id,
-                seq,
-            })?
-            .is_some()
-        {
+    for key in t.scan_keys(&probe) {
+        let key = key?;
+        if key.seq > after_seq && t.get(&key)?.is_some() {
             // Reconstruct from the dynamic segment (name-keyed).
-            let v = match t.fetch(&MqDataKey {
-                event_id,
-                instance_key_id,
-                seq,
-            })? {
+            let v = match t.fetch(&key)? {
                 Some(obj) if !obj.contains_key("_root") => {
                     let mut m = serde_json::Map::new();
                     for (k, dv) in &obj {
@@ -703,10 +684,9 @@ pub fn backlog(
                 },
                 None => serde_json::Value::Null,
             };
-            out.push((seq, v));
+            out.push((key.seq, v));
         }
     }
-    out.sort_by_key(|(s, _)| *s);
     Ok(out)
 }
 
@@ -891,22 +871,12 @@ pub fn routes_of_event(
 ) -> anyhow::Result<Vec<(u32, aura_booth::RouteResolution, bool)>> {
     let event_id = resolve_event_id(store, event)?;
     let t = Collection::<MqStore, EventRouteKey, EventRoute>::new(store.clone());
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(<EventRoute as Document>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<EventRoute as Document>::NS_PREFIX);
-    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
-    prefix.extend_from_slice(&event_id.to_be_bytes());
+    let probe = EventRouteKey::prefix().event_id(event_id).finish();
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix)? {
-        if suffix.len() < 4 {
-            continue;
-        }
-        // suffix = [booth_id 4B] (the rest of the primary key)
-        let mut b = [0u8; 4];
-        b.copy_from_slice(&suffix[suffix.len() - 4..]);
-        let booth_id = u32::from_be_bytes(b);
-        if let Some(row) = t.get(&EventRouteKey { event_id, booth_id })? {
-            out.push((booth_id, row_resolution(&row), row.wildcard != 0));
+    for key in t.scan_keys(&probe) {
+        let key = key?;
+        if let Some(row) = t.get(&key)? {
+            out.push((key.booth_id, row_resolution(&row), row.wildcard != 0));
         }
     }
     Ok(out)
@@ -968,26 +938,19 @@ pub fn delete_before(
     min_seq: u64,
 ) -> anyhow::Result<usize> {
     let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqData as Document>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqData as Document>::NS_PREFIX);
-    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
-    prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
+    let probe = MqDataKey::prefix()
+        .event_id(event_id)
+        .instance_key_id(instance_key_id)
+        .finish();
+    // Collected before the purge sweep: the reads are lazy, and a delete inside
+    // an open scan is a race the old materialized scan did not have.
+    let keys = t
+        .scan_keys(&probe)
+        .filter(|key| matches!(key, Ok(k) if k.seq < min_seq))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut removed = 0;
-    for suffix in store.scan_suffix(&prefix)? {
-        if suffix.len() < 8 {
-            continue;
-        }
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&suffix[suffix.len() - 8..]);
-        let seq = u64::from_be_bytes(b);
-        if seq < min_seq {
-            t.purge(&MqDataKey {
-                event_id,
-                instance_key_id,
-                seq,
-            })?;
+    for key in keys {
+        if t.purge(&key)? {
             removed += 1;
         }
     }
@@ -1003,28 +966,16 @@ pub fn cursor_rows(
     instance_key_id: u32,
 ) -> anyhow::Result<Vec<(u32, u64, u64)>> {
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::new(store.clone());
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(<MqCursor as Document>::PARTITION_PREFIX);
-    prefix.extend_from_slice(<MqCursor as Document>::NS_PREFIX);
-    okm_core::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
-    prefix.extend_from_slice(&event_id.to_be_bytes());
-    prefix.extend_from_slice(&instance_key_id.to_be_bytes());
+    let probe = MqCursorKey::prefix()
+        .event_id(event_id)
+        .instance_key_id(instance_key_id)
+        .finish();
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&prefix)? {
-        if suffix.len() < 4 {
-            continue;
-        }
-        // suffix = [booth_id 4B]
-        let mut b = [0u8; 4];
-        b.copy_from_slice(&suffix[suffix.len() - 4..]);
-        let booth_id = u32::from_be_bytes(b);
-        let row = t.get(&MqCursorKey {
-            event_id,
-            instance_key_id,
-            booth_id,
-        })?;
+    for key in t.scan_keys(&probe) {
+        let key = key?;
+        let row = t.get(&key)?;
         out.push((
-            booth_id,
+            key.booth_id,
             row.as_ref().map(|c| c.cursor).unwrap_or(0),
             row.as_ref().map(|c| c.last_active_ms).unwrap_or(0),
         ));

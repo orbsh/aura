@@ -1,6 +1,6 @@
 # ADR-0016: 定时器——timer wheel 延迟投递与 cron 语义
 
-**状态**：部分落地（2026-09-23：修订版 timer wheel——DelayQueue 驱动、两类条目、idle 从作业完成起算、watchdog；2026-10-09：命令式 `ctx_timer_register/cancel` 宿主函数——仅内存层，durable 残差见下；待办：durable 层、声明式 `lifecycle.cron`）
+**状态**：部分落地（2026-09-23：DelayQueue 驱动、两类条目、idle 从作业完成起算、`max_exec` watchdog；2026-10-09：命令式 `ctx_timer_register/cancel` 宿主函数——仅内存层；待办：durable 层、声明式 `lifecycle.cron`）
 **日期**：2026-09-22
 **英文版**：[0016-timers-timer-wheel-cron.md](0016-timers-timer-wheel-cron.md)
 
@@ -8,7 +8,7 @@
 
 Aura 的摊位是事件驱动的：工作以 call、emit、事件队列作业的形式
 到达，没有作业到达的实例在留存期过后被 idle-TTL evictor 回收
-（按类型 `idle_ttl`，evictor 5 秒 tick）。运行时**没有延迟唤醒
+（按类型 `idle_ttl`，自作业完成起算）。运行时**没有延迟唤醒
 原语**：信号只存在于「有事发生」，从不存在「无事持续了 N 秒」。
 krystallizer 侧的两个需求（k10r 的 ADR-0008/0009 定义策略；投递
 机制归 aura）暴露了这个缺口：
@@ -30,12 +30,36 @@ checkpoint 与游标，一个 agent 服务多个 channel 就是多个独立
 
 ## 决策
 
-### 1. Timer wheel + 驱逐时计算到期
+### 1. 每 realm 的调度落在 tokio-util `DelayQueue`
 
-每个 realm 一个 **timer wheel**：条目为
-`(deliver_at, target: InstanceId, payload)`。既有 evictor tick
-（5 秒）增加扫描 wheel，到期的条目作为普通队列作业投递给目标
-实例。
+每 realm 一个 **timer queue**，建在 `tokio_util::time::DelayQueue`
+上：一个公开的 hashed wheel，暴露 `insert_at(value, when) -> Key`、
+`remove(&Key)`（O(1) 取消）、`poll_expired()`（流式取到期条目）。
+每 realm **一个驱动任务**按值持有队列
+（`while let Some(expired) = queue.poll_expired().await`），对每个
+到期条目执行动作；任务数保持有界。背后的 wheel 是分层的——6 级 ×
+64 slot，level 0 的 slot 宽 1 ms、覆盖 64 ms，每上一级 slot 宽度
+×64（约 4 秒、4 分、4 小时、12 天），顶层覆盖约 2 年——条目插入到
+其截止时刻落在范围内的那一级，每次到期扫描向下一级 tier down，
+直到 level 0 才被交出。aura 完全不碰这些级：只调 `insert_at` /
+`remove` / `poll_expired`，因此分级语义（以及逐级调参）都不在我们
+这侧。到期由驱动 `Sleep` 唤醒即刻观测，分辨率为 level 0
+（1 ms 量化，受调度延迟影响）——不是 5 秒 evictor tick，也没有
+tick 形状的界。没有亚毫秒或精确墙钟保证；没有消费者需要更好的。
+
+队列同时承载两种条目：
+
+- **投递型条目** `(deliver_at, target, tag, durable)`——唤醒一个
+  摊位，投递 `__on_timer` 作业（插话检查、压缩唤醒、cron）。持久型
+  写 StateStore 保留名字空间，`on_wake` 恢复路径重新 `insert_at`。
+- **回收型条目** `(deliver_at, target, kind)`——没有人会来了，
+  收回资源（idle-TTL 驱逐、执行看门狗）。到期动作不是投递作业，
+  而是 `evict_instance`（on_sleep + session 丢弃；看门狗场景对
+  在等的 reply 发超时错误）。回收型条目恒为内存态；它们需要
+  **取消**（新工作到达 → 作废未决的 idle 定时器），这就是
+  `DelayQueue::remove`——与摊位用的 cancel/re-arm 是同一 API。
+
+投递型条目走普通作业路径：
 
 - **投递 = 普通邮箱作业。** 到期定时器在摊位侧与事件作业
   无异（`QueuedJob`，保留 handler 名如 `__on_timer`，payload 带
@@ -55,10 +79,11 @@ checkpoint 与游标，一个 agent 服务多个 channel 就是多个独立
 
 ### 2. 取消与重挂
 
-注册时返回定时器句柄（id）；`cancel(id)` 移除。重挂 = 注册新
-定时器（先取消后注册）。插话模式：channel 有活动 → 取消未决的
-静默定时器 → 评估 → 按空闲阈值注册新的静默定时器。模式完全
-由摊位驱动；运行时不提供隐式重挂。
+注册时返回定时器句柄（`Key`）；`cancel(id)` 经
+`DelayQueue::remove` 移除，O(1)。重挂 = 注册新定时器（先取消后
+注册）。插话模式：channel 有活动 → 取消未决的静默定时器 → 评估 →
+按空闲阈值注册新的静默定时器。模式完全由摊位驱动；运行时不提供
+隐式重挂。
 
 ### 3. cron 语义：schema 声明、摊位计算、投递时重挂
 
@@ -103,85 +128,46 @@ Host 可控）；其 Update 注记把旧的拒绝收窄到阻塞/自调度形态
 注入能力（metadata、effector target）以组的形式加入，不再是扁平名
 堆积。
 
-### 4. 什么不变
+### 3c. idle 回收与执行预算
 
-- idle-TTL evictor 及其 5 秒 tick 增加 wheel 扫描；驱逐语义
-  （per-instance、on_sleep hook、session 随驱逐销毁）不动。
-- `last_activity` 语义保持「最后作业到达」；定时器就是作业。
-- 每个定时器条目不派生异步任务（不 `tokio::spawn` + `sleep`）：
-  wheel 由既有 tick 扫描——内存有界、单任务，5 秒粒度对两类
-  消费者（秒级插话窗口、分钟级压缩/cron 唤醒）都够。
+`last_activity` 保持原义——观测面：最后作业到达时刻——但不再驱动
+驱逐。`run_job` 在入口取消该实例未决的 idle 回收条目（工作到达
+了），完成时重新注册一条（`deliver_at = now + idle_ttl`）。长执行
+（LLM 调用吃满整个 TTL）不再可能在执行中途驱逐实例：作业运行期间
+idle 回收条目根本不存在。
 
-## 修订（2026-09-23）：统一定时面落在 tokio-util DelayQueue；回收型条目；idle 自完成时刻起算
-
-驻留/超时面的实现推演（由 gravity turn-executor 驱动）修订三项裁决；
-上文原裁决保留为已定案。
-
-**1. wheel 用 tokio-util 的 `DelayQueue`——不手写、不由 tick 扫描。**
-`DelayQueue` 是公开的 hashed wheel（与本 ADR 草拟的 `Wheel` 结构同源），
-恰好暴露所需的三元操作：`insert_at(value, when) -> Key`、`remove(&Key)`
-（取消，O(1)）、`poll_expired()`（流式取到期条目）。它自带到期驱动
-（内部一个 `Sleep`），evictor tick 不再需要扫描 wheel：条目到期即刻
-触发，不等下一个 tick。任务数仍有界——每 realm **一个驱动任务**
-（`while let Some(expired) = queue.poll_expired().await`）。本条取代
-§4 的「不派生异步任务、由既有 tick 扫描」：那是手写 wheel 的代价，
-现成库消除了代价。§4 的 Why-Not 条目（「每定时器一个 tokio::sleep
-任务」）仍被拒绝，理由不变（任务数无界、无持久注册路径）——驱动是
-全体定时器共享的一个任务，该条目当时没有考虑这个形态。
-
-**1a. wheel 的真实结构（粒度）。** `DelayQueue` 背后的 `Wheel` 是分层
-（多级）时间轮：6 级 × 64 slot。level 0 的 slot 宽 1 ms、覆盖范围
-64 ms，每上一级 slot 宽度 ×64（约 4 秒、4 分、4 小时、12 天），顶层
-覆盖约 2 年。条目插入到其截止时刻落在范围内的那一级，每次到期扫描
-向下一级 tier down，直到 level 0 才被交出。aura 完全不碰这些级——
-只调 `insert_at` / `remove` / `poll_expired`，因此分级语义（以及
-逐级调参）都不在我们这侧。到期由驱动 `Sleep` 唤醒即刻观测，分辨率
-为 level 0 的 1 ms（受调度延迟影响）——不是 5 秒 evictor tick，也不
-是原 Consequences 所写的 ±5 秒界。仍无亚毫秒或精确墙钟保证，所以
-「没有消费者需要比 tick 更好的精度」这个意图成立，但它的数字不成立。
-
-**2. 两种条目。** 调度面实际存在两种形态，wheel 同时承载：
-
-- **投递型条目** `(deliver_at, target, tag, durable)`——唤醒一个摊位，投递 `__on_timer` 作业（插话检查、压缩唤醒、cron）。
-  持久型写 StateStore 保留名字空间，`on_wake` 恢复路径重新
-  `insert_at`——与 §1 的裁决一致。
-- **回收型条目** `(deliver_at, target, kind)`——没有人会来了，
-  收回资源（idle-TTL 驱逐、执行看门狗）。到期动作不是投递作业，
-  而是 `evict_instance`（on_sleep + session 丢弃；看门狗场景对
-  在等的 reply 发超时错误）。回收型条目恒为内存态；它们需要
-  **取消**（新工作到达 → 作废未决的 idle 定时器），这就是
-  `DelayQueue::remove`——与摊位用的 cancel/re-arm 是同一 API。
-
-**3. idle_ttl 自作业完成起算，不自到达起算。** `last_activity`
-保持原义（观测面：最后作业到达时刻），但不再驱动驱逐。改为：
-`run_job` 入口取消该实例未决的 idle 回收条目（工作到达了），完成时
-重新注册一条（deliver_at = now + idle_ttl）。长执行（LLM 调用吃满
-整个 TTL）不再可能在执行中途驱逐实例——作业运行期间 idle 回收条目
-根本不存在。被取代的「驱逐竞态」条款原文没有；它是把驻留接到本
-ADR 时发现的缺陷。
-
-**4. 执行看门狗 = 带声明预算的回收型条目。** `lifecycle.max_exec`
-（per-type，在 `interface_schema` 中与 `idle_ttl` 并列声明）在作业
-入口注册回收条目（deliver_at = now + max_exec），完成时取消。到期 =
-实例超出执行预算：驱逐（on_sleep、session 丢弃）并对在等的 reply
-发超时错误。这是最大时长控制，不是空闲计量——两个关注点沿两种
-条目干净分离。
+`lifecycle.max_exec`（per-type，在 `interface_schema` 中与
+`idle_ttl` 并列声明）是执行看门狗：作业入口注册回收条目
+（`deliver_at = now + max_exec`），完成时取消。到期 = 实例超出执行
+预算：驱逐（on_sleep、session 丢弃）并对在等的 reply 发超时错误。
+这是最大时长控制，不是空闲计量——两个关注点沿两种条目干净分离。
 
 evictor 任务仅保留 `pending_calls` 的 deadline 扫描（其自身也是
 将来回收型条目的迁移对象）；`evict_idle` 的线性扫描删除——驱逐
 改为定时器驱动，O(到期) 而非 O(实例数)。
+
+### 4. 什么不变
+
+- 驱逐语义（per-instance、on_sleep hook、session 随驱逐销毁）不动；
+  变的只是触发点——作业完成时重挂的 idle 回收条目取代了 5 秒 tick
+  上的线性扫描。
+- `last_activity` 仍是最后到达的观测面；它不再决定驱逐（见 §3c）。
+  定时器在摊位侧就是普通作业。
+- 每个条目不再派生异步任务（不 `tokio::spawn` + `sleep`）：每 realm
+  一个驱动任务服务所有条目，持久型条目经 `on_wake` 恢复。
 
 ## Why Not
 
 - **按 user 的 gravity 实例**：把一个用户的 agent 拆散到各
   channel；投影、checkpoint、游标都按 (channel, member) 键控——
   按 user 键控会把 ADR-0008 拆开的东西重新合并，一个用户在两个
-  活跃 channel 中会争夺同一个上下文。修正为按 channel。
+  活跃 channel 中会争夺同一个上下文。拒绝。
 - **运行时原生 cron（引擎解析 cron 表达式）**：把调度 DSL 塞进
   引擎，还为补偿语义强制触发历史追踪。摊位侧模式只需要持久
   单次定时器——其余都是摊位的策略。拒绝。
 - **每定时器一个 `tokio::sleep` 任务**：任务数无界，且定时器随
-  进程消失（无持久注册路径）。wheel 扫描共享既有 tick。拒绝。
+  进程消失（无持久注册路径）。一个驱动任务服务全部定时器；被拒绝
+  的形态是每定时器一任务。拒绝。
 - **隐式周期定时器**：注册一次被永久唤醒，隐藏留存成本、击穿
   idle-TTL。重挂保持显式。
 
@@ -189,16 +175,16 @@ evictor 任务仅保留 `pending_calls` 的 deadline 扫描（其自身也是
 
 - 新运行时接口：`register_timer(target, deliver_at, tag,
   durable: bool) -> TimerId`、`cancel_timer(id)`、保留的
-  `__on_timer` 投递路径、激活/`on_wake` 序列中的持久定时器恢复。摊位侧：`ctx.timer.register / cancel`（ADR-0011 已修订）；
+  `__on_timer` 投递路径、激活/`on_wake` 序列中的持久定时器恢复。
+  同一队列承载 idle-TTL 驱逐与 `lifecycle.max_exec` watchdog 背后的
+  回收型条目。摊位侧：`ctx.timer.register / cancel`（ADR-0011）；
   `interface_schema` 中的声明式 `lifecycle.cron` 在注册时翻译为
   持久定时器。ctx bridge 的 host-fn 表从扁平 `ctx_state_*` 名字
   改为点号命名空间组（`ctx.store.*`、`ctx.timer.*`），可自省。
-- ~~evictor tick 增加 wheel 扫描（同一个 5 秒循环；wheel 在驱逐
-  之前检查，同一 tick 内到期投递先于驱逐）。~~ *由修订 §1 取代：
-  wheel 自驱动。*
 - gravity（按 channel 实例）经此接口注册插话与压缩唤醒；
   krystallizer 的策略参数（ADR-0008/0009）决定时长，aura 的
   定时器负责送达。
-- ~~定时粒度受 evictor tick 约束（±5 秒）；亚 tick 精度不是目标
-  （无消费者需要）。~~ *由修订 §1a 取代：level 0 分辨率（1 ms
-  量化，其上叠加调度延迟），无 tick 界。*
+- 到期条目在过期那一刻触发：队列自驱动，每 realm 一个驱动任务，
+  5 秒 evictor tick 不再扫描 wheel。
+- 定时分辨率为 level 0（1 ms 量化，其上叠加调度延迟）；没有 tick
+  界，也没有亚毫秒或精确墙钟保证。

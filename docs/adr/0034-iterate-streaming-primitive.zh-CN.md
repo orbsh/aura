@@ -36,11 +36,13 @@ emit/on/invoke 并列。** 返回游标；游标在每类 carrier 里包装为�
 
 ```
 { "item": <值>, "done": false }   ← 下一条
-{ "done": true }                  ← 耗尽（结构性结束）
+{ "done": true, "value": <值> }   ← 终止轮（无值时省略）
 { "error": "..." }                ← 流中途失败（ADR-0012）
 ```
 
-终止是类型化字段，绝不是哨兵字符串。有可被宿主驱动的生成器的语言做翻译：
+终止是类型化字段，绝不是哨兵字符串；`done` 恒为存在的布尔，终止轮
+携带 `value` 而非 `item`。这套信封就是 invoke 的线路形状：invoke 是
+首应答即终止的流。有可被宿主驱动的生成器的语言做翻译：
 wrapper 在 `done: true` 时抛 `StopIteration`——生产方 handler 用原生生
 成器写（python `yield`），完全看不见线路协议；框架驱动生成器，生成器耗尽
 对称地编码为 `done: true`。
@@ -58,8 +60,10 @@ call/cc，跨多次宿主驱动的引擎调用不可靠地续跑——记为被�
 ### 2. 流身份与 session 绑定
 
 流住在生产方的常驻 session 里（Phase 2.6——正是驻留让有状态的拉取协议
-成为可能，不是巧合）。`stream_id` 关联各次拉取的方式与 `pending_remote`
-关联 invoke 回复相同：一个帧身份，零新机制。分区键选择（如 provider 摊位
+成为可能，不是巧合）。首应答决定形态：终止应答（`done: true`）是完整的
+invoke 式结果，不留下流；非终止应答铸出 `stream_id`，后续拉取经 realm 的
+登记表按它路由——一个帧身份，零新机制，关联从 `done` 导出，而不是靠
+`stream_id` 字段在每一帧里位置性地存在。分区键选择（如 provider 摊位
 用 `key = 消费方 session_id`）是摊位自己的事，循常规分区键规则。
 
 ### 3. dispose：强制的对偶
@@ -83,17 +87,21 @@ wrapper 挂 `GeneratorExit`）自动发 dispose；没有的（nushell，以及�
 每次拉取是 hot 调用（oneshot + 超时）。冷流式（人以生产方身份、拉取无限
 挂起）不在范围：无已知消费者，且冷层纪律就是不为不存在的流量铺管道。
 
-### 6. LLM 服务面的生产方在脚本 carrier
+### 6. LLM 服务的生产方需要驻留状态
 
-provider 摊位模式：python handler——`httpx.stream`、解析
-SSE、每个 token 事件一次 `yield`——carrier 的原生生成器驱动信封。wasm
-两侧都服务：作为消费方跑拉到 done 的循环（没有可停放的宿主驱动生成器），
-作为生产方显式写信封——与 nushell 同一形态，Rust guest 在模块状态内映射
-`Iterator`（§1）。它的
+provider 摊位模式要求生产方跨拉取持有流状态，常驻子进程天然满足这一点。
+provider（与 turn 摊位同样）是骑 induction 管道（`~/world/induction`）的
+Rust 驻留子进程：进程持有流状态，逐轮 pull 以信封应答，`done: true`
+收尾。脚本 carrier 是同一形态、状态住在 carrier 的 session 里的版本：
+python handler——`httpx.stream`、解析 SSE、每个 token 事件一次 `yield`
+——由 carrier 的原生生成器驱动信封。wasm 两侧都服务：作为消费方跑拉到
+done 的循环（没有可停放的宿主驱动生成器），作为生产方显式写信封——与
+nushell 同一形态，Rust guest 在模块状态内映射 `Iterator`（§1）。它的
 对外 HTTP 需求（本原语存在的原因）由消费兄弟摊位解决，不由 wasi-http
 主机接线解决（aura PLAN 2026-09-28 的 wasi-http 条目被本 ADR 取代并撤销；
 ADR-0031 的裁决原样成立：摊位在自己的代码里决定访问方式——兄弟摊位就是
-那段代码，经场到达它，realm 的观测面因此保持诚实）。
+那段代码，经场到达它，realm 的观测面因此保持诚实）。gravity 的载体裁决
+住在 gravity PLAN（Phase 4、Phase 4.1）。
 
 ## 职责切割（从 gravity 移出去的是什么）
 
@@ -114,8 +122,9 @@ circuit breaking、依赖 transcript 的重试——一切需要本轮上下文�
   不变——也一切帮不上你：流不是持久的、不可重放。生产方中途驱逐 = 流
   失败，消费方驱逐 = wrapper 死亡。需要 at-least-once 流式的用例想要的
   是事件，本 ADR 是错的工具。
-- **三个动词，一套机制。** iterate/dispose 是骑在既有调用机件上的帧级
-  调用；信封是 schema 不是协议。「代价」是文档面：各 carrier 必须包装同
+- **两个动词，一套信封。** invoke 与 iterate 保留各自 ctx 名字——消费
+  意图不同——但骑同一条线路形状；iterate/dispose 是骑在既有调用机件上
+  的帧级调用，信封是 schema 不是协议。「代价」是文档面：各 carrier 必须包装同
   一个信封，而 nushell/守卫值路径邀请手写的 bug——类型化 `done` 字段的
   信封形状收窄但不消除这个坑。
 
@@ -125,8 +134,8 @@ circuit breaking、依赖 transcript 的重试——一切需要本轮上下文�
   （python 宿主驱动原生生成器；steel/nushell/wasm 显式信封；python 消费
   wrapper 在 GeneratorExit 上自动 dispose）；ADR-0011 的 ctx
   边界清单加 iterate/dispose——实例绑定、Host 管控的能力。
-- **gravity：** provider 摊位 = python 摊位类型（传输适配器）；Phase 1
-  LLM 层经 iterate 消费。
+- **gravity：** provider 摊位 = 骑 induction 管道的 Rust 驻留子进程（传输
+  适配器）；Phase 1 LLM 层经 iterate 消费。
 - **okm/effector：** 帧词汇表加这两种调用（effector-protocol——远程生产/消费方
   骑同一信封）。
 - **取代：** wasi-http carrier 任务（aura PLAN 遗留节，2026-09-28 立项）
@@ -138,26 +147,3 @@ ADR-0031（对外访问归摊位代码——provider 摊位是它的第一个应
 ADR-0011（ctx 边界）、ADR-0012（失败是值——流中途错误）、ADR-0016
 （timer API——流停止时重武装 TTL）、Phase 2.6（驻留——有状态的生产方）、
 Phase 3.5（hot 层——每次拉取）、modeling.md（流式消费模式节）。
-
-## Errata（2026-09-28，ADR-0036）
-
-上述决策不变。两处【形式】被取代：
-
-- **§1 信封：** `{item, done}` 对泛化为与 invoke 共用的一套信封——终止轮
-  带 `value` 而非 `item`（`{done: true, value}` / `{done: true}`），且
-  `done` 恒为存在的布尔。invoke 是首应答即终止的流（ADR-0036 §1）。
-- **"三个动词、一套机制"：** 改为"两个动词、一套信封"——invoke 与 iterate
-  保留各自 ctx 名字（消费意图不同，ADR-0036 §3），但骑同一条线路形状。
-  流的关联从 `done` 导出，不再靠 `stream_id` 字段的位置性存在来推
-  （ADR-0036 §4 收口落地协议里的这处松散）。
-
-上文正文按 2026-09-28 的裁决原样保留。
-
-## Errata（2026-10-13，gravity 载体）
-
-§6 的标题与 Consequences 的 gravity 行作为【形式】被取代：LLM 服务的生产侧
-不再绑定脚本载体。provider（与 turn 摊位同样）是骑 induction 管道
-（`~/world/induction`）的 Rust 驻留子进程——进程持有流状态，逐轮 pull
-以信封应答，`done: true` 收尾。§6 的真实约束从来是「生产者要有驻留状态」，
-子进程天然满足；python 载体是满足它的第一个形态，不是唯一形态。gravity
-的载体裁决住在 gravity PLAN（Phase 4 SUPERSEDED 注记、Phase 4.1）。

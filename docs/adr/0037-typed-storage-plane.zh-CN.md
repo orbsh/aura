@@ -71,9 +71,10 @@ parent → child   {"host_reply": {"ok": <typed>}}
 ```
 
 - **编码按摊位声明，双协议（用户裁决 2026-09-30，替换整通道单编码
-  计划）**：通道带两种编码，由声明选择——`BoothType::encoded
-  (ChannelEncoding)`（aura-booth，serde 值 `json`/`cbor`，持久化为
-  `BoothDef.encoding` 字段）与远程线上的 `ToolCall.encoding`
+  计划）**：通道带两种编码，由声明选择——`BoothType::encoded(Encoding)`
+  （`aura-booth` 重导出 `induction_protocol::Encoding`：拥有管道帧词汇表的
+  扩展协议 crate，`induction` 仓 ADR-0001；serde 值 `json`/`cbor`，
+  持久化为 `BoothDef.encoding` 字段）与远程线上的 `ToolCall.encoding`
   （进程内：realm 下传；远程：随调用到节点）。`Json` = 换行分隔行，
   stdlib 可达的默认，所有摊位都骑它；`Cbor` = 每帧一个
   自定界文档（无行终止符——ciborium 恰好读声明的字节数，阻塞管道上
@@ -164,9 +165,11 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   `host_bridge_for` 的 `ctx_store_emit` JSON 入口随 §2 退役（4.16c；
   期间 op set 冻结，见 §3）；realm 侧执行体（`store_exec`、plan 解析）
   全部幸存——载荷的到达形状现在是类型化 `store` 帧。声明面（4.16c）：
-  aura-booth 带自有的 `ChannelEncoding`（crate 保持 effector-free）、
-  `BoothType::encoded` 选择编码、`PersistedBooth`/`BoothDef` 以声明字段
-  承载它，`introspect_schema` 按声明编码起抛却子进程。
+  `aura-booth` 重导出 `induction_protocol::Encoding`——拥有管道帧词汇表的
+  纯 serde 协议 crate（不是 effector 产品线，crate 保持 effector-free）；
+  `BoothType::encoded` 选择编码；`PersistedBooth`/`BoothDef` 以声明字段
+  承载它；`introspect_schema` 按声明编码起抛却子进程。realm 的
+  `map_encoding` 转换已删，声明直通 runtime。
 - **文档**：ADR-0026 §3 的 python 措辞按本 ADR 修订（绑定，无 adapter）；
   ADR-0035 §3 的 host 帧形状随 §2 更新；本文件取代两者的存储桥段落。
 - **排期**：按预定顺序落地——4.14 闸门 2/3 与 4.15 先行（nu 垫片 +
@@ -175,13 +178,3 @@ python/steel 不再经过这条缝；bgi/nu 摊位读的是类型化 store 帧�
   §2（类型化帧 + 声明式双编码，4.16c）。CBOR 一半到达的形态**不是**
   本文最初勾勒的整通道升级，而是声明式双编码（用户裁决 2026-09-30）：
   nu 的 stdlib 墙把单升级计划实测判死。
-
-## Update —— 编码声明只留一处（2026-10-12）
-
-`ChannelEncoding` 不再定义于 effector-protocol 或本 crate：它是
-`induction_protocol::Encoding`——拥有管道帧词汇表的扩展协议（`induction` 仓的
-ADR-0001），并承载持久化行存的 serde 值（`"json"`/`"cbor"`，规则未变）。
-`aura-booth` 重导出它，故 §2 的裁决依然成立——crate 保持 effector-free：新依赖是
-纯 serde 的协议 crate，不是 effector 产品线。realm 的 `map_encoding` 转换已删
-（彼时它已是恒等）；声明直通 runtime。同一个枚举三份拷贝，正是这次抽取要终结的
-漂移类别。

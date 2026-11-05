@@ -86,10 +86,12 @@ parent → child   {"host_reply": {"ok": <typed>}}
 
 - **The encoding is DECLARED per booth (user ruling 2026-09-30 —
   dual-protocol).** The channel ships two codecs selected by the
-  declaration — `BoothType::encoded(ChannelEncoding)` (aura-booth, serde
-  values `json`/`cbor`, persisted in `BoothDef.encoding`)
-  and `ToolCall.encoding` on the remote wire (in-process: the realm
-  passes it down; remote: it rides the call to the node). `Json` =
+  declaration — `BoothType::encoded(Encoding)` and `ToolCall.encoding` on the
+  remote wire (in-process: the realm passes it down; remote: it rides the call
+  to the node). `Encoding` is `induction_protocol::Encoding` — the extension
+  protocol crate that owns the pipe frame vocabulary (ADR-0001 in the
+  `induction` repo), re-exported by aura-booth; its serde values are
+  `json`/`cbor`, persisted in `BoothDef.encoding`. `Json` =
   newline-delimited lines, the stdlib-reachable default every booth
   rides; `Cbor` = one self-delimited document per
   frame (no line terminator — ciborium reads exactly the declared bytes,
@@ -212,10 +214,13 @@ typed.
   retired with §2 (4.16c; the op set was frozen meanwhile, §3); the
   realm-side executor survives whole (`store_exec`, plan resolution) —
   the payload's arrival shape is now a typed `store` frame. The
-  declaration surface (4.16c): aura-booth carries its own
-  `ChannelEncoding` (the crate stays effector-free), `BoothType::encoded`
-  selects it, `PersistedBooth`/`BoothDef` carry it as a declared field,
-  and `introspect_schema` spawns the throwaway child in the DECLARED codec.
+  declaration surface (4.16c): `aura-booth` re-exports
+  `induction_protocol::Encoding` — the serde-only protocol crate that owns the
+  pipe frame vocabulary, not effector's product line, so the crate stays
+  effector-free; `BoothType::encoded` selects it; `PersistedBooth`/`BoothDef`
+  carry it as a declared field; `introspect_schema` spawns the throwaway child
+  in the DECLARED codec. The realm's `map_encoding` conversion is gone — the
+  declaration passes straight through to the runtime.
 - **Docs**: ADR-0026 §3's python wording is amended per this ADR (bind, no
   adapter); ADR-0035 §3's host frame shape updates with §2; this file
   supersedes both storage-bridge passages.
@@ -227,16 +232,3 @@ typed.
   whole-channel upgrade this file first sketched but as the declared
   dual codec (user ruling 2026-09-30): nu's stdlib wall measured the
   single-upgrade plan dead.
-
-## Update — one home for the codec declaration (2026-10-12)
-
-`ChannelEncoding` is no longer defined in effector-protocol or in this
-crate: it is `induction_protocol::Encoding` — the extension protocol that owns
-the pipe frame vocabulary (ADR-0001 in the `induction` repo), which now carries
-the serde spellings a persisted row stores (`"json"`/`"cbor"`, the rule
-unchanged). `aura-booth` re-exports it, so §2's ruling stands — the crate stays
-effector-free: the new dependency is the serde-only protocol crate, not
-effector's product line. The realm's `map_encoding` conversion is deleted (it
-was identity by then); the declaration passes straight through to the runtime.
-Three copies of one enum were exactly the drift class the extraction exists to
-end.

@@ -2,7 +2,7 @@
 
 > **语言 / Languages:** [English](0015-node-identity-ed25519.md) (primary) · [中文](0015-node-identity-ed25519.zh-CN.md)
 
-**Status:** Accepted（2026-09-20）——设计已定；实现待做，见 Consequences
+**Status:** Accepted（2026-09-20）——已落地：信任模式开关与披露（步骤 1），以及 ed25519 握手、节点登记表与批准端点（步骤 2）；账户折叠（步骤 3）待 prism 的账户会话面
 
 ## Context（背景）
 
@@ -53,7 +53,7 @@ gateway 先说话（正如 SSH 的服务端先发 banner），节点证明持有
 
 ### 4. 批准的对象是公钥，动作发生在控制端
 
-控制端保存一份节点登记表——`{ alias, public_key, status, created_at }`，日后加 `{ user }`——其中 `status` 为 `pending | approved | revoked`。批准一个节点就是批准一把具体的公钥；别名始终是人选的显示标签，不再承担安全语义（同名的两个节点靠公钥区分，公钥不符就是 `conflict`，不是接管）。
+控制端——连接平面的 gateway，即 prism——保存一份节点登记表：`{ alias, public_key, status, created_at }`，日后加 `{ user }`——其中 `status` 为 `pending | approved | revoked`。批准一个节点就是批准一把具体的公钥；别名始终是人选的显示标签，不再承担安全语义（同名的两个节点靠公钥区分，公钥不符就是 `conflict`，不是接管）。
 
 ### 5. HTTP 接口，以 curl 为先（账号体系出现前的过渡形态）
 
@@ -64,7 +64,7 @@ POST   /nodes/{alias}/approve                       → 批准该公钥
 DELETE /nodes/{alias}                               → 吊销
 ```
 
-这个面的刻意为四条端点加一条记录。等账号体系出现（Prism 的 auth，Phase 1），同一条记录挂到账号下：创建时写入 `user`，每个端点都要求登录用户，于是“节点登记表”变成“你的节点”，记录无需迁移。
+这个面的刻意为四条端点加一条记录，且挂在连接平面上：节点登记表归 prism 的网关（ADR-0017 §5/§7），于是端点走 prism 的路由面（`/admin/...`）。等账号体系出现（Prism 的 auth，Phase 1），同一条记录挂到账号下：创建时写入 `user`，每个端点都要求登录用户，于是“节点登记表”变成“你的节点”，记录无需迁移。
 
 ### 6. 轮换与吊销
 
@@ -74,7 +74,7 @@ DELETE /nodes/{alias}                               → 吊销
 
 认证值多少，等于它背后可达集值多少。在内网、VPN 之后、集群内的控制通道里——gateway 只能被操作员自己拉起的机器够到，而这些机器在启动时以可预测的名字自注册——密钥对握手守的是网络已经守住的入口。反弹连接同理：隔离网络里的容器拨出去，控制端落在操作员自己这一侧。
 
-所以模式是部署形态的声明，不是假定：
+所以模式是部署形态的声明，不是假定——它是 prism 网关配置里的 `identity` 字段：
 
 ```
 { "identity": "required" }   // ed25519 握手：未获批准或不带密钥的对端会被应答，但绝不被服务
@@ -111,29 +111,15 @@ DELETE /nodes/{alias}                               → 吊销
 
 - **effector-protocol**：`challenge` 成为一个帧；`register` 增加 `public_key` 与 `signature`；`pending` 与 `conflict` 成为应答；`credential` 消失。未获批准的节点会被应答，而不是被丢弃。
 - **effector**：`keygen`（以及首启生成）、配置里的 `identity_file`、`credential_env` 删除。
-- **aura gateway**：已批准公钥的节点登记表取代按别名插入；过渡的 HTTP 接口；静默替换路径移除。
+- **prism（连接平面）**：`identity` 配置字段（无默认）、`open` / `required` 应答、`unauthenticated` 回复、密钥对握手、节点登记表与 `GET /nodes` 等四条端点（走 `/admin/...`）、以及并入账号。认证数据是连接平面的关切（ADR-0017 §5/§7）；在 aura 内也建一份，同一个决定就有了两个家——prism 网关落地那天第二真相源即作废。
+- **aura**：无论谁来配置都属于网关自身正确性的那部分——替换纪律。open 姿态下别名顶替仍然允许（重启的容器必须能从陈旧注册收回自己的名字），但绝不静默：网关记录顶替事件，点名 alias 与新旧两端地址；presence guard 带身份核对，被顶替的旧连接不得注销新持有者。未认证姿态的启动披露打在真相所在之处——日志。
 - **被取代的措辞**：`engine/src/lib.rs` 里“namespace is derived from the user credential at registration”。命名空间挂在账号上；密钥只证明机器——用户身份与机器身份是两根轴。
 - **两端一起动**（effector-protocol 是路径依赖），所以这是一次协同变更，不是兼容性扩展。
 
 **实施顺序**（写下来是为了不按错的顺序做）：
 
-1. **信任模式开关与披露**——gateway 的 `identity` 字段（无默认值）、`open` 注册路径、`unauthenticated` 应答、以及替换行为的上报。不涉及密钥材料、不引入任何密码学依赖：这一步正是让集群内与 VPN 部署今天就能诚实可用，并移除那个在任何模式下都错的静默别名替换。
+1. **信任模式开关与披露**——prism 网关的 `identity` 字段（无默认）、`open` 注册路径、`unauthenticated` 应答。不涉及密钥材料、不引入任何密码学依赖：这一步正是让集群内与 VPN 部署今天就能诚实可用，并移除那个在任何模式下都错的静默别名替换。aura 那一半已在位——点名 alias 与两端地址的顶替事件，以及带身份核对的 presence guard。
 2. **密钥对握手与节点登记表**——即上面的 `required` 模式：`challenge`、签名版 `register`、`pending` / `conflict`、节点登记表与四条端点。
 3. **并入账号认证**——Prism 的 auth 就位后，记录带上所有者，端点要求会话。
 
 在某次部署配置好第 2 步之前，那次部署跑在 `open` 模式下，其保护就是网络边界；配置里这么写，启动日志里也这么写。
-
-## 更新 — 实施归属（2026-09-25）
-
-裁决不变；落点拆分跟随 ADR-0017 §5/§7（认证数据住连接平面，即 prism）。若在 aura 内建
-`identity` 模式开关、节点登记表与审批端点，同一个决定就有了两个家——prism 网关落地那天
-第二真相源即作废。按面归属：
-
-- **prism（连接平面）**：`identity` 配置字段（无默认）、`open`/`required` 应答、
-  `unauthenticated` 回复、密钥对握手、节点登记表与四个端点、并入账号。随 prism 网关工作
-  落地——`GET /nodes` 等挂 prism 的路由面（`/admin/...`）。
-- **aura（本仓，2026-09-25 已落地）**：无论谁来配置都属于网关自身正确性的残余——替换纪律。
-  open 姿态下别名顶替仍然允许（重启的容器必须能从陈旧注册收回自己的名字），但绝不静默：
-  网关打印顶替事件，点名 alias 与新旧两端地址；presence guard 带身份核对，被顶替的旧连接
-  不得注销新持有者。未认证姿态的启动披露打在真相所在之处（日志），挂载点移 prism 时随之
-  迁移。

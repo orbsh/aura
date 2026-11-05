@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0026-type-scoped-booth-storage.md) (primary) · [中文](0026-type-scoped-booth-storage.zh-CN.md)
 
-**Status:** Accepted (2026-09-24) — design; implementation pending, see Consequences
+**Status:** Accepted (2026-09-24) — landed (2026-09-24): type-scoped ns storage and `ctx.store(op)`/`ctx.schema`, with `InstanceState` retired; remaining Phase 4.9 work: per-language schema declaration, docs/wiki sweep
 
 ## Context
 
@@ -22,9 +22,9 @@ The corrected division of labor: **the instance key answers exactly one question
 
 Booth types are a DECLARED, deployment-scale vocabulary — the application author writes every type by hand, so the count is bounded by design (tens per deployment, not per user). This satisfies the ruling that closed, bounded vocabularies may take real ns allocations while open, unbounded ones may not (events/partitions stay on registry + hash shapes, ADR-0014's mq block).
 
-- The low ns block is reserved for aura itself: mq tables (30–35), meta/state (40–41), future framework planes. Booth types allocate from a fixed base above the reserved block.
+- The low ns block is reserved for aura itself in two bands: `20–29` the event plane and `30–39` the meta plane, with ns 26 carrying the plane-version marker (ADR-0040). Within a band, table order is conceptual, not historical. Booth types allocate from `BOOTH_NS_BASE = 100`, above the reserved block.
 - Allocation happens at `register_type` as a side effect of the booth registry (the same registry that assigns `booth_id` today — the dynamic booth→ns registry this design requires already exists in embryo); ns ids are never reused within a node's lifetime.
-- Namespace isolation (the Phase 3.6 mechanism, today the prefix-bound `MqStore::namespaced` handle) keeps its MECHANISM as orthogonal — it prefixes the whole engine, beneath which booth-type nss live. Its binding dimension is an APPLICATION DECISION (demoted, PLAN Phase 4.10 LANDED): gravity may bind user, a no-user application binds nothing; "effector registration credential = user credential → namespace derived" is superseded.
+- Realm isolation (ADR-0028 renamed the outer axis `namespace` → `realm`; the `ns` axis inside okm's key model keeps its spelling) keeps its MECHANISM as orthogonal — it prefixes the whole engine, beneath which booth-type nss live, and its current surface is `MqStore::for_realm`, `RealmSet`, `NamedRealm`. Its binding dimension is an APPLICATION DECISION (demoted, PLAN Phase 4.10 LANDED): gravity may bind user, a no-user application binds nothing; "effector registration credential = user credential → namespace derived" is superseded.
 
 ### 2. Instances are documents inside the type's ns
 
@@ -36,18 +36,12 @@ Serialization semantics are unchanged: same `(type, key)` serial through the ins
 
 `ctx.store` gains the okm operation set over the type's declared collections — put / get / scan / reduce (exact op names set at implementation; the surface is what okm's Collection API exposes over dynamic documents). The field-level `get/set/delete` point model is replaced by this surface.
 
-- **Binding is structural**: every ctx storage handle is constructed against the owning type's ns at registration — cross-type access is not expressible, the same construction-time guarantee the mq namespace prefixes give today. Inside the ns, the type's own code is trusted with the full surface.
-- **Script-side protocol: one `emit` carrying okm ops** (this fixes the role of the §1 emit naming on the storage path): `ctx.store` exposes exactly ONE interface — `ctx.store.emit(op)`, where op is one okm instruction (collection name + operation + arguments, `DynamicValue` payload), returning DynamicValue. Two shapes by language:
-  <!-- ERRATUM (2026-09-28, ADR-0037): the capability contract stands (one
-       entry, Collection semantic layer, no raw bypass). The translation
-       FORM below is superseded: in-process carriers BIND okm's
-       DynamicCollection (zero translation); the out-of-process seam becomes
-       typed frames on one host channel; the JSON instruction document is a
-       declared transitional shape. See docs/adr/0037-typed-storage-plane.md. -->
-  - **python**: the script implements okm's `VirtualStorage` adapter, translating each engine call into one `ctx.store.emit` — from there the script uses the `Collection` API directly (the typed facade over put/get/scan/…); the bridging cost is paid once, in the adapter.
-  - **steel / nushell**: no adapter — direct single-op `emit` calls (op set = the narrowed set from the op-set work item; ops stay at the Collection semantic layer, not raw VirtualStorage primitives).
-  - **wasm (Rust source) is the full-power path**: okm itself compiled into the module — the script implements `VirtualStorage` over `aura_host` imports (each engine call = one emit op through the host bridge) and runs the REAL `Collection` API in-module. Static derive macros work at wasm build time; the dynamic op-instruction path exists for the booth, not for wasm. A wasm booth's storage code is then indistinguishable from a native Rust booth's: same derive, same invariants, compile-time checked.
-  - Naming lineage: `emit` reuses the event-delivery shape (an instruction is a payload delivered through the host bridge), same root as the wire-level `ev` — one verb, two sites (wire delivery, storage instruction), one semantics: hand the receiver a fact to execute.
+- **Binding is structural**: every ctx storage handle is constructed against the owning type's ns at registration — cross-type access is not expressible, the same construction-time guarantee the mq realm prefix gives. Inside the ns, the type's own code is trusted with the full surface.
+- **Script-side protocol: one instruction, one entry**: `ctx.store` exposes exactly ONE interface — `ctx.store(op)`, where op is one okm Collection instruction (collection name + operation + arguments, `DynamicValue` payload), returning DynamicValue. Shape by language:
+  - **python**: `okm-python`'s `Collection` binding is registered directly into the session module over the host-injected store — zero translation, and the script calls the `Collection` API (put/get/scan/…) directly.
+  - **steel / nushell**: no adapter — steel gets the same `Collection` face from `okm-steel` (per-VM registry, fixed name-string fns over the same host-injected entries); nushell reads the typed `store` frames through bgi's two-fifo adapter, on the same op set as steel. Ops stay at the Collection semantic layer, not raw VirtualStorage primitives.
+  - **wasm (Rust source) is the full-power path**: okm itself compiled into the module — the script implements `VirtualStorage` over `aura_host` imports (each engine call crosses the OpFrame byte seam) and runs the REAL `Collection` API in-module. Static derive macros work at wasm build time; the dynamic op-instruction path exists for the booth, not for wasm. A wasm booth's storage code is then indistinguishable from a native Rust booth's: same derive, same invariants, compile-time checked.
+  - Naming: storage is `ctx.store(op)`, publishing is `ctx.emit(event, data)` — verbs follow semantics, not placement, and the two no longer share the `emit` name (ADR-0043).
 - **Nested invoke addressing**: when booth A invokes booth B, B's handlers operate in B's ns — resolution goes through the type registry (type name → ns), never through caller-supplied keys.
 
 ### 4. Dynamic schema declares through interface_schema
@@ -55,45 +49,24 @@ Serialization semantics are unchanged: same `(type, key)` serial through the ins
 Tables and their key/index declarations ride the existing Phase 4.5b upload lifecycle:
 
 - **python**: the okm type definitions in the script are wrapped with a decorator that derives the schema; introspection merges it into `interface_schema` (the same implicit+explicit merge as `@on` metadata, ADR-0014's step 1). One declaration surface, derived.
-- **steel / nushell**: no AOP — the schema is a hand-written literal inside `interface_schema` (data, not derivation); handlers call the ctx store functions directly. nushell additionally has no host bridge in its PTY carrier, so its position is unchanged: memory-state only until that bridge lands. (Update 2026-09-25: the PTY ctx bridge landed — file-round-trip req/resp, the same op set as steel.)
+- **steel / nushell**: no AOP — the schema is a hand-written literal inside `interface_schema` (data, not derivation); handlers call the ctx store functions directly. nushell reaches the same op set through bgi's two-fifo adapter, whose ctx bridge is file-round-trip req/resp (ADR-0035 §6; the PTY carrier is gone).
 - **wasm** (Rust source): okm compiles into the module — schema declaration is the derive macros at build time, no dynamic interface_schema form needed for storage; the delivered `.wasm` artifact carries its schema in code, introspection reads it out at upload (per the 4.5b lifecycle).
-- The merged schema persists with the BoothDef (dynamic segment) at registration; **the execution path never regenerates schema** — type→schema cost exists only at upload. `ctx.interface_schema` reads the persisted copy (cheap), for handlers that reflect over their own declared shape; development-time completion is served by the LLM receiving the same interface_schema.
+- The merged schema persists with the BoothDef (dynamic segment) at registration; **the execution path never regenerates schema** — type→schema cost exists only at upload. `ctx.schema` reads the persisted copy (cheap), for handlers that reflect over their own declared shape; development-time completion is served by the LLM receiving the same interface_schema.
 
 ## Naming: one event semantic end to end
 
-Protocol and concept layer carry ONLY `event`. The wire field is `ev` — in both directions; the protocol does not encode direction. `emit`/`on` are per-end implementation details: on aura, an booth's `@on` declaration and `emit` call; on prism's client side, `ws.send` / `ws.on`. Prism is the natural extension of aura's event semantics to the user end — there is no separate "action→server, type→client" vocabulary to translate through. This supersedes the earlier prism-facing phrasing ("client sends actions, server sends typed frames") wherever it appears; the server→client frame field ruling (never reuse `action` across directions) is satisfied a fortiori: the field is `ev`, direction does not exist at the protocol layer.
+Protocol and concept layer carry ONLY `event`. The wire field is `ev` — in both directions; the protocol does not encode direction. `emit`/`on` are per-end implementation details: on aura, an booth's `@on` declaration and `ctx.emit` call; on prism's client side, `ws.send` / `ws.on`. Prism is the natural extension of aura's event semantics to the user end — there is no separate "action→server, type→client" vocabulary to translate through. This supersedes the earlier prism-facing phrasing ("client sends actions, server sends typed frames") wherever it appears; the server→client frame field ruling (never reuse `action` across directions) is satisfied a fortiori: the field is `ev`, direction does not exist at the protocol layer.
 
 ## Honest semantic cost
 
 - **ns space is spent on booth types.** That is the point of the bounded-vocabulary ruling — but it makes the reservation real: a deployment that registers and re-registers many throwaway type names burns ns ids (they are never reused). Registration-side dedup (same source hash → same type) is the mitigation; the budget is u16-wide, thousands of types.
 - **The one-document-per-instance state model is a breaking replacement.** Existing instance-state bytes are discarded, no migration (the ADR-0018 precedent). Tests written against `ctx.store.get/set` field semantics rewrite against the collection surface.
-- **Inside-ns trust is real trust.** A buggy (not malicious) handler can now scan and reduce over its whole type's data — the blast radius of a script bug grows from one instance's document to the type's keyspace. Accepted: the code is uploaded and trusted; the boundary that matters (type vs type, user vs user) stays structural. Same for direct okm primitives through emit: the developer holds full control of the storage — bypassing Collection invariants (a raw put skipping index/reduce compensation) is self-sabotage only, no guard is built.
+- **Inside-ns trust is real trust.** A buggy (not malicious) handler can now scan and reduce over its whole type's data — the blast radius of a script bug grows from one instance's document to the type's keyspace. Accepted: the code is uploaded and trusted; the boundary that matters (type vs type, user vs user) stays structural. Same for direct okm primitives through `ctx.store`: the developer holds full control of the storage — bypassing Collection invariants (a raw put skipping index/reduce compensation) is self-sabotage only, no guard is built.
 
 ## Consequences
 
-- LANDED (2026-09-24, effector bbefac8 + aura 7828031): the retirement is done — `realm/src/state.rs` (`StateDocumentStore`/`InstanceState`) deleted whole; the `StateStore` trait, `SharedStore`, and `Ctx.state` are gone from aura-booth; the `ctx_state_get/set/delete` host fns and their wire arms (`HostOp::State`) are gone from the engine and effector-protocol. `ctx.store` exposes exactly `ctx.store.emit(op)` + `ctx.interface_schema` over declared collections. **No backward-compat sugar, period**: the reason to retire is the model ruling (point document superseded by the collection surface), not a migration-cost calculation — "users already exist" is as invalid as "no external users yet" as an argument for keeping the old surface; correctness of the model is the only input. `register_in` rides the same introspection+persist path as `register` so namespaced types resolve a ctx.store plan. Remote-effector booths are invoke-only over the wire (execution nodes hold no state; `ctx_store_emit` requires a resolved plan = 4.5b). Remaining Phase 4.9 work: per-language schema declaration, docs/wiki sweep.
+- LANDED (2026-09-24, effector bbefac8 + aura 7828031): the retirement is done — `realm/src/state.rs` (`StateDocumentStore`/`InstanceState`) deleted whole; the `StateStore` trait, `SharedStore`, and `Ctx.state` are gone from aura-booth; the `ctx_state_get/set/delete` host fns and their wire arms (`HostOp::State`) are gone from the engine and effector-protocol. `ctx.store` exposes exactly `ctx.store(op)` + `ctx.schema` over declared collections. **No backward-compat sugar, period**: the reason to retire is the model ruling (point document superseded by the collection surface), not a migration-cost calculation — "users already exist" is as invalid as "no external users yet" as an argument for keeping the old surface; correctness of the model is the only input. `register_in` rides the same introspection+persist path as `register` so realm-scoped types resolve a ctx.store plan. Remote-effector booths are invoke-only over the wire (execution nodes hold no state; `ctx_store_emit` requires a resolved plan = 4.5b). Remaining Phase 4.9 work: per-language schema declaration, docs/wiki sweep.
 - Serialization, instance routing, timer, and mq semantics are untouched — this ruling moves storage isolation only.
 - Projection booths remain exactly where they were always justified: cross-type precomputation. Same-type aggregation becomes an ordinary scan inside the type's ns.
 - Prism protocol naming (`ev`, direction-free) lands on the prism side with its connection-plane work (Phase 8); aura's side is documentation only.
 - Wiki sync (`https://github.com/orbsh/wiki/blob/main/aura-architecture.md`) is due when the implementation lands, together with the storage.md/partitioning.md rewrites — this ADR supersedes the "instance state is one document" passages there.
-
-## Update — terminology (2026-09-25, ADR-0028)
-
-ADR-0028 renamed the outer isolation axis `namespace` → `realm` (the axis named "ns"/`#[kv_ns]`
-inside the okm key model is untouched — it keeps the `ns` spelling). This ADR's body keeps its
-landing-time wording (§1's "Namespace isolation … `MqStore::namespaced`", Consequences'
-"namespaced types" describe what was true at 2026-09-24 — the decision-archive/log rule); the
-current surfaces read `MqStore::for_realm`, `RealmSet`, `NamedRealm`. The ruling is unchanged:
-realm isolation is an orthogonal outer prefix, the binding dimension is the application's
-choice, the framework's isolation units remain exactly two (type ns, instance serialization).
-
-## Update — framework ns bands (2026-10-02, ADR-0040)
-
-ADR-0040 supersedes this ADR's §1 numbering: the low block's bands are `20–29` (the event
-plane) and `30–39` (the meta plane), with table order inside a band conceptual rather than
-historical — so "mq tables (30–35), meta/state (40–41)" above reads as landing-time wording.
-Booth types still allocate from the fixed base (100), and the ruling this ADR recorded is
-unchanged: the block is reserved for aura's own tables and booth types never fall into it.
-The renumbering lands with Phase 4.18/4.19 and presumes a complete wipe of the low block —
-ADR-0040 records why (the new meta band lands on numbers the old event plane used, so
-without the wipe a new `BoothName` would read old `EventName` rows as type names).

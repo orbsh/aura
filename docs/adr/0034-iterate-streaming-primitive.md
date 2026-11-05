@@ -42,12 +42,15 @@ Every pull round-trip exchanges an envelope:
 
 ```
 { "item": <value>, "done": false }        ← next item
-{ "done": true }                           ← exhausted (structural end)
-{ "error": "..." }                         ← mid-stream failure (ADR-0012)
+{ "done": true, "value": <value> }        ← terminal round (value omitted when absent)
+{ "error": "..." }                        ← mid-stream failure (ADR-0012)
 ```
 
-Termination is a typed field, never a sentinel string. Languages WITH
-native iteration translate: the wrapper raises `StopIteration` on
+Termination is a typed field, never a sentinel string; `done` is always
+a present boolean, and a terminal round carries `value` instead of
+`item`. The same envelope is invoke's wire shape: invoke is the stream
+whose first reply is terminal. Languages WITH native iteration
+translate: the wrapper raises `StopIteration` on
 `done: true` — the producer handler written as a native generator
 (python `yield`) never sees the wire protocol; the framework drives the
 generator, and generator exhaustion encodes `done: true` symmetrically.
@@ -71,9 +74,13 @@ rejected carrier variant; envelope mode is the honest shape there.)
 
 The stream lives in the producer's resident session (Phase 2.6 — the
 residency is what makes a pull-protocol stateful session possible, not a
-coincidence). `stream_id` correlates pulls the same way `pending_remote`
-correlates invoke replies: a frame identity, no new machinery. Partition
-key choice (e.g. `key = consumer session_id` for a provider booth) is the
+coincidence). The first reply decides the shape: a terminal reply
+(`done: true`) is a complete invoke-style result and leaves no stream;
+a non-terminal reply mints the `stream_id` that routes subsequent pulls
+through the realm's registry — a frame identity, no new machinery, and
+an association derived from `done` rather than from a `stream_id` field
+being positionally present in every frame. Partition key choice
+(e.g. `key = consumer session_id` for a provider booth) is the
 booth's business, following the usual partition-key rules.
 
 ### 3. dispose: the mandatory dual
@@ -101,10 +108,16 @@ Each pull is a hot call (oneshot + timeout). Cold streaming (a human
 as producer, pulls parked indefinitely) is out of scope: no known consumer,
 and the cold-tier discipline says don't pave for absent traffic.
 
-### 6. The producer side of LLM serving is script carriers
+### 6. The producer side of LLM serving is resident state
 
-The provider booth pattern: python handler — `httpx.stream`, parse SSE,
-`yield` per token event — the carrier's native generator drives
+The provider booth pattern needs the producer to hold stream state
+across pulls, and a resident child process has that by definition. The
+provider — and the turn booth alike — runs as a Rust guest process over
+the induction pipe (`~/world/induction`): the process holds the stream
+state, answers each pull round with an envelope, and closes with
+`done: true`. A script carrier is the same shape where the state lives
+in the carrier's session: a python handler — `httpx.stream`, parse SSE,
+`yield` per token event — has the carrier's native generator drive
 the envelope. wasm serves BOTH sides: as consumer it runs the
 pull-until-done loop (no host-drivable generator to park), and as
 producer it writes the envelope explicitly — the same shape as nushell,
@@ -114,7 +127,8 @@ sibling booth, not by wasi-http host plumbing (the PLAN 2026-09-28
 wasi-http entry is superseded and withdrawn by this ADR; ADR-0031's
 ruling stands: the booth decides its access method inside its own code —
 the sibling booth IS that code, reached through the field, which keeps
-the realm's observation surface honest).
+the realm's observation surface honest). Gravity's carrier ruling lives
+in the gravity PLAN (Phase 4, Phase 4.1).
 
 ## Responsibility cut (what moves out of gravity)
 
@@ -139,12 +153,13 @@ socket-per-turn work, which gravity-as-wasm cannot do natively (§6).
   stream is NOT durable, NOT replayable. Producer eviction mid-stream =
   failed stream, consumer eviction = dead wrapper. If a use case needs
   at-least-once streaming, it wants events and this ADR is the wrong tool.
-- **Three verbs, one mechanism.** iterate/dispose are frame-level calls
-  riding the existing call machinery; the envelope is schema, not protocol.
-  The "cost" is documentation surface: carriers must all wrap the same
-  envelope, and the nushell/guard-value path invites hand-written bugs —
-  an envelope shape with a typed `done` field narrows but does not
-  eliminate the footgun.
+- **Two verbs, one envelope.** invoke and iterate keep their ctx names —
+  distinct consumer intents — but ride one wire shape; iterate/dispose
+  are frame-level calls on the existing call machinery, and the envelope
+  is schema, not protocol. The "cost" is documentation surface: carriers
+  must all wrap the same envelope, and the nushell/guard-value path
+  invites hand-written bugs — an envelope shape with a typed `done`
+  field narrows but does not eliminate the footgun.
 
 ## Consequences
 
@@ -154,8 +169,9 @@ socket-per-turn work, which gravity-as-wasm cannot do natively (§6).
   GeneratorExit);
   ADR-0011's ctx-boundary list gains iterate/dispose as instance-bound
   host-gated capabilities.
-- **gravity:** provider booth as python booth type (transport adapter);
-  Phase 1 LLM layer consumes via iterate.
+- **gravity:** provider booth as a resident Rust guest process over the
+  induction pipe (transport adapter); Phase 1 LLM layer consumes via
+  iterate.
 - **okm/effector:** frame vocabulary gains the call kinds (effector-protocol —
   remote producers/consumers ride the same envelope).
 - **Supersedes:** the wasi-http carrier task (aura PLAN 遗留节, filed
@@ -168,31 +184,3 @@ application), ADR-0011 (ctx boundary), ADR-0012 (failure is a value —
 mid-stream errors), ADR-0016 (timer API — TTL rearm at stream stop),
 Phase 2.6 (residency — the stateful producer), Phase 3.5 (hot tier —
 every pull), modeling.md (streaming-consumption pattern section).
-
-## Errata (2026-09-28, ADR-0036)
-
-The decisions above stand unchanged. Two FORMS are superseded:
-
-- **§1 envelope:** the `{item, done}` pair generalizes to one envelope
-  shared with invoke — a terminal round carries `value` instead of `item`
-  (`{done: true, value}` / `{done: true}`), and `done` is always a present
-  boolean. Invoke is the stream whose first reply is terminal (ADR-0036 §1).
-- **"Three verbs, one mechanism":** now "two verbs, one envelope" — invoke
-  and iterate keep their ctx names (distinct consumer intents, ADR-0036 §3)
-  but ride one wire shape. Stream association is derived from `done`, not
-  from the positional presence of a `stream_id` field (ADR-0036 §4 closes
-  that looseness in the landed protocol).
-
-The body above is preserved as decided on 2026-09-28.
-
-## Errata (2026-10-13, gravity carrier)
-
-§6's heading and the Consequences gravity line are superseded as FORMS: the
-producer side of LLM serving is NOT script-carrier-bound. The provider (and
-the turn booth alike) is a resident Rust guest process over the induction
-pipe (`~/world/induction`) — the process holds the stream state, answers
-each pull round with an envelope, and closes with `done: true`. §6's real
-constraint was always resident state for the producer, which a child process
-has by definition; the python carrier was the first shape that satisfied it,
-not the only one. Gravity's carrier ruling lives in the gravity PLAN
-(Phase 4 SUPERSEDED note, Phase 4.1).

@@ -1,6 +1,6 @@
 # ADR-0016: Timers — Timer-Wheel Delayed Emit and Cron Semantics
 
-**Status**: Partially landed (2026-09-23: the revised wheel — DelayQueue driver, two entry kinds, idle-from-completion, watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only, see the durability residual below; pending: durable tier, declarative `lifecycle.cron`)
+**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; pending: durable tier, declarative `lifecycle.cron`)
 **Date**: 2026-09-22
 **Chinese**: [0016-timers-timer-wheel-cron.zh-CN.md](0016-timers-timer-wheel-cron.zh-CN.md)
 
@@ -9,7 +9,7 @@
 Aura booths are event-driven: work arrives as calls, emits, or queued
 event jobs, and an instance with nothing arriving is evicted by the
 idle-TTL evictor after its residency expires (per-type `idle_ttl`,
-5-second evictor tick). The runtime has NO delayed-wake primitive:
+measured from job completion). The runtime has NO delayed-wake primitive:
 signals exist only for "something happened", never for "nothing
 happened for N seconds". Two krystallizer-driven needs expose this gap
 (ADR-0008/0009 on the k10r side define the policies; the delivery
@@ -37,12 +37,43 @@ support this shape — gravity registers with `key = channel_id` and an
 
 ## Decision
 
-### 1. Timer wheel + eviction-time deadline computation
+### 1. Per-realm scheduling on tokio-util `DelayQueue`
 
-A per-realm **timer wheel**: each entry is
-`(deliver_at, target: InstanceId, payload)`. The existing evictor tick
-(5s) additionally scans the wheel and delivers due entries as ordinary
-queued jobs to the target instance.
+A per-realm **timer queue** built on `tokio_util::time::DelayQueue`: a
+public hashed wheel exposing `insert_at(value, when) -> Key`,
+`remove(&Key)` (O(1) cancel), and `poll_expired()` as a stream. ONE
+driver task per realm owns the queue by value
+(`while let Some(expired) = queue.poll_expired().await`) and acts on
+each expired entry; the task count stays bounded. The wheel behind it
+is hierarchical — 6 levels × 64 slots, level-0 slots 1 ms wide over a
+64 ms range, each level multiplying the slot width by 64 (~4 s,
+~4 min, ~4 hr, ~12 day), the top level reaching ~2 years — and an
+entry tiers down one level per expiry sweep until level 0 hands it
+out. Aura never touches the levels: it only calls `insert_at` /
+`remove` / `poll_expired`, so no hierarchy semantics (and no per-level
+tuning) live on our side. An expiry is observed as soon as the driving
+`Sleep` wakes, at level-0 resolution (1 ms quantisation, subject to
+scheduler latency) — not on the 5-second evictor tick, and without a
+tick-shaped bound. There is no sub-millisecond or exact-wall-clock
+guarantee; no consumer needs better than that.
+
+The queue holds two entry kinds:
+
+- **Deliver entries** `(deliver_at, target, tag, durable)` — wake a
+  booth by delivering a `__on_timer` job (interrupt checks,
+  compression wakes, cron). Durable entries are written to the
+  StateStore's reserved namespace and re-`insert_at`-ed in the
+  `on_wake` restore path.
+- **Reclaim entries** `(deliver_at, target, kind)` — nobody is
+  coming; take the resources back (idle-TTL eviction, execution
+  watchdog). The expiry action is NOT a job delivery but
+  `evict_instance` (on_sleep + session drop + reply-with-timeout for
+  the watchdog's target). Reclaim entries are always in-memory; they
+  need CANCEL (new work arrived → abort the pending idle timer),
+  which is `DelayQueue::remove` — the same cancel/re-arm API booths
+  use.
+
+Deliver entries follow the ordinary job path:
 
 - **Delivery = a normal queue job.** A due timer is indistinguishable
   from an event job at the booth side (`QueuedJob` with a reserved
@@ -70,12 +101,12 @@ queued jobs to the target instance.
 
 ### 2. Cancel and re-arm
 
-A timer handle (id) returned at registration; `cancel(id)` removes it.
-Re-arm = register a new timer (cancel + register). The interrupt
-pattern is: on channel activity → cancel pending silence-timer →
-evaluate → register a new silence-timer for the idle threshold. The
-pattern is entirely booth-driven; the runtime provides no implicit
-re-arming.
+A timer handle (`Key`) is returned at registration; `cancel(id)` removes
+it through `DelayQueue::remove`, O(1). Re-arm = register a new timer
+(cancel + register). The interrupt pattern is: on channel activity →
+cancel pending silence-timer → evaluate → register a new silence-timer
+for the idle threshold. The pattern is entirely booth-driven; the
+runtime provides no implicit re-arming.
 
 ### 3. Cron semantics: declared in schema, computed by the booth, re-armed on delivery
 
@@ -134,97 +165,39 @@ enumerates the `ctx.*` groups it exposes; the schema can declare
 which groups an instance actually carries). New injected capabilities
 (metadata, effector targets) join as groups, not as flat-name accretion.
 
-### 4. What does NOT change
+### 3c. Idle reclaim and the execution budget
 
-- The idle-TTL evictor and its 5-second tick gain the wheel scan; the
-  eviction semantics (per-instance, on_sleep hook, session drop) are
-  untouched.
-- `last_activity` semantics stay "last job arrival"; timers are just
-  jobs.
-- No async runtime timers per entry (no `tokio::spawn` + `sleep` per
-  timer): the wheel is scanned by the existing tick — bounded memory,
-  one task, and the 5-second granularity is fine for both consumers
-  (seconds-scale interrupt windows and minute-scale compression/cron
-  wakes).
+`last_activity` keeps its meaning — the observation surface: last job
+arrival — but no longer drives eviction. `run_job` cancels the
+instance's pending idle reclaim entry on entry (work arrived) and
+re-registers one at completion (`deliver_at = now + idle_ttl`). A long
+turn (an LLM call eating the whole TTL) cannot expire the instance
+mid-execution: the reclaim entry does not exist while the job runs.
 
-## Revision (2026-09-23): unified scheduling on tokio-util DelayQueue; reclaim-type timers; idle measured from completion
-
-Implementation review of the residency/timeout surface (driven by the
-gravity turn-executor) amends three rulings; the original text above is
-preserved as decided.
-
-**1. The wheel is tokio-util's `DelayQueue` — not hand-rolled, not
-tick-scanned.** `DelayQueue` is a public hashed-wheel (the same
-`Wheel` structure this ADR sketched) exposing exactly the needed
-trio: `insert_at(value, when) -> Key`, `remove(&Key)` (cancel,
-O(1)), and `poll_expired()` as a stream. It drives itself (one
-internal `Sleep`), so the 5-second evictor tick no longer needs to
-scan the wheel: due entries fire the moment they expire, not on the
-next tick. The task count stays bounded — ONE driver task per realm
-(`while let Some(expired) = queue.poll_expired().await`). This
-supersedes §4's "no per-timer async task / wheel scanned by the
-existing tick" clause: that clause was the price of hand-rolling;
-the library removes the price. §4's Why-Not entry ("one tokio::sleep
-task per timer") remains rejected for the reason given (unbounded
-task count, no persistence path) — the driver is one task for ALL
-timers, which that entry never considered.
-
-**1a. What the wheel's structure actually is (granularity).** `DelayQueue`'s
-backing `Wheel` is a hierarchical (multi-level) timing wheel, 6 levels ×
-64 slots: level 0 slots are 1 ms wide over a 64 ms range, each level up
-multiplies the slot width by 64 (~4 s, ~4 min, ~4 hr, ~12 day), the top
-level reaches ~2 years. An entry is inserted at the level whose range
-covers its deadline and tiers down one level per expiry sweep until
-level 0, where it is handed out. Aura never touches the levels — it only
-calls `insert_at` / `remove` / `poll_expired`, so no hierarchy semantics
-(and no per-level tuning) live on our side. An expiry is therefore
-observed as soon as the driving `Sleep` wakes, at level-0 resolution
-(1 ms quantisation, subject to scheduler latency) — NOT on the 5-second
-evictor tick, and NOT with the ±5 s bound the original Consequences
-stated. There is still no sub-millisecond or exact-wall-clock guarantee,
-which is why the "no consumer needs better than tick precision" intent
-survives even though its number does not.
-
-**2. Two entry kinds.** The scheduling surface turned out to have two
-shapes, and the wheel holds both:
-
-- **Deliver entries** `(deliver_at, target, tag, durable)` — wake an
-  booth by delivering a `__on_timer` job (interrupt checks,
-  compression wakes, cron). Durable entries are written to the
-  StateStore's reserved namespace and re-`insert_at`-ed in the
-  `on_wake` restore path, exactly as §1 ruled.
-- **Reclaim entries** `(deliver_at, target, kind)` — nobody is coming;
-  take the resources back (idle-TTL eviction, execution watchdog).
-  The expiry action is NOT a job delivery but `evict_instance`
-  (on_sleep + session drop + reply-with-timeout for the watchdog's
-  target). Reclaim entries are always in-memory; they need CANCEL
-  (new work arrived → abort the pending idle timer), which is
-  `DelayQueue::remove` — the same cancel/re-arm API booths use.
-
-**3. idle_ttl is measured from job COMPLETION, not arrival.**
-`last_activity` keeps its meaning (observation surface: last job
-arrival) but no longer drives eviction. Instead: `run_job` cancels the
-instance's pending idle reclaim entry on entry (work arrived), and
-re-registers one at completion (deliver_at = now + idle_ttl). A long
-turn (an LLM call eating the whole TTL) can no longer expire the
-instance mid-execution — the reclaim entry simply does not exist while
-the job runs. The eviction-race clause this supersedes never existed
-in the original text; it was the flaw found when wiring residency to
-this ADR.
-
-**4. The execution watchdog is a reclaim entry with a declared
-budget.** `lifecycle.max_exec` (per-type, declared in
-`interface_schema` beside `idle_ttl`) registers a reclaim entry at job
-start (deliver_at = now + max_exec) and is cancelled at completion.
-Expiry = the instance exceeded its execution budget: evict (on_sleep,
-session drop) and fail the pending reply with a timeout error. This
-is maximum-duration control, not idleness measurement — the two
-concerns split cleanly along the two entry kinds.
+`lifecycle.max_exec` (per-type, declared in `interface_schema` beside
+`idle_ttl`) is the execution watchdog: it registers a reclaim entry at
+job start (`deliver_at = now + max_exec`) and cancels it at completion.
+Expiry means the instance exceeded its execution budget — evict
+(on_sleep, session drop) and fail the pending reply with a timeout
+error. This is maximum-duration control, not idleness measurement; the
+two concerns split cleanly along the two entry kinds.
 
 The evictor task remains only for `pending_calls` deadline sweeps
 (itself a future reclaim-entry migration); `evict_idle`'s linear scan
-is deleted — eviction is now timer-driven, O(expiry) not
-O(instances).
+is deleted — eviction is timer-driven, O(expiry) not O(instances).
+
+### 4. What does NOT change
+
+- The per-instance eviction semantics (on_sleep hook, session drop)
+  are untouched; only the trigger moved — the idle reclaim entry,
+  re-armed at job completion, replaces the linear scan on the
+  5-second tick.
+- `last_activity` remains the last-arrival observation surface; it no
+  longer decides eviction (see §3c). Timers are ordinary jobs at the
+  booth side.
+- No async runtime timer per entry (no `tokio::spawn` + `sleep` per
+  timer): one driver task per realm serves every entry, and durable
+  entries restore through `on_wake`.
 
 ## Why Not
 
@@ -232,14 +205,15 @@ O(instances).
   channels; the projection, checkpoint, and cursor are per (channel,
   member) — keying by user would re-merge what ADR-0008 split, and a
   user in two active channels would contend over one context.
-  Corrected to per-channel.
+  Rejected.
 - **Runtime-native cron (engine parses cron expressions)**: puts a
   scheduling DSL in the engine and forces fire-history tracking for
   catch-up semantics. The booth-side pattern needs only durable
   one-shot timers — everything else is the booth's policy. Rejected.
 - **`tokio::sleep`-per-timer tasks**: unbounded task count, and timers
   silently vanish with the process (no durable registration path).
-  The wheel scan shares the existing tick. Rejected.
+  One driver task serves ALL timers; the rejected shape is one task
+  per timer. Rejected.
 - **Implicit recurring timers**: an booth registering once and being
   woken forever hides residency cost and defeats idle-TTL. Re-arm
   stays explicit.
@@ -249,19 +223,20 @@ O(instances).
 - New runtime surface: `register_timer(target, deliver_at, tag,
   durable: bool) -> TimerId`, `cancel_timer(id)`, a reserved
   `__on_timer` delivery path, and durable-timer restore in the
-  activation/`on_wake` sequence. Booth-facing: `ctx.timer.register /
-  cancel` (ADR-0011 amended); declarative `lifecycle.cron` in
-  `interface_schema` translates to durable timers at registration.
-  The ctx bridge host-fn table moves from flat `ctx_state_*` names to
-  dot-namespaced groups (`ctx.store.*`, `ctx.timer.*`), introspectable.
-- ~~The evictor tick gains a wheel scan (same 5-second loop; the wheel
-  is checked before eviction so a due delivery preempts an eviction
-  that same tick).~~ *Superseded by Revision §1: the wheel self-drives.*
+  activation/`on_wake` sequence. The same queue carries the reclaim
+  entries behind idle-TTL eviction and the `lifecycle.max_exec`
+  watchdog. Booth-facing: `ctx.timer.register / cancel` (ADR-0011);
+  declarative `lifecycle.cron` in `interface_schema`
+  translates to durable timers at registration. The ctx bridge host-fn
+  table moves from flat `ctx_state_*` names to dot-namespaced groups
+  (`ctx.store.*`, `ctx.timer.*`), introspectable.
 - Gravity (per-channel instances) registers its interrupt and
   compression wakes through this surface; the krystallizer policy
   parameters (ADR-0008/0009) drive the durations, the aura timer
   drives the delivery.
-- ~~Timer granularity is bounded by the evictor tick (±5s); sub-tick
-  precision is a non-goal (no consumer needs it).~~ *Superseded by
-  Revision §1a: level-0 resolution (1 ms quantisation, scheduler
-  latency on top), no tick bound.*
+- Due entries fire the moment they expire: the queue self-drives with
+  one driver task per realm, and the 5-second evictor tick no longer
+  scans a wheel.
+- Timer resolution is level-0 (1 ms quantisation, scheduler latency on
+  top); there is no tick bound and no sub-millisecond or
+  exact-wall-clock guarantee.

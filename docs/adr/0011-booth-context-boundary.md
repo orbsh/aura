@@ -2,90 +2,63 @@
 
 **Status:** Accepted (2026-09-12)
 
-**Erratum (2026-09-23, ADR-0025):** the `ctx.metadata` surface listed below was reserved but never implemented; with the meta plane's dissolution (ADR-0025) it is withdrawn — `ctx.state` / `ctx.invoke` are the whole context surface. The text below is preserved as decided.
-
 ## Context
 
-The Booth entry function receives a single `ctx` argument. Across aura-architecture.md the
-surface has grown implicitly: `ctx.state` (§2.3, dual API with `ctx.metadata`), `ctx.invoke()`
-(§5.13), while `emit`/`on` appear as bare script-level functions and lifecycle hooks
-(`on_sleep`/`on_wake`) as script exports. No document had adjudicated the boundary — what
-belongs on ctx and what must stay off it. Without an explicit rule, every new capability
-(Effector targets, cold-call declarations, future timer APIs) risks drifting onto ctx by default,
-and the entry-function signature becomes an unprincipled grab-bag.
+A Booth sees exactly two things from the host: the ambient `ctx` object and, per delivery,
+the event payload as its handler's argument. Across aura-architecture.md the rest of the
+surface had grown implicitly: state over a flat document, `ctx.invoke()` (§5.13), while
+`emit`/`on` appeared as bare script-level functions and lifecycle hooks (`on_sleep`/`on_wake`)
+as script exports. No document had adjudicated the boundary — what belongs on ctx and what
+must stay off it. Without an explicit rule, every new capability (Effector targets, cold-call
+declarations, timer APIs) risks drifting onto ctx by default, and the entry-function signature
+becomes an unprincipled grab-bag.
 
 ## Decision
 
-**The criterion: ctx carries exactly the runtime capabilities that are (a) instance-identity-
-bound and (b) subject to Host control or record.** Everything else is expressed elsewhere.
+**The rule: ctx is one global object, bound once at load, carrying every name the HOST
+provides to the script. A definition the script offers the host — a handler, a lifecycle
+handler, the explicit `interface_schema` — lives in the module namespace and reaches ctx only
+through the registration primitive. Deployment-plane declarations sit on neither plane, and
+per-delivery entry data (the payload, the return) rides the call path.**
+
+ctx is a namespace, not an instance-identity token and not a parameter the handler threads
+around.
 
 ### On ctx
 
 | Capability | Rationale |
 |:--|:--|
-| `ctx.state` | This instance's state; per-instance Fjall/SlateDB path, WAL-per-field. Never leaves the node's data plane. |
-| `ctx.metadata` | Controlled metadata (registry, sharding, node-local config) in the meta okm instance — control-plane single-writer, no consensus; no cross-node global sync (user data stays on its home node). |
+| `ctx.store(op)` | One okm Collection instruction as data, against the owning type's declared ns; the handle is built at registration, so cross-type access is not expressible (ADR-0026 §3). Never leaves the node's data plane. |
 | `ctx.invoke()` | The single controlled call surface — timeout, audit, rate-limit, observability all terminate here (§5.13). Bypassing it (PyO3/httpx direct) is forbidden. Target resolution (HTTP / realm Booth / remote Effector) is registry-declared; CallSlot two-tier waiting is a runtime-level split invisible to the Booth. |
+| `ctx.iterate` / `dispose` | Streaming calls between booths, riding the same dispatch machinery as invoke (ADR-0034). The cursor belongs to the calling instance; the realm mints stream ids and owns the registry. |
+| `ctx.emit(event, data)` | Publish into the realm's MQ plane. Realm pub/sub does not depend on instance identity — the delivery partition comes from event data, not the emitter — and the emitter field carries the type name. |
+| `ctx.on(event, handler)` | The single registration primitive; the subscription phase gate is the rule that keeps dynamic subscription rejected. Legal at load/activation only — a message-phase call is an error value, and the assembled registry IS the persisted `interface_schema.receives`, the one contract source. |
+| `ctx.schema` | The persisted `interface_schema`, as data — reflection over the declaration, not a runtime capability. |
+| `ctx.timer.register(at, tag, durable)` / `ctx.timer.cancel(id)` | Delivery scheduling: non-blocking, explicit re-arm, delivery through the instance's own queue as an ordinary job; eviction still applies (ADR-0016). |
 
 ### Off ctx
 
 | Capability | Where it lives | Why off |
 |:--|:--|:--|
-| `emit(name, data)` / `on(name, fn)` | Script-level bare function / activation-time wiring | Realm pub/sub does not depend on instance identity (delivery partition comes from event data, not the emitter); emit is in-process MPSC fire-and-forget with no lifecycle to govern; `on` is part of the static contract (`interface_schema` receives/wildcard_receives), assembled at activation — putting it on ctx would imply dynamic runtime subscription. |
-| `interface_schema()` | Script export, called once by Host at startup | Definition-time contract, not a runtime capability. |
+| Entry-function `return` | Language-native | Host intercepts the return value and fills it into the reply. No `ctx.return(...)`; native failure is the outer error value. |
+| The event payload | The handler's argument position | Per-delivery entry data. A session-lifetime object carrying a value that changes under every call would either show staleness to a handler that saved the reference or be rebuilt per call. |
+| `interface_schema()` | Script export, called once by Host at startup; readable as `ctx.schema` | Definition-time contract, not a runtime capability. |
 | `set(lang, script)` | Deployment plane | Defines the Booth type; an executing Booth never sees it. |
-| `on_sleep` / `on_wake` | Script exports, Host-invoked | Direction is Host → Booth. ctx is what the Booth uses; hooks are what the Host calls. |
-| Entry-function `return` | Language-native | Host intercepts the return value and fills it into the reply_to oneshot. No `ctx.return(...)`. |
-| `@cron` / `on_debounce` timers | Declarative trigger modes | Timers deliver events (wake the Booth), they are not callable timer APIs. No `ctx.sleep()` / `ctx.every()`. |
+| Lifecycle handlers | Reserved event names (`__sleep` / `__wake`) bound through `ctx.on` | Direction is Host → Booth: the host's eviction/reactivation dispatch looks the binding up in the same registry the route table reads. |
+| `@cron` / `on_debounce` timers | Declarative trigger modes | Timers deliver events (wake the Booth), they are not callable timer APIs. No `ctx.sleep()` / `ctx.every()` — the blocking and self-scheduling forms stay rejected. |
 | Logging, computation, language stdlib | Host-language native | Anything requiring Host control is addressed through `ctx.invoke()` targets; the rest is the embedded language's own facilities. |
-
-
-## Update (2026-09-22, ADR-0016)
-
-The timer rejection narrows: **blocking / self-scheduling forms** (`ctx.sleep()`, `ctx.every()` — the booth stops to wait, or registers once and is woken forever) stay rejected. **Delivery scheduling** (`ctx.timer.register(at, tag, durable)` / `ctx.timer.cancel(id)` — non-blocking, explicit re-arm, delivery through the instance's queue) passes the criterion on both prongs: it is instance-identity-bound (the timer belongs to and fires back at this instance) and Host-controlled (delivery is a governed, auditable queue job; eviction still applies). `@cron` in `interface_schema` is confirmed as a declarative trigger: the Host introspects the declaration (same path as `lifecycle.idle_ttl`), translates it into durable one-shot timers, and re-arms are the booth's job on each delivery. See ADR-0016 for the full timer surface.
 
 ## Consequences
 
-- The entry-function signature stays minimal and stable: `(ctx, <event params>)`.
-- New capabilities face the criterion explicitly: instance-bound + Host-controlled → ctx;
-  static contract / Host-driven / realm-level → elsewhere. Effector capability targets
-  (`effector:<node_id>:<cap>`) land on `ctx.invoke()` under this rule with no signature change.
+- The entry-function signature stays minimal and stable: `(ctx, <event params>)` in, `return`
+  out.
+- New capabilities face the provider test explicitly: a name the host offers → ctx; a
+  definition the script offers → the module namespace, through the registration primitive;
+  a deployment declaration → neither plane; per-delivery entry data → the call argument and
+  the return. Effector capability targets (`effector:<node_id>:<cap>`) land on `ctx.invoke()`
+  under this rule with no signature change.
+- Instance-identity binding survives as content, not as an admission test: `ctx.store` and
+  `ctx.iterate` are scoped to the calling instance's type ns and stream cursor, while
+  `ctx.emit` is deliberately instance-free.
 - The wiki (aura-architecture.md §5.3) carries the user-facing statement of this boundary;
   this ADR is the decision record.
-
-## Errata (2026-09-28, updated 2026-09-29)
-
-The bounded list above (state / metadata / invoke) predates ADR-0034. The ctx
-surface now also carries `iterate` and its dual `dispose` — streaming calls
-between booths, riding the same dispatch machinery as invoke. They join this
-list under the same criterion that governed the original cut: instance-bound
-(the stream cursor belongs to the calling instance) and Host-controlled
-(the realm mints stream ids and owns the registry). No other rule changes.
-
-The state surface's SHAPE moved twice since the table above: the per-instance
-flat field document (`ctx.state` point get/set/delete) was replaced by
-type-scoped collections — `ctx.store.emit(op)` carrying okm Collection
-instructions against the owning type's declared ns (ADR-0026 §3, landed;
-the single-entry rule: one interface, the instruction is data). The bounded
-list reads: **store / invoke / iterate(+dispose)** — the capability
-discipline (instance-bound, Host-controlled, registry-declared) is unchanged
-through both moves. `ctx.metadata` stays withdrawn (ADR-0025).
-
-## Update (2026-10-10, ADR-0043) — the placement regime retires
-
-The two-prong admission test (instance-bound + Host-controlled) is replaced
-by a single direction test: **booth→host = a method on the ctx object;
-host→booth = exports/return; deployment = off both planes.** ctx is read as
-the ambient execution context of one delivery, not an instance-identity
-token. Consequences for this ADR's rulings: `emit` lands as `ctx.emit`
-(its script-level home was decided here but never injected anywhere — the
-gap 0043 closes); `on` lands as phase-gated `ctx.on` (activation only —
-the dynamic-subscription rejection survives, re-expressed as a timing rule
-with the persisted `interface_schema.receives` still the one contract
-source); `interface_schema` becomes a ctx member (as data) alongside its
-export form; the flat `ctx_*` names retire without aliases. The **entry
-stays native** rule (no ctx.return, native failure) is kept verbatim in
-force; the lifecycle-hook placement (on_sleep/on_wake as Host→Booth
-exports) is superseded — the fold-in of ADR-0043 §3 makes them reserved
-names in the one registration primitive. See 0043 for the full surface
-and migration.

@@ -90,6 +90,24 @@ stdlib 没有 CBOR 编解码。exec 没有帧词汇——一进一出各一个�
 `{done: true, value: <stdout>}`——脚本保持无协议（0036 §2），其后的
 流动词是点名错误值（cgi 形态不持驻留）。
 
+bgi 里的宿主调用与远程线路桥走同一套类型化帧词汇（invoke、iterate、store——
+ADR-0037 §2，4.16c 已落地）：判别符或动词错误在解码期失败并作为错误值应答，
+旧的自由函数名查表未命中已消失。`ctx_store_emit` 在 Phase 4.14 闸门 1 加入臂集
+（`HostOp::StoreEmit`——一条 okm 指令作为【数据】，effector 侧对 schema 不感知）；
+ADR-0037 §3 撤除了它的【入口】（类型化 `store` 帧承载同一份【数据】）。stdio 是
+既有操作的传输，不是新表面。信封（ADR-0034，由 ADR-0036 统一：一种形状，`done`
+永远是布尔，`value` 在终结轮）是可 CBOR 编码的 schema：原样穿过，帧协议继承其
+类型规则（`done` 是字段，永远不是哨兵）。
+
+**应答语义逐 target 静态声明。** Tier 与所载语言同属 booth/target 注册表
+（`CallSpec`，`crates/booth/src/call.rs`）：**Hot** 目标泊住调用方——guest
+的 `result` 必须在 deadline 内到达，到期本身即 failure value；**Cold** 目标
+永不泊：dispatch 返回 Pending，guest 何时作答何时经 `resolve_call` 再入
+（分钟级等待人或外部系统）。一个 handler 二选一——同时是 fire-and-forget
+又是 request-response 的调用不存在。`result` 也不是 booth 唯一的出站声音
+——actor 式的主动调用经类型化 `host` 帧在 handler 中途流出。所以线路不是
+普通 RPC，而是函数调用糖衣之下的 actor 基座。
+
 ### 4. 语言 = spawn 声明，不是载体
 
 载体只有一个；每语言的入口是 effector registry 里的 spawn 声明：`nu` =
@@ -215,21 +233,7 @@ ADR-0034（bgi 帧所承载的信封与 host-op 词汇）、ADR-0031（对外行
 对 bgi 实例不变）、effector 归属裁决（effector 执行交付的代码；spawn 就是
 执行）。
 
-## Update (2026-10-01) — 应答契约显式化（源自 mudra 扩展协议审查）
-
-§3 罗列了帧，却没有任何一句写明 guest 必须产出什么。实现里的答案早已存
-在于 `CallSpec`（`crates/booth/src/call.rs`）：**应答语义逐 target 静态
-声明**——Tier 与所载语言同属 booth/target 注册表（"static execution
-nature … declared at registration, never guessed at runtime"）。**Hot**
-目标泊住调用方：guest 的 `result` 必须在 deadline 内到达，到期本身即
-failure value——调用方永不泊住悬挂。**Cold** 目标永不泊：dispatch 返回
-Pending，guest 何时作答何时经 `resolve_call` 再入（分钟级等待人或外部系
-统）。一个 handler 二选一——同时是 fire-and-forget 又是 request-response
-的调用不存在。另值得重述：`result` 不是 booth 唯一的出站声音——actor
-式的主动调用经类型化 `host` 帧在 handler 中途流出。线格式一节读起来像普
-通 RPC；本注记录它的实底：函数调用糖衣之下的 actor 基座。
-
-采用记录：mudra 的扩展协议（`~/world/mudra/docs/ADR-extension-protocol.md`）
-采用本词汇表为线契约——profile 差异：无 `store` 臂（扩展状态归扩展自
-有）、仅 json-lines codec、`@on` 事件订阅声明在脚本的 interface_schema
-里、由会话 hello 携带。
+mudra 的扩展协议（`~/world/mudra/docs/ADR-extension-protocol.md`）采用本帧
+词汇表为线契约——profile 差异：无 `store` 臂（扩展状态归扩展自有）、仅
+json-lines codec、`@on` 事件订阅声明在脚本的 interface_schema 里、由会话
+hello 携带。

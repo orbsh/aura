@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0015-node-identity-ed25519.md) (primary) · [中文](0015-node-identity-ed25519.zh-CN.md)
 
-**Status:** Accepted (2026-09-20) — design; implementation pending, see Consequences
+**Status:** Accepted (2026-09-20) — landed: the trust-mode switch and disclosure (step 1), and the ed25519 handshake with its node registry and approval endpoints (step 2); account folding (step 3) pends Prism's account session surface
 
 ## Context
 
@@ -100,8 +100,9 @@ authorization path to the same record.
 
 ### 4. Approval is by public key, at the control plane
 
-The control plane keeps a node registry — `{ alias, public_key, status, created_at }`, and
-later `{ user }` — where `status` is `pending | approved | revoked`. Approving a node means
+The control plane — the connection plane's gateway, Prism — keeps a node registry —
+`{ alias, public_key, status, created_at }`, and later `{ user }` — where `status` is
+`pending | approved | revoked`. Approving a node means
 approving a specific public key; the alias remains a human-chosen display label and stops
 being security-relevant (two nodes sharing an alias are distinguishable by key, and a
 mismatch is `conflict`, not a takeover).
@@ -115,10 +116,11 @@ POST   /nodes/{alias}/approve                       → approve that public key
 DELETE /nodes/{alias}                               → revoke
 ```
 
-The surface is deliberately four endpoints over one record. When the account system exists
-(Prism's auth, Phase 1), the same records hang under the account: creation sets `user`, and
-every endpoint requires the logged-in user, so "the node registry" becomes "your nodes" with
-no record migration.
+The surface is deliberately four endpoints over one record, hosted by the connection plane:
+Prism's gateway owns the node registry (ADR-0017 §5/§7), so the endpoints ride Prism's routing
+surface under `/admin/...`. When the account system exists (Prism's auth, Phase 1), the same
+records hang under the account: creation sets `user`, and every endpoint requires the
+logged-in user, so "the node registry" becomes "your nodes" with no record migration.
 
 ### 6. Rotation and revocation
 
@@ -135,7 +137,8 @@ predictable names — a keypair handshake guards an entrance the network already
 holds for a rebound connection: a container inside an isolated network dialling out to a control
 plane that lives on the operator's own side.
 
-So the mode is a deployment-form declaration, not an assumption:
+So the mode is a deployment-form declaration, not an assumption — the `identity` field on
+Prism's gateway config:
 
 ```
 { "identity": "required" }   // ed25519 handshake: unapproved or keyless peers are answered, never served
@@ -207,8 +210,17 @@ of config that is legible in review.
   unapproved node is answered, never dropped.
 - **effector**: `keygen` (and first-start generation), `identity_file` in the config,
   `credential_env` deleted.
-- **aura gateway**: a node registry of approved keys replaces alias-inserts; the interim HTTP
-  surface; the silent replacement path is removed.
+- **Prism (connection plane)**: the `identity` config field (no default), the `open` / `required`
+  answers, the `unauthenticated` reply, the keypair handshake, the node registry and its four
+  endpoints under `/admin/...`, and the account folding. Auth data is a connection-plane
+  concern (ADR-0017 §5/§7); building it inside aura as well would give the decision two homes —
+  a second source of truth that dies the day Prism's gateway lands.
+- **aura**: the gateway correctness that holds regardless of who configures it — the replacement
+  discipline. An alias takeover stays permitted in the open posture (a restarted container must
+  reclaim its name) but is never silent: the gateway logs the event naming the alias and both
+  peer addresses, and the presence guard is identity-checked so the displaced connection cannot
+  unregister the new holder. The startup disclosure of the unauthenticated posture prints where
+  the current truth lives — the log.
 - **Superseded wording**: `engine/src/lib.rs`'s "namespace is derived from the user credential
   at registration". The namespace hangs off the account; the key only proves the machine —
   user identity and machine identity are separate axes.
@@ -217,10 +229,12 @@ of config that is legible in review.
 
 **Implementation order** (stated so it is not done in the wrong order):
 
-1. **Trust-mode switch and disclosure** — the `identity` field (no default) on the gateway, the
-   `open` registration path, the `unauthenticated` answer, and replacement surfacing. No key
-   material, no crypto dependency: this is what makes in-cluster and VPN deployments honest and
-   usable today, and it removes the silent alias replacement that is wrong in every mode.
+1. **Trust-mode switch and disclosure** — the `identity` field (no default) on Prism's gateway,
+   the `open` registration path, the `unauthenticated` answer. No key material, no crypto
+   dependency: this is what makes in-cluster and VPN deployments honest and usable today, and it
+   removes the silent alias replacement that is wrong in every mode. Aura's share is in place —
+   the takeover event naming the alias and both peer addresses, plus the identity-checked
+   presence guard.
 2. **Keypair handshake and node registry** — the `required` mode above: `challenge`, the signed
    `register`, `pending` / `conflict`, the node registry and its four endpoints.
 3. **Fold into account auth** — when Prism's auth exists, the records gain their owner and the
@@ -228,22 +242,3 @@ of config that is legible in review.
 
 Until step 2 is configured for a deployment, that deployment runs in `open` mode and its
 protection is the network boundary; the config says so, and the startup log says so.
-
-## Update — implementation attribution (2026-09-25)
-
-The decision stands; its landing split follows ADR-0017 §5/§7 (auth data lives in the
-connection plane, Prism). Building the `identity` mode switch, the node registry, and the
-approval endpoints inside aura would give the same decision two homes — a second source of
-truth that dies the day the Prism gateway lands. Attribution per surface:
-
-- **Prism (connection plane)**: the `identity` config field (no default), `open`/`required`
-  answers, the `unauthenticated` reply, the keypair handshake, the node registry and its four
-  endpoints, account folding. Lands with Prism's gateway work — the `GET /nodes` and friends
-  ride Prism's routing surface (`/admin/...`).
-- **Aura (this repo, LANDED 2026-09-25)**: the residue that is the gateway's own correctness
-  regardless of who configures it — the replacement discipline. An alias takeover stays
-  permitted in the open posture (a restarted container must reclaim its name) but is never
-  silent: the gateway logs the event naming the alias and both peer addresses; the presence
-  guard is identity-checked so the displaced connection cannot unregister the new holder.
-  Startup disclosure of the unauthenticated posture prints where the current truth lives
-  (the log), and moves to Prism when the mount does.

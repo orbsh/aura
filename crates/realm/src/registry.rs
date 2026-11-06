@@ -101,6 +101,11 @@ impl Realm {
                 // delivery by the `_ if wildcard` arm above.
                 _ => {}
             }
+            // The declaration's auth flag becomes the route's: one name, one place, and the
+            // venue's gate reads the table instead of re-parsing a schema.
+            if decl.auth {
+                self.router.gated(&decl.event, &booth.name);
+            }
             if let Err(e) = mq::route_put(
                 &self.mq,
                 &decl.event,

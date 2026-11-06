@@ -23,7 +23,7 @@ use aura_booth::{BoothType, InstanceId, InstanceKey as BKey};
 use aura_engine::Engine;
 use aura_realm::{mq, Realm};
 
-/// A keyed slice (the script's `(on "tick" "user_id")` resolves the
+/// A keyed slice (the script's `(on "tick" (hash "key" "user_id"))` resolves the
 /// payload's user_id into a named partition).
 fn named(key: &str) -> aura_realm::mq::InstanceKey {
     aura_realm::mq::InstanceKey::Named(key.to_string())
@@ -31,7 +31,7 @@ fn named(key: &str) -> aura_realm::mq::InstanceKey {
 
 fn script() -> &'static str {
     r#"
-(on "tick" "user_id" (lambda (args) (hash "got" (hash-ref args "n"))))
+(on "tick" (hash "key" "user_id") (lambda (args) (hash "got" (hash-ref args "n"))))
 (define (depth args) (ctx.queue.depth "tick"))
 (define (skip args) (ctx.queue.skip_to_head "tick") 1)
 (define (peek args) (ctx.queue.depth (hash-ref args "ev")))

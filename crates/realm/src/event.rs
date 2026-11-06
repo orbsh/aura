@@ -32,6 +32,9 @@ pub struct Route {
     /// The entry this route calls, when the declaration binds one (`on_as`). `None` = the event
     /// name is the entry.
     pub entry: Option<String>,
+    /// This event is served only to a sender with a bound user (the declaration's `auth`; the
+    /// venue's gate reads THIS, so the check costs one route lookup and no schema parse).
+    pub auth: bool,
 }
 
 /// Route table: exact map + wildcard prefixes (linear scan — wildcard
@@ -65,6 +68,7 @@ impl EventRouter {
             resolution,
             event: name,
             entry: None,
+            auth: false,
         });
     }
 
@@ -88,6 +92,7 @@ impl EventRouter {
             resolution,
             event: name,
             entry: Some(entry.into()),
+            auth: false,
         });
     }
 
@@ -111,6 +116,7 @@ impl EventRouter {
             },
             event: name,
             entry: None,
+            auth: false,
         });
     }
 
@@ -125,8 +131,30 @@ impl EventRouter {
                 resolution: RouteResolution::Singleton,
                 event: pattern.to_string(),
                 entry: None,
+                auth: false,
             },
         ));
+    }
+
+    /// Mark the route a declaration produced as gated: served only to a sender with a bound user.
+    /// Called once at registration — the DECLARATION carries the flag, the table carries the
+    /// answer the venue's gate reads, so the gate costs one lookup and parses nothing.
+    pub fn gated(&mut self, event: &str, booth_type: &str) {
+        let mut marked = false;
+        if let Some(routes) = self.exact.get_mut(event) {
+            for route in routes.iter_mut().filter(|r| r.booth_type == booth_type) {
+                route.auth = true;
+                marked = true;
+            }
+        }
+        if !marked && event.ends_with('*') {
+            let prefix = event.trim_end_matches('*');
+            for (p, route) in self.wildcard.iter_mut() {
+                if p == prefix && route.booth_type == booth_type {
+                    route.auth = true;
+                }
+            }
+        }
     }
 
     /// Drop every route bound to one booth type (hot-swap re-registration:

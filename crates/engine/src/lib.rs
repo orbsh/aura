@@ -207,6 +207,12 @@ impl Engine {
                             None => booth = booth.on(event.clone(), key_field),
                         }
                     }
+                    // THE SCRIPT'S OWN `auth` RIDES ITS EVENT DECLARATION (`@on(..., auth=True)`,
+                    // `(on event (hash "auth" #t) handler)`): the carrier derives it per receive,
+                    // and it lands on the same declaration the event name is written on.
+                    if spec.get("auth").and_then(serde_json::Value::as_bool) == Some(true) {
+                        booth = booth.gated();
+                    }
                 }
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {

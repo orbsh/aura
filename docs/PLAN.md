@@ -1281,3 +1281,5 @@ channel 一实例。
   `references/storage-value-model.md`）＋ `aura-dev` 技能；两仓 PLAN 有对应条目。
 - 明确不做（本会话记录）：内部时间 epoch（okm）、补偿性 cron 连跑、无标签回归
   调参、session 第二容器、channel 域画像。
+
+A RECEIVE DECLARATION CARRIES ITS OWN GATE 2026-11-06: `ReceiveDecl.auth` (and `Route.auth`, set once at registration by `EventRouter::gated`). The event name was already written on the declaration; the auth requirement was written again, in a schema block keyed by that name, and two spellings can disagree. Now a host says `.on_as("ui:turn.submit", "device", "turn").gated()`, a script says `@on(..., auth=True)` / `(on event (hash "auth" #t) h)` (the carrier derives it into the receive's entry, and `register_inner` reads it there), and the venue's gate reads the ROUTE — one lookup on the table delivery itself uses. Consequence worth naming: a gated declaration holds even when the body cannot be introspected (a missing guest binary no longer un-gates its events).

@@ -52,7 +52,7 @@ wasm 摊位在 carrier 缺原生能力时的 WASI HTTP host。realm 的职责止
    运行时能力问题，不是 realm 的配置问题。往节点的 KDL 里加 `outbound_http`，
    等于让 realm 去担保一条它在语义上无法解读的连接。
 3. **浏览器场景同样不需要远程摊位。** fluxen 用户的会话是**会话**，不是
-   **摊位**：它住在连接平面（prism，ADR-0017），auth block、account/session
+   **摊位**：它住在连接平面（prism，ADR-0017），auth 声明（读的是路由，不是 schema）、account/session
    前缀戳、流式订阅那一半已经在那里治理它。草稿的验收判据（「浏览器是远程摊
    位」）混淆了两个平面；浏览器是 prism 的参与者，realm 从来不会在一根自己没有
    拨出的 socket 背后看到摊位形态的东西。
@@ -103,7 +103,7 @@ ADR-0027）——不受影响，且是唯一的远程形态：控制平面把内
 ## 后果
 
 - **prism `docs/PLAN.md` Phase 1.8：** 从草稿讨论记录下的 DESIGN CONSTRAINTS 块
-  按本裁决改写——站得住的部分是 prism 自己的（会话平面、auth block、前缀戳、
+  按本裁决改写——站得住的部分是 prism 自己的（会话平面、auth 声明、前缀戳、
   Phase 1 流式那一半）；拨出/CBOR/远程摊位注册那一半删除。effector mount
   （`/effector/<alias>`）和节点注册表属 tier-1，不受影响。
 - **代码：** 无改动。`code_base_url` 保持节点级（ADR-0027 服务 tier-1）；远程摊位

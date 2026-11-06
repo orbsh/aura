@@ -160,6 +160,10 @@ pub struct ReceiveDecl {
     pub entry: Option<String>,
     pub resolution: RouteResolution,
     pub wildcard: bool,
+    /// This event is only served to a sender with a bound user (prism ADR-0017 §2's gate reads
+    /// it). ON THE DECLARATION, never in a second table: the event is already named here, and a
+    /// name written twice is a name that can disagree with itself.
+    pub auth: bool,
 }
 
 /// How an emit's target instances are resolved (event-flow.md §8.1/§8.2 —
@@ -258,6 +262,7 @@ impl BoothType {
             entry: None,
             resolution: RouteResolution::Field(key_field.into()),
             wildcard: false,
+            auth: false,
         });
         self
     }
@@ -276,6 +281,7 @@ impl BoothType {
             entry: Some(entry.into()),
             resolution: RouteResolution::Field(key_field.into()),
             wildcard: false,
+            auth: false,
         });
         self
     }
@@ -299,6 +305,7 @@ impl BoothType {
                 probe_field: probe_field.into(),
             },
             wildcard: false,
+            auth: false,
         });
         self
     }
@@ -310,7 +317,18 @@ impl BoothType {
             entry: None,
             resolution: RouteResolution::Singleton,
             wildcard: true,
+            auth: false,
         });
+        self
+    }
+
+    /// Say the declaration just made is served only to senders with a bound user. A chained
+    /// modifier, not another `on*` variant: the event is already named by the declaration above
+    /// it, and naming it once is the whole point of the field living on `ReceiveDecl`.
+    pub fn gated(mut self) -> Self {
+        if let Some(last) = self.receives.last_mut() {
+            last.auth = true;
+        }
         self
     }
 

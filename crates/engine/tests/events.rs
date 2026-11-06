@@ -860,6 +860,7 @@ async fn scan_route_fans_out_to_the_hit_rows() {
             probe_field: "email".into(),
         },
         wildcard: false,
+        auth: false,
     });
     engine.register(booth).await.unwrap();
 

@@ -66,9 +66,9 @@ The two shapes differ on every axis that matters:
    the realm the guarantor of a connection it cannot semantically interpret.
 3. **The browser case does not need remote booths either.** A fluxen
    user's session is a *session*, not a *booth*: it lives on the
-   connection plane (prism, ADR-0017), where the auth block, the
-   account/session prefix stamp, and the streaming subscription half
-   already govern it. The draft's acceptance test ("the browser is
+   connection plane (prism, ADR-0017), where the auth declaration (a
+   route fact, not a schema one), the account/session prefix stamp, and
+   the streaming subscription half already govern it. The draft's acceptance test ("the browser is
    a remote booth") conflated the two planes; the browser is prism's
    participant and the realm never sees a booth-shaped thing behind a
    socket it did not dial.
@@ -141,7 +141,7 @@ Two observations from the draft were correct and remain on the record:
 
 - **prism `docs/PLAN.md` Phase 1.8:** the DESIGN CONSTRAINTS block recorded
   from the draft's discussion is rewritten to this ruling — the parts that
-  stand are prism's own (session plane, auth block, prefix stamp, Phase 1
+  stand are prism's own (session plane, auth declaration, prefix stamp, Phase 1
   streaming half); the dial-out/CBOR/remote-booth registry half is removed.
   The effector mount (`/effector/<alias>`) and node registry are tier-1 and
   unaffected.

@@ -65,19 +65,42 @@ Cross-partition queries (aggregate every user's cart in a department; which chan
                         query: ctx.invoke(dept_stats, "d7")
 ```
 
+## Vocabulary: one concept, one word
+
+The execution side has a set of adjacent concepts, each holding one word, never told apart by a
+modifier (the rule is Fractal's "one concept, one word"):
+
+| word | what it is | what it answers |
+|---|---|---|
+| `effector` | the execution plane: `effector-{runtime,protocol,config}`, the dial-in node, the frame codec and the sandbox policy | where it runs, which codec, who may dial in, how the sandbox closes |
+| `carrier` | the mechanism: python / steel / induction, providing an executor | how this logic gets run |
+| `executor` | the execution unit: bound to one booth instance `(type, key)`, loads the logic once, runs one atom at a time, dropped on eviction | is this instance's module alive, where is its state, who answers this call |
+| `pool` | the concurrency slots of one executor, sized by the booth's concurrency declaration | how many calls this instance runs at once |
+| `residency` | the policy: how long an executor is kept warm (`idle_ttl`) | is keeping it warm worth the memory |
+| `instance` | the identity: `(booth_type, key)` | who this is |
+| `body` | the logic being executed: Rust / Script / Remote | what runs |
+
+Three rules. An effector owns N executors, never the reverse: the frame codec, the node handshake,
+the sandbox and the deployment config belong to the effector; whether the module is loaded, who
+answers `call()` and who evicts belong to the executor — "the effector runs inside an executor" is a
+sentence that means the words were used wrongly. Lifecycle is a policy, not an object: `residency`
+never names the execution unit (it answers "how long is it worth keeping warm", not "who executes").
+`session` names a conversation only — krystallizer's session as data, keyed `(channel, member)`; the
+execution unit is not a session, and neither is the frame channel that carries it (that is a `link`).
+
 ## Residency: whether to stay warm, in three ledgers
 
 Sleeping never loses data (state is durable, events stay in the queue); residency saves the **next activation's cost**: re-spawning the VM/effector, reloading the script, rebuilding in-memory state. `idle_ttl` is declared per booth type (`with_idle_ttl` builder, or the lifecycle section of `interface_schema`); not resident is the default — decide by comparing activation cost against the usage pattern:
 
 - **State-mutation flows (add to cart, change password) → no residency**: when the next operation appears is unpredictable; residency is pure waste. State is durable; activation rebuilds it.
 - **Stateless high-fanout queries (product listings) → depends on sharing**: when every query returns non-repeating content with nothing to cache, all that remains to save is the effector/VM start cost. If the listing is per-user, one user's refresh rate never beats the start cost → no residency. If the listing is shared by all users (the instance is a singleton or a handful of partitioned instances) and requests keep arriving → short residency (e.g. a 10s idle_ttl) — the effect is exactly a traditional cache, except the warm instance **is** the cache; no second caching facility.
-- **Long-lived sessions (gravity conversations, chat channels) → long residency**: real-time streaming applications; an active channel's messages nearly never stop, and within the residency window the activation cost is zero. When LLM call costs dwarf instance residency costs, residency is the obvious choice — exactly the turn-executor shape (Phase 6.5): long per-type TTL, same-session consecutive calls ride the in-memory oneshot, released at turn end or window expiry.
+- **Long-lived sessions (gravity conversations, chat channels) → long residency**: real-time streaming applications; an active channel's messages nearly never stop, and within the residency window the activation cost is zero. When LLM call costs dwarf instance residency costs, residency is the obvious choice — exactly the turn-executor shape (Phase 6.5): long per-type TTL, same-executor consecutive calls ride the in-memory oneshot, released at turn end or window expiry.
 
 The criterion in one sentence: **stay resident when the money saved (activation cost × expected arrivals within the window) exceeds the money spent (memory × window duration)** — per-type TTL is the mechanism that turns this judgment into a single declaration.
 
-## High-frequency state shape: game rooms (direct fjall writes vs session memory)
+## High-frequency state shape: game rooms (direct fjall writes vs executor memory)
 
-A real-time game room is the extreme case of state frequency, and it forces a boundary that was previously implicit — **how far direct collection writes into fjall scale, and when session memory becomes necessary**.
+A real-time game room is the extreme case of state frequency, and it forces a boundary that was previously implicit — **how far direct collection writes into fjall scale, and when executor memory becomes necessary**.
 
 The arithmetic first: 100 players × 20Hz tick = 2,000 field writes/s per room. A direct fjall write (in-process, no wire protocol round trip, no socket, no RTT) costs ~1µs, so a room consumes ~0.2% of one core — **direct fjall writes comfortably cover casual and mid-scale rooms**. Compare an external Redis at the same write rate: ~100µs RTT per write plus every room queued behind a single-threaded event loop. The in-process engine is two orders of magnitude faster; this is the "hierarchy is a physical constraint" principle applied again — when the state's consumer (the handler) and the storage live in the same process, out-of-process storage (Redis/Kafka) is a structural disadvantage, not a tuning problem.
 
@@ -86,11 +109,11 @@ The real costs on the direct-write path are not fjall itself but two secondary o
 - **JSON ↔ DynamicValue conversion** (the value.rs seam): once per field. Merge each frame into ONE snapshot write instead of 100 tiny per-field writes.
 - **Document-granularity semantic mismatch**: okm's per-field document write is designed for low-frequency fields; "one snapshot per frame" must collapse into a single put to keep snapshot semantics.
 
-Beyond that scale (denser ticks, more fields, more rooms), switch to the **session memory** shape:
+Beyond that scale (denser ticks, more fields, more rooms), switch to the **executor memory** shape:
 
 ```
-Direct fjall writes (default, casual/mid-scale)    Session memory (heavy: denser ticks / more fields)
-  One whole-frame snapshot put per tick into        Hot state lives in the resident session
+Direct fjall writes (default, casual/mid-scale)    Executor memory (heavy: denser ticks / more fields)
+  One whole-frame snapshot put per tick into        Hot state lives in the executor
   the collection = one native-encoded write,          (process memory) = zero serialization,
   ~µs                                                 plain memory-array access
   Crash recovery for free (state is always in        plain memory-array access
@@ -103,10 +126,10 @@ Direct fjall writes (default, casual/mid-scale)    Session memory (heavy: denser
 Decision criteria, in priority order:
 
 1. **Default to direct fjall writes** — the structurally cleaner shape: single source of truth (state is always in the engine), free crash recovery, zero ops surface. Confirm the budget first (write rate × field count × room count against the ~0.2%/room measurement); do not jump to memory on instinct.
-2. **Session memory only when the direct-write budget is exceeded** — and switching brings its recovery plan with it (event replay first: input events are already persisted in the MQ partition; replay = the existing backlog scan + cursor; a snapshot is merely a replay accelerator) and accepts the dual-authority boundary (session memory is the hot authority, the collection the low-frequency truth).
+2. **Executor memory only when the direct-write budget is exceeded** — and switching brings its recovery plan with it (event replay first: input events are already persisted in the MQ partition; replay = the existing backlog scan + cursor; a snapshot is merely a replay accelerator) and accepts the dual-authority boundary (executor memory is the hot authority, the collection the low-frequency truth).
 3. **Either way, frame-merge the input events** (clients sample at 20Hz; the server merges all inputs within one tick into a single event before it lands in the MQ) — standard input sampling for real-time multiplayer; it is what bounds the MQ write path.
 
-One-line criterion: **direct fjall writes are the default; session memory is an upgrade for "frame budget exceeded AND a replay/checkpoint plan exists", never the starting point.**
+One-line criterion: **direct fjall writes are the default; executor memory is an upgrade for "frame budget exceeded AND a replay/checkpoint plan exists", never the starting point.**
 
 The three-tier game-server mapping (prism connections / aura logic / effector execution) and the frame-driven vs message-driven gap: see PLAN Phase 8 and partitioning.md §5.
 
@@ -183,4 +206,4 @@ served by consuming a sibling booth (ADR-0031's ruling shape).
 | Long waits on external results | Timer wheel / event re-entry, no residency held |
 | Residency decision | per-type `idle_ttl`: mutation flows don't stay; shared high-frequency queries stay briefly (cache shape); long sessions / LLM calls stay long |
 | Pushing to online users | emit `outbound_message` (user_id in the payload) → the connection plane's outbound bridge pushes over WS; offline users via a per-user queue |
-| Per-frame high-frequency state (game rooms) | Default: direct fjall writes (whole-frame merged single put); switch to session memory + event-replay recovery only when the budget is exceeded |
+| Per-frame high-frequency state (game rooms) | Default: direct fjall writes (whole-frame merged single put); switch to executor memory + event-replay recovery only when the budget is exceeded |

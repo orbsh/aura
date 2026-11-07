@@ -57,9 +57,9 @@ FFI 边界驱动；wasm 内部由 guest 自己驱动。（steel 的 `(yield)` �
 call/cc，跨多次宿主驱动的引擎调用不可靠地续跑——记为被否决的 carrier
 变体；信封模式才是那里的诚实形态。）
 
-### 2. 流身份与 session 绑定
+### 2. 流身份与 executor 绑定
 
-流住在生产方的常驻 session 里（Phase 2.6——正是驻留让有状态的拉取协议
+流住在生产方的常驻 executor 里（Phase 2.6——正是驻留让有状态的拉取协议
 成为可能，不是巧合）。首应答决定形态：终止应答（`done: true`）是完整的
 invoke 式结果，不留下流；非终止应答铸出 `stream_id`，后续拉取经 realm 的
 登记表按它路由——一个帧身份，零新机制，关联从 `done` 导出，而不是靠
@@ -76,7 +76,7 @@ wrapper 挂 `GeneratorExit`）自动发 dispose；没有的（nushell，以及�
 
 ### 4. 驻留计时：idle_ttl 从流停止起算
 
-拉取就是 session 活动：每次 `next` 重置 idle 计时器，长流无需特别声明
+拉取就是 executor 活动：每次 `next` 重置 idle 计时器，长流无需特别声明
 即可让生产方保持驻留。流结束（耗尽或 dispose）时，经既有 timer API
 （ADR-0016）重新武装计时器，常规 `idle_ttl` 驱逐照常生效。provider 摊位
 像其它摊位一样声明 TTL——「TTL ≥ 流时长上界」的伪代价不存在。驻留中途
@@ -92,7 +92,7 @@ wrapper 挂 `GeneratorExit`）自动发 dispose；没有的（nushell，以及�
 provider 摊位模式要求生产方跨拉取持有流状态，常驻子进程天然满足这一点。
 provider（与 turn 摊位同样）是骑 induction 管道（`~/world/induction`）的
 Rust 驻留子进程：进程持有流状态，逐轮 pull 以信封应答，`done: true`
-收尾。脚本 carrier 是同一形态、状态住在 carrier 的 session 里的版本：
+收尾。脚本 carrier 是同一形态、状态住在 carrier 的 executor 里的版本：
 python handler——`httpx.stream`、解析 SSE、每个 token 事件一次 `yield`
 ——由 carrier 的原生生成器驱动信封。wasm 两侧都服务：作为消费方跑拉到
 done 的循环（没有可停放的宿主驱动生成器），作为生产方显式写信封——与

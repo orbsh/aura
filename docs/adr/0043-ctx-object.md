@@ -51,7 +51,7 @@ each name lived. And the one structural gap in the whole surface (script
 because it had no ctx home to fall into.
 
 The user's reframe: `ctx` is not "the instance-identity object" — it is
-the **global namespace of host-provided names**, bound once per session
+the **global namespace of host-provided names**, bound once per executor
 (the gRPC `context.Context` shape, read correctly: the context object is
 ambient and the request rides the parameter). Under that reading,
 identity-binding is not an admission test; it is optional content of
@@ -92,7 +92,7 @@ source))` — is deployment-plane and never visible to an executing booth.
 
 ### 2. The surface (one global object, grouped methods)
 
-Bound ONCE at load (the session's life); handlers reference it by the
+Bound ONCE at load (the executor's life); handlers reference it by the
 bare name `ctx`, never through their signature:
 
 ```
@@ -163,7 +163,7 @@ independent reasons, recorded because the ADR's §1 now stands on them.)
 
 1. **Provider split (§1)**: the payload is per-delivery entry data the
    host pushes to the handler — the most literally "argument" thing in
-   the system. Making it a ctx MEMBER meant a session-lifetime global
+   the system. Making it a ctx MEMBER meant an executor-lifetime global
    object carrying a value that changes under every call: either
    per-delivery rebinding of a global attribute (visible staleness for
    any handler that saved the reference) or a rebuilt object per call
@@ -187,14 +187,14 @@ The out-of-process carrier's `host: {type: …}` arms mirror the object's
 CALLABLE members (`invoke | iterate | store | emit | timer.register |
 timer.cancel | queue.depth | queue.skip_to_head | schema`) — the runtime
 round-trip set. Non-callable members have no arm: `self` is host-pushed
-into the guest's shim at spawn (session-stable), the payload rides the
+into the guest's shim at spawn (executor-stable), the payload rides the
 request frame (§4: the argument, and out-of-process the frame IS the
 argument channel), and `on`/`receives` live in the child's own load-time
 pass — the hello frame carries the assembled registry, there is no
 runtime on/receives frame (a child calling ctx.on after load fails its
 own shim-side phase gate, mirror-consistent). `emit` is fire-and-forget:
 the arm carries **no reply** (same shape as
-its script-level twin; a hung extension stalls the session only if it
+its script-level twin; a hung extension stalls the executor only if it
 also stalls reading stdout — the pipe timeout already governs that).
 The mudra extension protocol (its ADR-extension-protocol) rides the same
 vocabulary with its own profile deltas (no `store` arm there — that
@@ -211,8 +211,8 @@ ruling is unchanged).
   three-call shape **under the grouped names** `ctx.iterate.start` etc.
   — grouping is naming, cursor is the Rust form).
 - The flat `ctx_*` injection table retires; every language environment
-  receives one GLOBAL object bound at load and living for the session
-  (python: a module-level `ctx` bound ONCE at session load — not a
+  receives one GLOBAL object bound at load and living for the executor
+  (python: a module-level `ctx` bound ONCE at executor load — not a
   per-delivery parameter, handlers reference the name;
   steel: `ctx` global, the `ctx_*` names in today's steel docs retire;
   wasm: host fns keep a flat ABI — the object is the SOURCE-level shape,

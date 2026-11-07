@@ -55,7 +55,7 @@ async fn relief_valve_bridges_reaches_the_store_and_skip_moves_the_cursor() {
         .await
         .unwrap();
 
-    // Warm the resident session.
+    // Warm the executor.
     Realm::emit(
         &engine.realm,
         None,

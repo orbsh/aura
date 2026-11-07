@@ -1,5 +1,5 @@
 //! Ctx bridge: per-call ctx assembly and the host-bridge fn table for
-//! resident sessions. Split out of lib.rs per ADR-0029.
+//! executors. Split out of lib.rs per ADR-0029.
 
 use super::{dispatch_call, Realm, SharedRealm};
 use crate::{mq, store_exec};
@@ -36,9 +36,9 @@ impl Realm {
         // (Phase 1 single-node: the store is lock-free per operation. The
         // realm lock only guards registry/instances, never state.)
         // Weak on purpose: the dispatch closure is cloned into resident
-        // sessions (steel's register_fn requires 'static) and those live
-        // inside the realm's own Sessions map — a strong capture here is a
-        // reference cycle (realm → sessions → session → closure → realm)
+        // executors (steel's register_fn requires 'static) and those live
+        // inside the realm's own Executors map — a strong capture here is a
+        // reference cycle (realm → executors → executor → closure → realm)
         // that keeps the fjall Database open forever after engine drop.
         let dispatch_realm = Arc::downgrade(&self_arc);
         let iterate_realm = Arc::downgrade(&self_arc);
@@ -62,7 +62,7 @@ impl Realm {
             }),
             // ADR-0034: the iterate dispatch handle rides the same Weak
             // realm discipline — the cursor lives inside the consumer's
-            // resident session and may outlive single jobs.
+            // executor and may outlive single jobs.
             Arc::new(move |op| {
                 let realm = iterate_realm.clone();
                 Box::pin(async move {

@@ -251,7 +251,7 @@ inside a type is the identity** — the event name itself carries no subject.
    `router.on(event, booth.name, key_field)` + the persisted
    `mq::route_put(event, booth.name, key_field, wildcard)` — the row's subject
    (booth_id) is resolved by the FRAMEWORK, never written by the author.
-3. Reclaim every resident instance and session of the type (the previous source
+3. Reclaim every resident instance and its executor of the type (the previous source
    stops answering; the next message cold-starts on the new code — the instance
    map is a discardable hot cache: state lives in the type's collections, the
    backlog in the queues, replay rides the cursor).

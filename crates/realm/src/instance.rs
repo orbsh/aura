@@ -29,7 +29,7 @@ impl Realm {
             idle_ttl: Duration::from_secs(30),
             cursor_ttl: DEFAULT_CURSOR_TTL,
             router: event::EventRouter::default(),
-            sessions: effector_runtime::carrier::session::Sessions::new(),
+            executors: effector_runtime::carrier::executor::Executors::new(),
             effectors: HashMap::new(),
             code_base_url: None,
             pending_remote: HashMap::new(),
@@ -57,12 +57,12 @@ impl Realm {
             // __wake: fresh residency. Runs on first activation too —
             // symmetric with __sleep; a first-time wake is still a wake.
             // ADR-0043 §3: the hook lives in the type's hook table —
-            // Compiled runs directly, Declared rides the resident session
+            // Compiled runs directly, Declared rides the executor
             // (the handler VM executed ctx.on at load).
             if let Some(booth) = self.types.get(&id.booth_type) {
                 if let Some(hook) = booth.hooks.get("__wake").cloned() {
                     let body = booth.body.clone();
-                    let sessions = self.sessions.clone();
+                    let executors = self.executors.clone();
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -74,7 +74,7 @@ impl Realm {
                     Self::run_hook(
                         &hook,
                         Some(body),
-                        &sessions,
+                        &executors,
                         host,
                         id,
                         &ctx,
@@ -370,7 +370,7 @@ impl Realm {
             realm.schema_of(&id.booth_type).cloned().flatten(),
             id,
         );
-        let sessions = realm.sessions.clone();
+        let executors = realm.executors.clone();
         let effectors = realm.effectors.clone();
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
@@ -385,7 +385,7 @@ impl Realm {
                 // Remote effector execution (Phase 3): find the effector's live
                 // outbound connection, send Frame::Call (inline payload),
                 // await the correlated reply. The effector's resident
-                // sessions own the VM; no ctx bridge crosses the wire yet
+                // executors own the VM; no ctx bridge crosses the wire yet
                 // (host functions over WS arrive with the frame path).
                 let Some(conn) = effectors.get(&node_alias) else {
                     let _ = job.reply.send(Err(anyhow::anyhow!(
@@ -428,10 +428,10 @@ impl Realm {
                 // two instances of one remote type must never share the effector's
                 // resident runtime, and every handler of one instance must.
                 // `entry` is the handler the call addresses in the delivered code.
-                // Session key format (ADR-0042): `{type}/{key}` with the
+                // Executor key format (ADR-0042): `{type}/{key}` with the
                 // singleton's key segment EMPTY (it has no name) — InstanceKey's
                 // Display renders Named(k) as k and Singleton as "".
-                let session = format!("{}/{}", id.booth_type, id.key);
+                let executor = format!("{}/{}", id.booth_type, id.key);
                 // ADR-0036: the frame kind vocabulary is the stream
                 // vocabulary — every dispatch job crosses the wire as a
                 // stream op (invoke is a Start whose reply is terminal).
@@ -444,7 +444,7 @@ impl Realm {
                     call_id: call_id.clone(),
                     kind,
                     stream: Some(job.stream.clone()),
-                    session,
+                    executor,
                     entry: job.handler.clone(),
                     language,
                     // ADR-0037 §2: the declared codec crosses with the
@@ -464,9 +464,9 @@ impl Realm {
                 result
             }
             aura_booth::Body::Rust(handler) => {
-                // A Rust closure body has no resident session to hold a
+                // A Rust closure body has no executor to hold a
                 // stream (ADR-0034: the producer shape lives in the
-                // session — a recorded residual for Rust bodies). A
+                // executor — a recorded residual for Rust bodies). A
                 // Start is legal (the handler runs once — the invoke
                 // shape, wrapped to a terminal envelope per ADR-0036
                 // §2); the stream verbs after it are an error value,
@@ -489,9 +489,9 @@ impl Realm {
                 source,
                 encoding,
             } => {
-                // Resident sessions (Phase 2.6): one VM/child per booth
+                // Executors (Phase 2.6): one VM/child per booth
                 // instance, loaded once, called per event. Cross-call
-                // state lives in the session (module globals / the child's
+                // state lives in the executor (module globals / the child's
                 // own memory); eviction drops it. spawn_blocking so host
                 // fns may block on the async ctx. The out-of-process
                 // shapes carry the bridge over their channels (induction frames,
@@ -557,15 +557,15 @@ impl Realm {
                 };
                 let instance_key = format!("{}/{}", id.booth_type, id.key);
                 // Unified seam (ADR-0036): every job drives the
-                // session's iterate surface — the job's verb IS the
+                // executor's iterate surface — the job's verb IS the
                 // stream op (generator mode parks the native generator
-                // in the session; envelope mode re-invokes the handler
+                // in the executor; envelope mode re-invokes the handler
                 // with the injected `{stream_id, op}`; a plain handler's
                 // bare Start reply wraps to `{done:true,value}` AT THE
                 // CARRIER — `s.call` is no longer a dispatch arm).
                 let sjob = stream_op(&job);
                 // The instance's declared concurrency decides the residency
-                // (ADR-0046): a queue (the default) holds one session and orders
+                // (ADR-0046): a queue (the default) holds one executor and orders
                 // calls; a pool holds up to N and lets the extra call wait;
                 // `Unbounded` holds ONE and never waits, because the carrier
                 // pairs each reply with the request that asked for it.
@@ -573,7 +573,7 @@ impl Realm {
                     aura_booth::Concurrency::Unbounded => {
                         let call_host = host.clone();
                         tokio::task::spawn_blocking(move || {
-                            sessions.with_shared(
+                            executors.with_shared(
                                 &instance_key,
                                 &language,
                                 &source,
@@ -585,7 +585,7 @@ impl Realm {
                         })
                     }
                     concurrency => tokio::task::spawn_blocking(move || {
-                        sessions.with_slot_encoded(
+                        executors.with_slot_encoded(
                             &instance_key,
                             &language,
                             &source,
@@ -610,7 +610,7 @@ impl Realm {
         // derived from `done` (ADR-0036 §4):
         // - Start: a NON-terminal first reply gets the realm-minted
         //   stream id merged in (the consumer reads it back; no carrier
-        //   — session or remote effector — invents identities). A terminal
+        //   — executor or remote effector — invents identities). A terminal
         //   first reply is the invoke shape: no id merged (no stream
         //   opened), and the registration unwinds immediately — mint
         //   and discard costs nothing measurable and keeps ONE code
@@ -689,7 +689,7 @@ impl Realm {
         if let Some(booth) = locked.types.get(&id.booth_type) {
             if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                 let body = booth.body.clone();
-                let sessions = locked.sessions.clone();
+                let executors = locked.executors.clone();
                 let ctx = Self::ctx_for(
                     realm.clone(),
                     locked.mq.clone(),
@@ -702,7 +702,7 @@ impl Realm {
                     Self::run_hook(
                         &hook,
                         Some(body),
-                        &sessions,
+                        &executors,
                         host,
                         id,
                         &ctx,
@@ -715,7 +715,7 @@ impl Realm {
                 }
             }
         }
-        locked.sessions.evict(&format!("{}/{}", key.0, key.1));
+        locked.executors.evict(&format!("{}/{}", key.0, key.1));
     }
 
     pub async fn watchdog_expiry(realm: SharedRealm, id: &InstanceId) {
@@ -724,7 +724,7 @@ impl Realm {
 
     /// The delivery-arm host bridge, assembled for a hook dispatch (the
     /// verbatim run_job Script-arm assembly, extracted): a hook-spawned
-    /// resident session must carry the SAME ctx face later deliveries
+    /// executor must carry the SAME ctx face later deliveries
     /// reuse — the slot is shared.
     fn delivery_bridge_for(
         &self,
@@ -777,10 +777,10 @@ impl Realm {
 
     /// One lifecycle hook dispatch (ADR-0043 §3): a Compiled hook runs the
     /// Rust handler directly; a Declared hook rides the instance's resident
-    /// session — the handler the script bound at load under the reserved
+    /// executor — the handler the script bound at load under the reserved
     /// name, called with the payload the runtime chooses (Null; the hook
     /// reads its situation from ctx, not from a per-delivery payload).
-    /// Script sessions wrap a plain return to the terminal envelope
+    /// Script executors wrap a plain return to the terminal envelope
     /// (ADR-0036 §2) — the value is discarded, failures surface as errors
     /// (eviction proceeds regardless: the hook is advisory, state lives in
     /// the type's collections).
@@ -788,7 +788,7 @@ impl Realm {
     async fn run_hook(
         hook: &aura_booth::HookBody,
         body: Option<aura_booth::Body>,
-        sessions: &effector_runtime::carrier::session::Sessions,
+        executors: &effector_runtime::carrier::executor::Executors,
         host: Option<effector_runtime::carrier::HostBridge>,
         id: &InstanceId,
         ctx: &aura_booth::Ctx,
@@ -798,9 +798,9 @@ impl Realm {
         // NO realm lock here: every call site holds the realm mutex (the
         // activation path runs inside `instance()`, awaited under the
         // caller's guard) — re-locking inline deadlocks. The caller
-        // captures body + sessions BEFORE awaiting; the blocking session
+        // captures body + executors BEFORE awaiting; the blocking executor
         // work runs in spawn_blocking against the (lock-free per-op)
-        // sessions registry.
+        // executors registry.
         match hook {
             aura_booth::HookBody::Compiled(h) => h(ctx, serde_json::Value::Null).await.map(|_| ()),
             aura_booth::HookBody::Declared => match body {
@@ -811,21 +811,21 @@ impl Realm {
                 }) => {
                     let instance_key = format!("{}/{}", id.booth_type, id.key);
                     let name = name.to_string();
-                    let sessions = sessions.clone();
+                    let executors = executors.clone();
                     // The bridge rides like the delivery arm's: a
-                    // hook-spawned session IS the resident session later
+                    // hook-spawned executor IS the executor later
                     // deliveries reuse — spawning it host-less would
                     // poison the slot (its bridge would lack every ctx
                     // method the booth's handlers call).
                     // The hook rides the instance's residency on the SAME terms
                     // the calls do (ADR-0046): a booth that declared `unbounded`
-                    // serves its hooks from its one shared session, never from a
+                    // serves its hooks from its one shared executor, never from a
                     // second process opened beside it.
                     match concurrency {
                         aura_booth::Concurrency::Unbounded => {
                             let call_host = host.clone();
                             tokio::task::spawn_blocking(move || {
-                                sessions.with_shared(
+                                executors.with_shared(
                                     &instance_key,
                                     &language,
                                     &source,
@@ -839,7 +839,7 @@ impl Realm {
                             })
                         }
                         concurrency => tokio::task::spawn_blocking(move || {
-                            sessions.with_slot_encoded(
+                            executors.with_slot_encoded(
                                 &instance_key,
                                 &language,
                                 &source,
@@ -962,7 +962,7 @@ impl Realm {
             if let Some(booth) = self.types.get(&key.0) {
                 if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                     let body = booth.body.clone();
-                    let sessions = self.sessions.clone();
+                    let executors = self.executors.clone();
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
@@ -974,7 +974,7 @@ impl Realm {
                     if let Err(e) = Self::run_hook(
                         &hook,
                         Some(body),
-                        &sessions,
+                        &executors,
                         host,
                         &inst.id,
                         &ctx,
@@ -989,12 +989,12 @@ impl Realm {
                     }
                 }
             }
-            // The resident session dies WITH the instance: the VM/PTY
+            // The executor dies WITH the instance: the VM/PTY
             // holds no durable truth (durable state lives in the type's
             // declared collections, ADR-0026 §3), so eviction is a plain
-            // drop. The next activation cold-starts a fresh session and
+            // drop. The next activation cold-starts a fresh executor and
             // reloads the source.
-            self.sessions.evict(&format!("{}/{}", key.0, key.1));
+            self.executors.evict(&format!("{}/{}", key.0, key.1));
             evicted.push(inst.id);
         }
         evicted
@@ -1015,15 +1015,15 @@ impl Realm {
             loop {
                 tick.tick().await;
                 let Some(realm) = realm.upgrade() else { break };
-                let sessions;
+                let executors;
                 {
                     let mut locked = realm.lock().await;
                     locked.sweep_deadlines().await;
-                    sessions = locked.sessions.clone();
+                    executors = locked.executors.clone();
                 }
                 // The exec sweep takes only the registry lock briefly per
                 // slot — never held across anything blocking.
-                let _dead = sessions.sweep_dead();
+                let _dead = executors.sweep_dead();
             }
         });
     }
@@ -1034,14 +1034,14 @@ impl Realm {
     }
 }
 
-/// Build the session-facing stream op from a job (ADR-0034, unified
+/// Build the executor-facing stream op from a job (ADR-0034, unified
 /// seam ADR-0036 — every verb is a stream op now; a plain handler's bare
 /// Start reply wraps to `{done:true,value}` at the carrier). Every verb
-/// carries handler + args: envelope-mode sessions re-invoke the handler
+/// carries handler + args: envelope-mode executors re-invoke the handler
 /// each turn (the guard state is theirs, the args are the stream's
-/// start args), generator-mode sessions use only the stream id.
-pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::session::StreamOp {
-    use effector_runtime::carrier::session::StreamOp;
+/// start args), generator-mode executors use only the stream id.
+pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::executor::StreamOp {
+    use effector_runtime::carrier::executor::StreamOp;
     let stream_id = job.stream.clone();
     match job.kind {
         aura_booth::JobKind::Start => StreamOp::Start {

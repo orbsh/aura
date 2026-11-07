@@ -268,7 +268,7 @@ async fn python_script_booth() {
 
 // A script booth naming a language this build does not carry is an error
 // value on the call path — the same validate-at-dispatch rule as effector.
-// (Carrier-free assertion: the unknown language never resolves a session.)
+// (Carrier-free assertion: the unknown language never resolves a executor.)
 #[tokio::test]
 async fn script_unknown_language_is_error_value() {
     let engine = Engine::start(&Default::default())
@@ -489,12 +489,12 @@ def execute(args):
 }
 
 // Residency is EPHEMERAL: idle eviction drops the VM with the instance
-// (Phase 2.6 wiring). In-session memory state (module globals) restarts;
+// (Phase 2.6 wiring). In-executor memory state (module globals) restarts;
 // store state (declared collections) survives — durable truth is only the
 // store.
 #[cfg(feature = "python")]
 #[tokio::test]
-async fn idle_eviction_drops_the_resident_session() {
+async fn idle_eviction_drops_the_executor() {
     let engine = Engine::start(&Default::default())
         .await
         .expect("engine boot");
@@ -530,7 +530,7 @@ def bump(args):
     assert_eq!(
         out,
         serde_json::json!({"memory": 2}),
-        "same session accumulates"
+        "same executor accumulates"
     );
 
     {
@@ -547,7 +547,7 @@ def bump(args):
     assert_eq!(
         out,
         serde_json::json!({"memory": 1}),
-        "evicted session restarted fresh"
+        "evicted executor restarted fresh"
     );
 }
 
@@ -756,7 +756,7 @@ def audit(args):
 // Hot-swap re-registration (PLAN 4.5 tail): registering the SAME type
 // REPLACES the version everywhere the old one lived — router routes, the
 // persisted EventRoute registry, and resident execution (the old source
-// in the resident session must not keep answering calls).
+// in the executor must not keep answering calls).
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn re_register_replaces_routes() {
@@ -779,7 +779,7 @@ async fn re_register_replaces_routes() {
         assert_eq!(realm.router.matches("evt.a").len(), 1);
         assert_eq!(realm.router.matches("evt.b").len(), 1);
     }
-    // Resident on v1 first — the swap must rebuild the session on v2.
+    // Resident on v1 first — the swap must rebuild the executor on v2.
     let out = engine
         .invoke(
             aura_booth::InstanceId {
@@ -818,7 +818,7 @@ async fn re_register_replaces_routes() {
         let rows = aura_realm::mq::routes_of_booth(&realm.mq.clone(), "swapper").unwrap();
         assert_eq!(rows.len(), 1, "EventRoute table holds only evt.a: {rows:?}");
     }
-    // Execution rides the NEW source: the v1 session was reclaimed, the
+    // Execution rides the NEW source: the v1 executor was reclaimed, the
     // cold start loads v2.
     let out = engine
         .invoke(
@@ -833,7 +833,7 @@ async fn re_register_replaces_routes() {
         .unwrap();
     assert_eq!(
         out["got"], "v2",
-        "resident session replaced with the new version"
+        "executor replaced with the new version"
     );
 }
 

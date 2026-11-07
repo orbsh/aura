@@ -159,7 +159,7 @@ impl Engine {
             if booth.concurrency == aura_booth::Concurrency::Queued {
                 match schema.get("lifecycle").and_then(|l| l.get("concurrency")) {
                     // A number is a pool size: 1 queues, n > 1 overlaps with n
-                    // resident sessions.
+                    // executors.
                     Some(serde_json::Value::Number(n)) => {
                         if let Some(slots) = n.as_u64().map(|s| usize::try_from(s).unwrap_or(1)) {
                             booth.concurrency = if slots <= 1 {
@@ -169,7 +169,7 @@ impl Engine {
                             };
                         }
                     }
-                    // `"unbounded"` is the word for "one session, no queue".
+                    // `"unbounded"` is the word for "one executor, no queue".
                     Some(serde_json::Value::String(s)) if s == "unbounded" => {
                         booth.concurrency = aura_booth::Concurrency::Unbounded;
                     }
@@ -224,7 +224,7 @@ impl Engine {
             // `hooks` array seeds Declared entries — the handler lives in
             // the resident VM (bound under the reserved name at load); the
             // realm's eviction/reactivation dispatch calls it through the
-            // session. Script `ctx.on("__sleep", h)` is the whole flow.
+            // executor. Script `ctx.on("__sleep", h)` is the whole flow.
             if let Some(hooks) = schema.get("hooks").and_then(|h| h.as_array()) {
                 for name in hooks.iter().filter_map(|n| n.as_str()) {
                     booth = booth.hook_declared(name);

@@ -3,7 +3,7 @@
 //! the `induction_loop` fixture speaking the line protocol), and a bare
 //! one-shot booth registers with `language = "exec"` (the `one_shot`
 //! fixture: one JSON in, one JSON out, nothing survives). Both run
-//! through the realm's resident-session dispatch — the shapes differ,
+//! through the realm's executor dispatch — the shapes differ,
 //! the machinery does not.
 //!
 //! exec (the bare cgi shape) has no protocol and no residency — handled
@@ -34,7 +34,7 @@ fn bin(name: &str) -> String {
     full
 }
 
-/// Plain call: the realm's script arm dispatches into the induction session
+/// Plain call: the realm's script arm dispatches into the induction executor
 /// like any carrier — the child answers the request frame with a result.
 #[tokio::test]
 async fn induction_booth_invoke() {
@@ -81,7 +81,7 @@ async fn induction_booth_invoke() {
 
 /// ADR-0043 §3 e2e: the child's schema reply carries the reserved `hooks`
 /// array; engine.register seeds Declared entries from it, and the realm's
-/// wake/evict dispatch calls the session BY THE RESERVED NAME. Observed
+/// wake/evict dispatch calls the executor BY THE RESERVED NAME. Observed
 /// through the loop's own hook arms: __wake runs on first activation
 /// (before the first job), __sleep around eviction (idle_ttl expiry) —
 /// a real Named instance is driven through a full wake→sleep cycle.
@@ -114,7 +114,7 @@ async fn induction_booth_declared_hooks_run_through_the_realm() {
 
     // Idle expiry (300ms) evicts: __sleep runs around the eviction. The
     // hook is advisory — eviction proceeds regardless of its result —
-    // but a BROKEN dispatch (wrong name, session mismatch) would surface
+    // but a BROKEN dispatch (wrong name, executor mismatch) would surface
     // as the hook error on stderr AND, worse shape, a panic. Sleep past
     // the TTL and re-invoke: the reactivation must succeed, proving the
     // cycle closed (evicted with __sleep → reactivated with __wake).
@@ -237,7 +237,7 @@ async fn induction_booth_iterate_through_realm() {
 }
 
 /// Induction residency: eviction reaps the child, re-invocation cold-starts
-/// (the same session lifecycle as every embedded carrier).
+/// (the same executor lifecycle as every embedded carrier).
 #[tokio::test]
 async fn induction_booth_eviction_reaps_the_child() {
     let engine = Engine::start(&Default::default())
@@ -261,7 +261,7 @@ async fn induction_booth_eviction_reaps_the_child() {
     assert!(engine.realm.lock().await.is_resident(&target));
 
     // Drive eviction directly (not the 5s tick): the instance evict runs
-    // sessions.evict — the induction slot's Drop closes stdin + reaps.
+    // executors.evict — the induction slot's Drop closes stdin + reaps.
     aura_realm::Realm::evict_instance(engine.realm.clone(), &target).await;
 
     // Cold start: the next call spawns a fresh child and works.

@@ -1,5 +1,5 @@
 //! Phase 3 end-to-end: a real effector dials the engine's effector gateway; the
-//! realm routes an invoke through the wire; the effector's resident session
+//! realm routes an invoke through the wire; the effector's executor
 //! executes; the result round-trips.
 #![allow(
     clippy::unwrap_used,

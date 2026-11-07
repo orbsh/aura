@@ -1,7 +1,7 @@
 # ADR-0046 — Concurrency is the booth's declaration, and a queue is only one of its answers
 
-**Status:** Accepted. Landed in the realm's dispatch (`realm/src/instance.rs`), the session
-carrier's registry (`effector-runtime` `carrier/session.rs`), the induction carrier's reader
+**Status:** Accepted. Landed in the realm's dispatch (`realm/src/instance.rs`), the executor
+carrier's registry (`effector-runtime` `carrier/executor.rs`), the induction carrier's reader
 (`carrier/exec.rs`), the type definition (`aura-booth`), the schema's introspection path
 (`aura-engine`), and the guest's ctx labelling (`induction-protocol` `HostFrame::call`,
 `induction-guest` `Ctx`).
@@ -15,7 +15,7 @@ specific case: a body that cannot be re-entered while its resident state is kept
 speed.
 
 We were paying that workaround everywhere. Every script booth's calls went through one
-mutex, held for the whole handler: `Sessions::with_session_encoded` locked the instance's
+mutex, held for the whole handler: `Executors::with_executor_encoded` locked the instance's
 slot and ran the call inside it. For a Python booth with one VM behind a GIL that is right.
 For a Rust guest that handles each call on its own stack it was pure loss — and it was
 measurable: two rounds of 1.5 s and 0.8 s against one gravity turn instance took **2.35 s**
@@ -36,28 +36,28 @@ its residency to match.**
    `unbounded` is the third shape). The host's builder wins over the script's own word, the
    rule every other lifecycle fact here already follows.
 
-2. **`Queued` — the default — is one call at a time, in arrival order.** One resident session.
+2. **`Queued` — the default — is one call at a time, in arrival order.** One executor.
    A booth that says nothing keeps exactly the behaviour every existing booth had. This is the
    answer for a body that is not re-entrant: an interpreter holding one VM behind a GIL, a
-   session that carries mutable state from call to call, anything whose correctness assumes
+   executor that carries mutable state from call to call, anything whose correctness assumes
    "nobody else is inside me".
 
-3. **`Pool { slots }` is up to `slots` resident sessions running calls side by side** — the
-   php-fpm shape. A call takes a free slot; a call that finds them all busy opens a new session
+3. **`Pool { slots }` is up to `slots` executors running calls side by side** — the
+   php-fpm shape. A call takes a free slot; a call that finds them all busy opens a new executor
    while the pool is under `slots`; a call past `slots` waits. The count is the parallelism AND
    the residency the booth is willing to pay for (a process each, on a process carrier).
 
-4. **`Unbounded` is ONE resident session with any number of calls in flight — no queue, no
+4. **`Unbounded` is ONE executor with any number of calls in flight — no queue, no
    cap.** This is the shape a booth wants when its own process can already serve several
    requests at once: the parallelism is the process's, and a second process buys nothing. What
    makes it possible is the wire, not the runtime: every request frame carries an id, the child
    answers by that id, and a ctx frame from the child names the request it serves
    (`HostFrame::call`) — so a tool call made inside round A is answered from round A's bridge,
    never round B's. `Unbounded` is therefore only for carriers with a **concurrent surface**
-   (`SharedSession`); a carrier without one is a declaration error, not a silent queue, because
+   (`SharedExecutor`); a carrier without one is a declaration error, not a silent queue, because
    a booth that promised overlap must not look like it has it.
 
-5. **The carrier became a router, not a conversation.** An induction session used to exchange
+5. **The carrier became a router, not a conversation.** An induction link used to exchange
    request→reply inside the caller's own stack, which made the process serial no matter what
    the child could do. It now owns a reader THREAD that takes frames off the child's stdout, a
    `pending` map that wakes each request's waiter by id, `bridges` keyed by request id for ctx
@@ -85,14 +85,14 @@ its residency to match.**
   such a booth; what bounds it is the guest's own runtime — its threads, its fd's, the model's
   latency. A booth that wants a cap declares `Pool { slots }` and pays for slots.
 - **Parallelism and residency are one declaration.** "How much may run at once" and "how much
-  residency am I willing to keep" are the same value, because a slot IS a resident session;
-  `Unbounded` is the case where a single session is enough for any number of calls.
+  residency am I willing to keep" are the same value, because a slot IS a executor;
+  `Unbounded` is the case where a single executor is enough for any number of calls.
 - **A widened declaration replaces the pool; it does not mutate a running one.** Sessions in
   the old pool finish their in-flight calls and are dropped; the next call lands in a pool
   sized for the new declaration.
 - **Eviction and the queue do not fight.** A call past capacity waits on a slot, not on the
   instance, so idle-reclaim still sees "work arrived" and the watchdog still arms per job.
-- **Eviction now ends the process.** The induction session kills and reaps its child on drop;
+- **Eviction now ends the process.** The induction link kills and reaps its child on drop;
   without that, a realm that evicts booths leaks children for the life of the host.
 
 ## Tests

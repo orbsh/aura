@@ -50,7 +50,7 @@ pub enum Body {
     /// Remote effector booth (Phase 3): the body lives on a effector node that
     /// dialed into THIS control plane. `node_alias` addresses the effector's
     /// outbound connection; `language` + `source` are delivered per call
-    /// (inline payload). The effector executes in its resident sessions.
+    /// (inline payload). The effector executes in its executors.
     Remote {
         node_alias: String,
         language: String,
@@ -80,7 +80,7 @@ pub use induction_protocol::Encoding;
 /// construction-side `.hook(name, handler)` builder (a `Compiled` entry);
 /// script bodies declare `ctx.on("__sleep", h)` at load, the introspected
 /// schema carries the names, and the realm executes them through the
-/// instance's session (`Declared` entries). Not MQ routes: the hook table
+/// instance's executor (`Declared` entries). Not MQ routes: the hook table
 /// never enters `receives`.
 #[derive(Clone)]
 pub struct BoothType {
@@ -117,19 +117,19 @@ pub struct BoothType {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Concurrency {
-    /// One at a time, in arrival order, one resident session. The default, and
+    /// One at a time, in arrival order, one executor. The default, and
     /// the right answer for a body that cannot be re-entered: an interpreter
-    /// holding one VM behind a GIL, a session carrying mutable state between
+    /// holding one VM behind a GIL, a executor carrying mutable state between
     /// calls, anything whose correctness assumes nobody else is inside.
     #[default]
     Queued,
-    /// Up to `slots` resident sessions run calls side by side; a call past
+    /// Up to `slots` executors run calls side by side; a call past
     /// `slots` waits for one to free — the php-fpm pool, where the count is
     /// both the parallelism and the residency the booth is willing to pay for.
     Pool {
         slots: usize,
     },
-    /// ONE resident session, any number of calls in flight. For a carrier that
+    /// ONE executor, any number of calls in flight. For a carrier that
     /// pairs every reply with the request that asked for it (induction's
     /// request ids), so overlap costs no extra process and no queue: the
     /// process's own concurrency IS the limit.
@@ -137,7 +137,7 @@ pub enum Concurrency {
 }
 
 impl Concurrency {
-    /// How many resident sessions an instance may hold.
+    /// How many executors an instance may hold.
     pub fn slots(self) -> usize {
         match self {
             Concurrency::Queued => 1,
@@ -204,7 +204,7 @@ pub type Handler = dyn for<'a> Fn(&'a Ctx, Value) -> futures_boxed::BoxFuture<'a
 
 /// One lifecycle hook's body (ADR-0043 §3): a Rust body's compiled
 /// handler, or a script body's DECLARED name — the handler lives in the
-/// resident VM and the realm calls it through the session by the same
+/// resident VM and the realm calls it through the executor by the same
 /// reserved name.
 #[derive(Clone)]
 pub enum HookBody {
@@ -371,7 +371,7 @@ impl BoothType {
         self
     }
 
-    /// Declare a POOL of `slots` resident sessions (ADR-0046): calls up to
+    /// Declare a POOL of `slots` executors (ADR-0046): calls up to
     /// `slots` run side by side, and a call past that waits.
     pub fn concurrent(mut self, slots: usize) -> Self {
         self.concurrency = Concurrency::Pool {
@@ -380,7 +380,7 @@ impl BoothType {
         self
     }
 
-    /// Declare that ONE resident session serves every call at once (ADR-0046):
+    /// Declare that ONE executor serves every call at once (ADR-0046):
     /// no queue, no second process. Only a carrier that pairs replies with their
     /// requests can do it — an induction child can; an embedded interpreter
     /// cannot, and says so with an error rather than a silent queue.
@@ -556,7 +556,7 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Decode the JSON envelope a session returned. Structural errors
+    /// Decode the JSON envelope a executor returned. Structural errors
     /// (non-object, missing `done`, cross-field violations) are failure
     /// values — the pull itself failed, distinct from a mid-stream
     /// producer error. The generator-mode null reply is gone (ADR-0036
@@ -611,7 +611,7 @@ impl Envelope {
 }
 
 /// A live stream cursor (ADR-0034, unified envelope ADR-0036): the
-/// consumer's handle to a producer session's state. Lazily started — the
+/// consumer's handle to a producer executor's state. Lazily started — the
 /// first `next()` sends Start (the stream id is minted by the realm) and
 /// then pulls; every later `next()` pulls. Stream association derives
 /// from `done`, never from a positional field-presence heuristic (0036

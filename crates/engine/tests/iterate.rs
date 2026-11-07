@@ -112,7 +112,7 @@ async fn break_sends_dispose() {
     assert_eq!(out, serde_json::json!({ "got": ["a"] }));
 
     // The consumer broke after one item; dispose must have removed the
-    // realm's routing entry (the session-side generator got
+    // realm's routing entry (the executor-side generator got
     // GeneratorExit via close()).
     let live = engine.realm.lock().await.streams.len();
     assert_eq!(live, 0, "break must dispose the stream");
@@ -213,7 +213,7 @@ def consume(args):
 // the embedded carrier that rides this path): the handler is a repeatedly
 // callable function writing `done: true` explicitly — no generator
 // protocol, no magic. The guard counter rides script-global state (the
-// session VM persists across calls — the PTY's $env rule, same tier).
+// executor VM persists across calls — the PTY's $env rule, same tier).
 #[cfg(feature = "steel")]
 #[tokio::test]
 async fn steel_envelope_producer() {
@@ -291,13 +291,13 @@ async fn steel_envelope_producer() {
 }
 
 // Rust closure bodies carry no resident stream state (ADR-0034: the
-// producer shape lives in the session — recorded residual). The
+// producer shape lives in the executor — recorded residual). The
 // Start round trip succeeds but the job fails with an error value —
 // never a silent single-shot fallback. Unified seam (ADR-0036): a
 // Start on a Rust body IS the invoke shape — the handler runs once,
 // the carrier wraps its return into `{done:true,value}`. The stream
 // verbs AFTER the start are the error value (the producer shape lives
-// in a session; a Rust closure parks nothing).
+// in a executor; a Rust closure parks nothing).
 #[tokio::test]
 async fn rust_body_iterate_is_error_value() {
     let engine = Engine::start(&Default::default())

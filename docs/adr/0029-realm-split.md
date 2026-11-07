@@ -21,7 +21,7 @@ sharing one owner:
 - **Remote-effector plane**: `effectors`, `pending_remote`, `code_base_url`
   (`RemotePending`, `ProbeConn`).
 - **Ctx bridge**: `ctx_for`, `host_bridge_for` — the seam that assembles per-call
-  host closures for resident sessions.
+  host closures for executors.
 
 The function-size distribution says the same thing: `run_job` 145 lines, `instance`
 108, `host_bridge_for` 96, `call` 88, `emit` 88, `register_type` 69. A 1,257-line

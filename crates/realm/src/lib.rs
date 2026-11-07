@@ -69,10 +69,10 @@ pub struct Realm {
     pub cursor_ttl: Duration,
     /// Event routing: table + emit matching (Phase 3).
     pub router: event::EventRouter,
-    /// Resident script sessions (Phase 2.6): per-instance VM/child, owned by
-    /// the realm — sessions die with the realm (test isolation) and hot
+    /// Resident script executors (Phase 2.6): per-instance VM/child, owned by
+    /// the realm — executors die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
-    pub sessions: effector_runtime::carrier::session::Sessions,
+    pub executors: effector_runtime::carrier::executor::Executors,
     /// Live effector outbound connections by node alias (Phase 3). The
     /// writer half routes realm calls; the peer address exists so a
     /// takeover names both ends (ADR-0015 §7 replacement discipline —
@@ -88,7 +88,7 @@ pub struct Realm {
     /// identity, no new machinery — Next/Dispose jobs resolve their
     /// routing through this map the way `pending_remote` correlates
     /// invoke replies. Streams die with the realm (eviction of the
-    /// producer session = failed pulls, per the ADR).
+    /// producer executor = failed pulls, per the ADR).
     pub streams: HashMap<String, StreamEntry>,
     /// In-flight remote calls awaiting the effector's Result frame. The
     /// instance id scopes the ctx-bridge host calls the effector makes while
@@ -99,7 +99,7 @@ pub struct Realm {
     call_specs: HashMap<String, CallSpec>,
     /// Registered calls awaiting results (Phase 3.5). Hot in-flight calls
     /// carry a deadline (expiry → failure value); cold calls carry their
-    /// session for re-entry routing.
+    /// executor for re-entry routing.
     pending_calls: HashMap<CallId, PendingEntry>,
     call_seq: u64,
     /// Storage plans per booth type (ADR-0026): ns + parsed collections,

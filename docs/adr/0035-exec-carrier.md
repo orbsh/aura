@@ -15,7 +15,7 @@ VM), python (in-process CPython), wasmtime (in-process compiled), nushell
 (PTY-driven REPL). Each embeds where the language allows embedding. Nushell's
 entry is the exception that proves the rule: the REPL is coerced into RPC
 service by cursor-query answering, prompt-silence draining, and file-based
-req/resp polling — machinery maintained to imitate a resident session rather
+req/resp polling — machinery maintained to imitate a executor rather
 than to run one.
 
 Meanwhile the wanted capability is simpler than any carrier: run an
@@ -78,7 +78,7 @@ need no storage surface, no residency; their bodies are not booths.
 
 ### 3. Wire: frames in a DECLARED codec (json | cbor), bgi only — typed host frames (ADR-0037 §2)
 
-One frame codec per session, selected by the booth's declaration
+One frame codec per executor, selected by the booth's declaration
 (ADR-0037 §2 — dual-protocol by declaration, user ruling 2026-09-30).
 JSON-lines is the default and the stdlib-reachable entry: any language
 reaches it with its parser — no library tax for entry, which is the
@@ -291,4 +291,4 @@ ownership ruling (the effector executes delivered code; spawn is execution).
 mudra's extension protocol (`~/world/mudra/docs/ADR-extension-protocol.md`) takes this frame
 vocabulary as its wire contract — profile deltas: no `store` arm (extension state lives with the
 extension), json-lines codec only, `@on` event subscriptions declared in the script's
-interface_schema and carried by the session hello.
+interface_schema and carried by the hello the guest sends at load.

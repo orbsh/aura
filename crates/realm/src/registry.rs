@@ -49,7 +49,7 @@ impl Realm {
         if let Err(e) = mq::routes_drop_booth(&self.mq, &booth.name) {
             eprintln!("route drop failed for {}: {e}", booth.name);
         }
-        // Hot replacement reaches execution too: resident sessions hold
+        // Hot replacement reaches execution too: executors hold
         // the PREVIOUS source, so instances of this type are reclaimed —
         // the next message cold-starts on the new code. Nothing is lost:
         // the instance map is a discardable hot cache (state lives in the
@@ -63,7 +63,7 @@ impl Realm {
             .collect();
         for (t, k) in stale {
             self.instances.remove(&(t.clone(), k.clone()));
-            self.sessions.evict(&format!("{t}/{k}"));
+            self.executors.evict(&format!("{t}/{k}"));
         }
         for decl in &booth.receives {
             match &decl.resolution {

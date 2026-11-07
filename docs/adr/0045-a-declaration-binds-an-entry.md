@@ -9,7 +9,7 @@
 Delivery calls a body at an ENTRY: the job carries `handler`, the remote frame carries `entry` (the
 symbol the delivered code addresses). For a compiled body this is a label the host already has a
 handle for — the closure is in hand and the name is decoration. A SCRIPT body is different: its
-resident session is called per event by name, and the only binding form the carrier has is the
+executor is called per event by name, and the only binding form the carrier has is the
 declaration. That declaration (`interface_schema` → `receives`) carried an event and its
 resolution and nothing else, so the entry was, by necessity, the event name.
 

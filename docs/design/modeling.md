@@ -62,19 +62,35 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
                             查询：ctx.invoke(dept_stats, "d7")
 ```
 
+## 词汇：一个概念一个词
+
+执行侧有一组相邻概念，各占一个词，不靠修饰词区分（判据见 Fractal「一概念一词」）：
+
+| 词 | 是什么 | 它回答什么 |
+|---|---|---|
+| `effector` | 执行平面：`effector-{runtime,protocol,config}`、可拨入的节点进程、帧编码与沙箱策略 | 在哪跑、用什么编码、谁能拨入、沙箱怎么关 |
+| `carrier` | 执行机制：python / steel / induction，为平面提供 executor | 这份逻辑用什么方式跑起来 |
+| `executor` | 执行单元：绑定一个摊位实例 `(type, key)`，加载一次逻辑，按原子执行，驱逐即 drop | 这个实例的模块活着吗、状态在哪、这次调用谁答 |
+| `pool` | 同一 executor 的并发槽，数量由摊位的 concurrency 声明决定 | 这个实例能同时处理几个调用 |
+| `residency` | 策略：executor 留多久（旋钮是 `idle_ttl`） | 热多久合算 |
+| `instance` | 身份：`(booth_type, key)` | 这是谁 |
+| `body` | 被执行的逻辑：Rust / Script / Remote | 跑的是什么 |
+
+三条纪律。effector 拥有 N 个 executor，反向不成立：问"帧编码、节点握手、沙箱、部署配置"归 effector，问"模块装进去没有、`call()` 谁答、驱逐谁"归 executor；写成"effector 跑在 executor 里"就是词用错了。生命周期是策略不是对象：`residency` 不得用来命名执行单元（它回答"热多久合算"，不回答"谁在执行"）。`session` 只指对话——krystallizer 的 session as data，键 `(channel, member)`；执行单元不叫 session，加载它的那条帧通道也不叫 session（那是 `link`）。
+
 ## 驻留（retention）：留不留，算三笔账
 
 实例休眠不丢数据（状态落盘、事件留在队列），驻留省的是**下次激活的成本**：重新拉起 VM/effector、重载脚本、重建内存态。`idle_ttl` 按摊位类型声明（`with_idle_ttl` builder，声明于 `interface_schema` 的 lifecycle 段），不驻留是默认——留不留按激活成本与使用模式的对比判断：
 
 - **状态修改类（加购物车、改密码）→ 不驻留**：下次操作何时出现无法预计，驻留是纯浪费。状态已落盘，激活重建即可。
 - **无状态高扇出查询（商品列表）→ 看共享性**：每次查询内容不重复、无可缓存时，留的只是 effector/VM 启动开销。列表 per-user 不同，单用户刷新频率远低于启动成本 → 不驻留；列表全用户共享（实例是单例或按列表分区的少数实例），请求不断则实例常在 → 短驻留（如 10s idle_ttl）——效果即传统架构的缓存，但缓存的就是活实例本身，无需第二套缓存设施。
-- **长驻会话（gravity 对话、chat channel）→ 长驻留**：实时流式应用，活跃 channel 的消息几乎不间断，驻留窗口内零激活开销。LLM 调用成本远高于实例驻留成本时，驻留是显然的选择——这正是 turn-executor（Phase 6.5）的形态：per-type 长 TTL，同 session 连续调用走内存 oneshot，turn 结束或窗口到期才释放。
+- **长驻会话（gravity 对话、chat channel）→ 长驻留**：实时流式应用，活跃 channel 的消息几乎不间断，驻留窗口内零激活开销。LLM 调用成本远高于实例驻留成本时，驻留是显然的选择——这正是 turn-executor（Phase 6.5）的形态：per-type 长 TTL，同 executor 连续调用走内存 oneshot，turn 结束或窗口到期才释放。
 
 判据一句话：**驻留省的钱（激活成本 × 窗口内预期到达量）大于驻留花的钱（内存 × 窗口时长）就留**——per-type TTL 是把这个判断变成一处声明的机制。
 
-## 高频状态形态：游戏房间（fjall 直写 vs session 内存）
+## 高频状态形态：游戏房间（fjall 直写 vs executor 内存）
 
-实时游戏房间是状态频率的极端案例，它逼出一个此前不明确的边界——**collection 直写 fjall 能扛到什么频率，超过之后才需要 session 内存**。
+实时游戏房间是状态频率的极端案例，它逼出一个此前不明确的边界——**collection 直写 fjall 能扛到什么频率，超过之后才需要 executor 内存**。
 
 先算账：100 玩家 × 20Hz tick = 2000 字段写/s/房间。fjall 直写（进程内，无序列化协议往返、无 socket、无 RTT）单条成本 ~1µs，一个房间占单核 ~0.2%——**fjall 直写在休闲/中度房间规模下完全可行**。对比外置 Redis（同量级写要付 ~100µs RTT + 全部房间排队在一个单线程 event loop 上），进程内引擎快两个量级；这是「层级是物理约束」的又一层应用：状态消费方（handler）和存储在同一个进程里时，跨进程存储（Redis/Kafka）结构性劣势，不是调优问题。
 
@@ -83,11 +99,11 @@ handler 内 ctx.self_id.key = "u1"   ("channel", "c1") 实例
 - **JSON ↔ DynamicValue 转换**（value.rs seam）：每字段一次。tick 内合并整帧写一次（一条快照），不要 per-field 100 次小写。
 - **文档粒度的语义错配**：okm 文档模型的 per-field write 为低频字段设计；「一帧一个整体快照」要合并成单次 put，保持快照语义。
 
-超过这个规模（tick 更密、字段更多、房间数更大），才切到 **session 内存**形态：
+超过这个规模（tick 更密、字段更多、房间数更大），才切到 **executor 内存**形态：
 
 ```
-fjall 直写（默认，休闲/中度）              session 内存（重度：更高 tick / 更多字段）
-  每帧整帧快照 put 进 collection             热状态活在 resident session（进程内存）
+fjall 直写（默认，休闲/中度）              executor 内存（重度：更高 tick / 更多字段）
+  每帧整帧快照 put 进 collection             热状态活在 executor（进程内存）
   = 单次原生编码写，~µs 级                  = 零序列化、零编码，内存数组访问
   崩溃恢复免费（状态永远在引擎里）           崩溃恢复走事件回放（MQ 分区回放输入流
   无双权威问题                              重建）或低频 checkpoint 进 collection（丢 N 秒）
@@ -96,10 +112,10 @@ fjall 直写（默认，休闲/中度）              session 内存（重度：
 选择判据（按优先序）：
 
 1. **默认 fjall 直写**——它是结构上更干净的形态：单一真相源（状态永远在引擎）、崩溃恢复免费、运维面为零。先确认预算（写频率 × 字段数 × 房间数 vs 0.2%/房间的实测），不要凭直觉跳到内存方案。
-2. **session 内存只在 fjall 直写预算超限时切**——且切过去要同步引入恢复方案（事件回放优先：输入事件已在 MQ 分区里持久化，回放 = 现有 backlog scan + cursor，snapshot 只是回放加速），并接受双权威边界（session 内存是热权威、collection 是低频真相）。
+2. **executor 内存只在 fjall 直写预算超限时切**——且切过去要同步引入恢复方案（事件回放优先：输入事件已在 MQ 分区里持久化，回放 = 现有 backlog scan + cursor，snapshot 只是回放加速），并接受双权威边界（executor 内存是热权威、collection 是低频真相）。
 3. **无论哪种形态，输入事件按 tick 合帧**（客户端 20Hz 上行、服务端同 tick 输入合并成一条事件落 MQ）——这是实时网游的 input sampling 标准做法，MQ 持久写路径的量级由此决定。
 
-踩线判据一句话：**fjall 直写是默认；session 内存是为「帧预算超限 + 已有回放/检查点方案」准备的升级，不是起点**。
+踩线判据一句话：**fjall 直写是默认；executor 内存是为「帧预算超限 + 已有回放/检查点方案」准备的升级，不是起点**。
 
 游戏服务端三层（prism 连接/aura 逻辑/effector 执行）与房间制的对应、以及帧驱动 vs 消息驱动的缺口，见 PLAN Phase 8 与 partitioning.md §5。
 
@@ -148,4 +164,4 @@ prism 按 payload.user_id 找到该用户的 WS 连接，逐一下发
 | 长时等待外部结果 | timer wheel / 事件回投，不占驻留 |
 | 驻留决策 | per-type `idle_ttl`：改状态类不留；共享高频查询短留（缓存形态）；长会话/LLM 调用长留 |
 | 推送给在线用户 | emit `outbound_message`（载荷带 user_id）→ 连接平面的 outbound 桥下发 WS；离线走 per-user 队列 |
-| 每帧高频状态（游戏房间） | 默认 fjall 直写（整帧合并单次 put）；预算超限才切 session 内存 + 事件回放恢复 |
+| 每帧高频状态（游戏房间） | 默认 fjall 直写（整帧合并单次 put）；预算超限才切 executor 内存 + 事件回放恢复 |

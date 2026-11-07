@@ -70,10 +70,10 @@ across the FFI seam; inside wasm the guest drives its own.
 resumable across separate host-driven engine calls — recorded as a
 rejected carrier variant; envelope mode is the honest shape there.)
 
-### 2. Stream identity and session binding
+### 2. Stream identity and executor binding
 
-The stream lives in the producer's resident session (Phase 2.6 — the
-residency is what makes a pull-protocol stateful session possible, not a
+The stream lives in the producer's executor (Phase 2.6 — the
+residency is what makes a pull-protocol stateful executor possible, not a
 coincidence). The first reply decides the shape: a terminal reply
 (`done: true`) is a complete invoke-style result and leaves no stream;
 a non-terminal reply mints the `stream_id` that routes subsequent pulls
@@ -94,7 +94,7 @@ no dispose is released by eviction, not by magic. `iterate` without
 
 ### 4. Residency accounting: TTL counts from stream stop
 
-Pulls are session activity: each `next` resets the idle timer, so a long
+Pulls are executor activity: each `next` resets the idle timer, so a long
 stream keeps its producer resident without special declaration. When the
 stream ends — exhaustion or dispose — the timer is (re)armed through the
 existing timer API (ADR-0016), and standard `idle_ttl` eviction applies.
@@ -116,7 +116,7 @@ provider — and the turn booth alike — runs as a Rust guest process over
 the induction pipe (`~/world/induction`): the process holds the stream
 state, answers each pull round with an envelope, and closes with
 `done: true`. A script carrier is the same shape where the state lives
-in the carrier's session: a python handler — `httpx.stream`, parse SSE,
+in the executor: a python handler — `httpx.stream`, parse SSE,
 `yield` per token event — has the carrier's native generator drive
 the envelope. wasm serves BOTH sides: as consumer it runs the
 pull-until-done loop (no host-drivable generator to park), and as

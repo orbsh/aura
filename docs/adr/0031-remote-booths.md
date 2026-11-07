@@ -56,7 +56,7 @@ The two shapes differ on every axis that matters:
    five-constituent relocation of a booth does not happen: a booth whose
    logic needs an external service keeps the coordination inside the booth —
    handler code opens the connection per call (or holds it per
-   resident-session lifetime — Phase 2.6 residency is the booth's own choice
+   executor lifetime — Phase 2.6 residency is the booth's own choice
    of client state), parses whatever the other side speaks, and treats
    failure as a value in its own return.
 2. **Language carriers already answer this.** steel/python/nushell bodies

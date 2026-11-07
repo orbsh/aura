@@ -13,7 +13,7 @@ gravity 的全 Rust 诉求（wasm 限制感觉多余）与 nushell PTY 载体的
 CPython）、wasmtime（进程内编译）、nushell（PTY 驱动的 REPL）。语言允许
 嵌入的，就嵌入。nushell 的入口是证明规则的例外：REPL 被靠光标查询应答、
 提示符静默排空、文件 req/resp 轮询哄成 RPC 服务——这套机件是在【模仿】
-常驻 session，而不是在【运行】常驻 session。
+常驻 executor，而不是在【运行】常驻 executor。
 
 与此同时，被需要的能力比任何载体都简单：跑一个可执行文件。Rust 摊位
 binary 不该被迫穿上它没要的 wasm 马甲；AI 生成的 SKILL（动态脚本、跑一次、

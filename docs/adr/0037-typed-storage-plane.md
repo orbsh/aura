@@ -55,13 +55,13 @@ encoding invented for storage.**
 ### 1. In-process carriers (python / steel): bind, no translation
 
 - **python**: register `okm-python`'s Collection binding directly into the
-  session module (alongside the `ctx_store_emit` entry; `add_class::<Collection>()`
+  executor module (alongside the `ctx_store_emit` entry; `add_class::<Collection>()`
   exists today). Zero translations.
 - **steel**: `okm-steel` has schema/encode/decode registered; the Collection
   method face is filled (4.16b) aligned with the python binding: two host
   faces of the same `DynamicCollection`, one executor. The handle shape the
   `'static`/thread-local constraints decided: a PER-VM registry (not the
-  codec handles' thread_local — a session's VM moves across worker threads)
+  codec handles' thread_local — an executor's VM moves across worker threads)
   of integer-internal collections addressed by the script through six
   fixed-name fns by NAME STRING (`(collection-put! "notes" pkey doc)`).
   Fixed names, not a dotted per-collection shim (`Counters.put` — measured
@@ -193,13 +193,13 @@ typed.
   back — a pyclass carries `*mut PyObject`, not Send); the steel carrier
   consumes the same slot (4.16b): `ClosureEngine` adapts the four byte
   closures to okm-steel's Engine trait, `SteelSession::new` builds the
-  per-VM registry at session start and registers the stub arms ONLY in
+  per-VM registry at executor start and registers the stub arms ONLY in
   the introspection engine (the ctx-stub scoping rule — same-name
-  `register_fn` stacking would shadow the real fns in resident sessions).
+  `register_fn` stacking would shadow the real fns in executors).
   Remaining: bgi's `exchange()` implements §2's typed-frame shape — LANDED (4.16c):
  `exchange()` decodes `{"host": {"type": …}}` into a typed enum mapped
  onto the bridge table (decode failure = error value, the silent
- unknown-op miss is gone); the session codec is the declared one (JSON
+ unknown-op miss is gone); the executor codec is the declared one (JSON
  lines or self-delimited CBOR documents), crossing to the child as the
  `BGI_ENCODING` spawn env; exec one-shot rides the same field; wasm
  untouched.

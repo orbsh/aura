@@ -44,7 +44,7 @@ wasm 摊位在 carrier 缺原生能力时的 WASI HTTP host。realm 的职责止
 
 1. **不建拨出设施。** realm 不为外部服务建连接管理器、不注册端点、不 ping。
    提案对摊位的五成分迁移不会发生：逻辑需要外部服务的摊位，把协调留在摊位
-   内部——handler 代码按调用开连接（或按常驻 session 的生命周期持有——Phase
+   内部——handler 代码按调用开连接（或按常驻 executor 的生命周期持有——Phase
    2.6 的驻留是摊位对客户端状态的自选），解析对端说的一切，失败作为自身返回的
    值处理。
 2. **语言 carrier 已经回答了这个问题。** steel/python/nushell 体自带原生 HTTP

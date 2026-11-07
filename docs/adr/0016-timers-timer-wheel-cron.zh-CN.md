@@ -54,7 +54,7 @@ tick 形状的界。没有亚毫秒或精确墙钟保证；没有消费者需要
   写 StateStore 保留名字空间，`on_wake` 恢复路径重新 `insert_at`。
 - **回收型条目** `(deliver_at, target, kind)`——没有人会来了，
   收回资源（idle-TTL 驱逐、执行看门狗）。到期动作不是投递作业，
-  而是 `evict_instance`（on_sleep + session 丢弃；看门狗场景对
+  而是 `evict_instance`（on_sleep + executor 丢弃；看门狗场景对
   在等的 reply 发超时错误）。回收型条目恒为内存态；它们需要
   **取消**（新工作到达 → 作废未决的 idle 定时器），这就是
   `DelayQueue::remove`——与摊位用的 cancel/re-arm 是同一 API。
@@ -139,7 +139,7 @@ idle 回收条目根本不存在。
 `lifecycle.max_exec`（per-type，在 `interface_schema` 中与
 `idle_ttl` 并列声明）是执行看门狗：作业入口注册回收条目
 （`deliver_at = now + max_exec`），完成时取消。到期 = 实例超出执行
-预算：驱逐（on_sleep、session 丢弃）并对在等的 reply 发超时错误。
+预算：驱逐（on_sleep、executor 丢弃）并对在等的 reply 发超时错误。
 这是最大时长控制，不是空闲计量——两个关注点沿两种条目干净分离。
 
 evictor 任务仅保留 `pending_calls` 的 deadline 扫描（其自身也是

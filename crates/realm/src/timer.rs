@@ -28,7 +28,7 @@ pub struct TimerId(pub u64);
 /// What happens when a reclaim entry fires.
 #[derive(Clone, Debug)]
 pub enum ReclaimKind {
-    /// Idle expiry: evict the instance (on_sleep, session drop).
+    /// Idle expiry: evict the instance (on_sleep, executor drop).
     Idle,
     /// Execution budget exceeded: evict (the in-flight caller observes
     /// the eviction as a dropped reply).

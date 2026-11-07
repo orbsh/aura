@@ -19,7 +19,7 @@ Three facts make Inline the wrong default rather than a merely untidy one:
   ruling that the control plane ships instructions and small results while bulk artifacts
   stay on the execution side. AI-generated function bodies are exactly the payload that
   grows.
-- **Every call re-delivers what never changes.** A resident session loads its source once;
+- **Every call re-delivers what never changes.** A executor loads its source once;
   re-delivery per call is only needed on cold start (and after eviction) — which is exactly
   what a content-addressed cache keys on.
 - **The definition IS the bytes.** `BoothDef` persists the full `source` string inline;
@@ -61,8 +61,8 @@ The remote dispatch arm builds `CodeRef { url, sha256 }` from the definition's h
 the deployment-declared prefix and sends the frame — nothing else. The effector resolves the
 code exactly as it resolves Inline bytes today: cache hit on the sha256 → source; miss →
 GET the URL, verify against the asserted hash (mismatch = error, never silent), insert,
-proceed; the resolved source feeds the existing `with_session` cold-start load. The
-per-hash cache is a discardable hot layer: same legitimacy tier as the resident session
+proceed; the resolved source feeds the existing `with_executor` cold-start load. The
+per-hash cache is a discardable hot layer: same legitimacy tier as the executor
 itself — an execution node still holds nothing it would need to recover. (No loader seam
 is invented: the effector's resolve-then-load path already exists; only the resolver's input
 shape changes.)

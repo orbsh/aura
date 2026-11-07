@@ -67,7 +67,7 @@ The queue holds two entry kinds:
 - **Reclaim entries** `(deliver_at, target, kind)` — nobody is
   coming; take the resources back (idle-TTL eviction, execution
   watchdog). The expiry action is NOT a job delivery but
-  `evict_instance` (on_sleep + session drop + reply-with-timeout for
+  `evict_instance` (on_sleep + executor drop + reply-with-timeout for
   the watchdog's target). Reclaim entries are always in-memory; they
   need CANCEL (new work arrived → abort the pending idle timer),
   which is `DelayQueue::remove` — the same cancel/re-arm API booths
@@ -178,7 +178,7 @@ mid-execution: the reclaim entry does not exist while the job runs.
 `idle_ttl`) is the execution watchdog: it registers a reclaim entry at
 job start (`deliver_at = now + max_exec`) and cancels it at completion.
 Expiry means the instance exceeded its execution budget — evict
-(on_sleep, session drop) and fail the pending reply with a timeout
+(on_sleep, executor drop) and fail the pending reply with a timeout
 error. This is maximum-duration control, not idleness measurement; the
 two concerns split cleanly along the two entry kinds.
 
@@ -188,7 +188,7 @@ is deleted — eviction is timer-driven, O(expiry) not O(instances).
 
 ### 4. What does NOT change
 
-- The per-instance eviction semantics (on_sleep hook, session drop)
+- The per-instance eviction semantics (on_sleep hook, executor drop)
   are untouched; only the trigger moved — the idle reclaim entry,
   re-armed at job completion, replaces the linear scan on the
   5-second tick.

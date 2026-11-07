@@ -1,7 +1,7 @@
 //! ADR-0037 4.16a python injection face e2e: the script's declared
 //! `@DocumentEncode` classes come back as bound `Collection` objects
 //! (the host-injected face — built over the realm's live engine at
-//! session load), and writes through the BINDING face must be readable
+//! executor load), and writes through the BINDING face must be readable
 //! through `ctx.store` and vice versa — same bytes, one engine
 //! (the acceptance lock: two paths, one keyspace). Cross-type ns is
 //! structurally unexpressible here: the slot only builds the plan's
@@ -75,7 +75,7 @@ async fn binding_face_and_ctx_store_share_one_keyspace() {
         key: aura_booth::InstanceKey::Named(key.into()),
     };
 
-    // Binding write → ctx.store read (same session instance).
+    // Binding write → ctx.store read (same executor instance).
     let out = engine
         .invoke(
             target("k"),

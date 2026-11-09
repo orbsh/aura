@@ -2,7 +2,7 @@
 
 > **语言：** [English](0047-stop-is-a-control-bit.md)（主文档） · [中文](0047-stop-is-a-control-bit.zh-CN.md)
 
-**状态：** 已接受（2026-11-09）。位、它的两个动作与终局错误值已裁定；原语本身尚未实现。
+**状态：** 已接受（2026-11-09），并于同日分两级建成。一级（SET，协作那半）：`crates/realm/src/stop.rs`、`Realm::stop_set`/`stop_clear`、`stop.poll`/`stop.clear` 两条臂、驱逐时清位。二级（LIFT）：realm 为每次在跑的调用安一个 lift 槽、把 body 与它赛跑，调用方拿到 `Interrupted`（ADR-0012 的终局值），Remote 体则用 `Frame::Interrupt` 通知节点——节点那半在 effector，guest 那半在 induction ADR-0003。写明而不掩饰的边界：摸不到工作的载体回 `landed: false`（steel 与 python 是进程内 VM），一次性 exec 载体尚未 arm。
 **日期：** 2026-11-09
 
 ## 背景

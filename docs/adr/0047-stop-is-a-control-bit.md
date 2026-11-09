@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0047-stop-is-a-control-bit.md) (primary) · [中文](0047-stop-is-a-control-bit.zh-CN.md)
 
-**Status:** Accepted (2026-11-09). The bit, its two actions and the terminal error value are decided; the primitive itself is not built.
+**Status:** Accepted (2026-11-09), and BUILT the same day in two stages. Stage one (SET/LIFT's cooperative half): `crates/realm/src/stop.rs`, `Realm::stop_set`/`stop_clear`, the `stop.poll`/`stop.clear` arms, cleared on eviction. Stage two (LIFT): the realm arms a lift slot per running call and races the body against it, the caller takes `Interrupted` (ADR-0012's terminal value), and a Remote body tells the node with `Frame::Interrupt` — the node's half is effector's, the guest's half is induction ADR-0003. Named limits, not gaps in the decision: a carrier with no way in answers `landed: false` (steel and python are in-process VMs), and one-shot executors are not armed yet.
 **Date:** 2026-11-09
 
 ## Context

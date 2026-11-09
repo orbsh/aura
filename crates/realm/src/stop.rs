@@ -41,13 +41,31 @@ impl std::error::Error for Interrupted {}
 pub struct InterruptSlot {
     key: String,
     slot: Arc<tokio::sync::Notify>,
-    slots: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    /// The same call's handle as the execution layer sees it (effector's `CallControl`):
+    /// one per call, never per carrier, so a booth running several calls at once cannot
+    /// stop the wrong one. Raising the slot raises this too — they are one act.
+    control: effector_runtime::carrier::CallControl,
+    slots: Arc<Mutex<HashMap<String, InterruptEntry>>>,
 }
+
+/// One live call's slot pair: the waiter the dispatch races its body against, and the
+/// handle a carrier needs to reach the work. Stored together because raising one
+/// without the other is precisely the bug this stage exists to fix.
+type InterruptEntry = (
+    Arc<tokio::sync::Notify>,
+    effector_runtime::carrier::CallControl,
+);
 
 impl InterruptSlot {
     /// The future a dispatch races its body against.
     pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
         self.slot.notified()
+    }
+
+    /// The call's stop handle, for the carrier that will actually reach the work
+    /// (effector arms it in the guest's own frame id).
+    pub fn control(&self) -> effector_runtime::carrier::CallControl {
+        self.control.clone()
     }
 }
 
@@ -61,7 +79,7 @@ impl Drop for InterruptSlot {
         // replaced the slot already, and removing that one would disarm it.
         if map
             .get(&self.key)
-            .is_some_and(|slot| Arc::ptr_eq(slot, &self.slot))
+            .is_some_and(|(slot, _)| Arc::ptr_eq(slot, &self.slot))
         {
             map.remove(&self.key);
         }
@@ -75,7 +93,7 @@ pub struct Stops {
     inner: Arc<RwLock<HashSet<String>>>,
     /// The stage-two slots, by instance identity. Empty in every process that is
     /// not running a call — which is the normal state of a stop bit's world.
-    slots: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    slots: Arc<Mutex<HashMap<String, InterruptEntry>>>,
 }
 
 /// The identity a flag is keyed by: booth type + rendered instance key. Rendered
@@ -125,13 +143,15 @@ impl Stops {
     pub fn begin_interrupt(&self, instance: &InstanceId) -> InterruptSlot {
         let key = identity(instance);
         let slot = Arc::new(tokio::sync::Notify::new());
+        let control = effector_runtime::carrier::CallControl::default();
         self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.clone(), Arc::clone(&slot));
+            .insert(key.clone(), (Arc::clone(&slot), control.clone()));
         InterruptSlot {
             key,
             slot,
+            control,
             slots: Arc::clone(&self.slots),
         }
     }
@@ -145,12 +165,15 @@ impl Stops {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&identity(instance))
-            .cloned();
+            .map(|entry| (Arc::clone(&entry.0), entry.1.clone()));
         match slot {
-            Some(slot) => {
+            Some((slot, control)) => {
                 // `notify_one` stores a permit if the waiter has not registered yet,
                 // so an interrupt that arrives before the select registers is not lost.
                 slot.notify_one();
+                // The carrier half: without this the wait ends and the WORK keeps
+                // running, which is the difference `landed` exists to report.
+                control.interrupt();
                 true
             }
             None => false,

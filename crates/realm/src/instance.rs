@@ -406,6 +406,9 @@ impl Realm {
         // something to notify. It is removed when this call ends — the guard drops
         // with the future, whichever way the call finished.
         let interrupt = realm_stops.begin_interrupt(id);
+        // The same call's handle as effector sees it. It rides the CALL (the carrier
+        // signature takes it), because an unbounded booth serves many calls at once.
+        let control = interrupt.control();
         let mut result = match body {
             aura_booth::Body::Remote {
                 node_alias,
@@ -632,6 +635,7 @@ impl Realm {
                 match concurrency {
                     aura_booth::Concurrency::Unbounded => {
                         let call_host = host.clone();
+                        let control = control.clone();
                         tokio::task::spawn_blocking(move || {
                             executors.with_shared(
                                 &instance_key,
@@ -640,11 +644,15 @@ impl Realm {
                                 &effector_runtime::sandbox::SandboxPolicy::None,
                                 encoding,
                                 host.as_ref(),
-                                move |s| s.iterate(sjob, call_host.as_ref()),
+                                move |s| {
+                                    s.iterate(sjob, call_host.as_ref(), Some(&control))
+                                },
                             )
                         })
                     }
-                    concurrency => tokio::task::spawn_blocking(move || {
+                    concurrency => {
+                        let control = control.clone();
+                        tokio::task::spawn_blocking(move || {
                         executors.with_slot_encoded(
                             &instance_key,
                             &language,
@@ -656,9 +664,15 @@ impl Realm {
                             // ignore it (no channel).
                             encoding,
                             concurrency.slots(),
-                            move |s| s.iterate(sjob),
+                            move |s| {
+                                // The serial seam arms the handle, then runs: the slot is
+                                // this call's alone until it returns.
+                                s.arm_interrupt(&control);
+                                s.iterate(sjob)
+                            },
                         )
-                    }),
+                    })
+                    }
                 }
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("script task join: {e}")))
@@ -896,7 +910,14 @@ impl Realm {
                                     encoding,
                                     host.as_ref(),
                                     move |s| {
-                                        s.call(&name, &serde_json::Value::Null, call_host.as_ref())
+                                        // A lifecycle hook is not an instance's work: it
+                                        // has no stop slot and takes no handle.
+                                        s.call(
+                                            &name,
+                                            &serde_json::Value::Null,
+                                            call_host.as_ref(),
+                                            None,
+                                        )
                                     },
                                 )
                             })

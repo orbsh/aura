@@ -1,6 +1,6 @@
 # ADR-0016: Timers — Timer-Wheel Delayed Emit and Cron Semantics
 
-**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; 2026-11-09: the durable tier's carrier is decided — ns 27 `TimerEntry`, ADR-0040 — with the code still pending, as is declarative `lifecycle.cron`)
+**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; 2026-11-09: the durable tier LANDED — ns 27 `TimerEntry`, ADR-0040, with `ctx.timer.register {durable: true}` writing the row and the driver rebuilding the wheel from it at boot; declarative `lifecycle.cron` still pending)
 **Date**: 2026-09-22
 **Chinese**: [0016-timers-timer-wheel-cron.zh-CN.md](0016-timers-timer-wheel-cron.zh-CN.md)
 

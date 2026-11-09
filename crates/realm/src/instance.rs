@@ -14,8 +14,9 @@ use tokio::time::interval;
 
 impl Realm {
     pub async fn shared_async(self) -> SharedRealm {
+        let store = self.mq.clone();
         let arc = Arc::new(tokio::sync::Mutex::new(self));
-        let handle = timer::TimerDriver::spawn(arc.clone());
+        let handle = timer::TimerDriver::spawn(arc.clone(), store);
         arc.lock().await.timers = handle;
         arc
     }

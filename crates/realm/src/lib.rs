@@ -28,6 +28,7 @@ pub mod registry;
 pub mod remote;
 pub mod store_exec;
 pub mod timer;
+pub mod timer_entry;
 pub mod value;
 
 use aura_booth::call::{CallId, CallSpec, PendingEntry, Waited};

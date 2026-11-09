@@ -13,6 +13,8 @@
 //!   instance is idle) and the execution watchdog (max_exec budget,
 //!   cancelled at completion, expiry = evict).
 
+use crate::mq::MqStore;
+use crate::timer_entry::{self, TimerEntryKey, TimerTable};
 use crate::InstanceId;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -62,6 +64,10 @@ enum Command {
         id: TimerId,
         entry: Entry,
         at: Duration,
+        /// Also write the row: this entry must survive the process (ADR-0016
+        /// as amended 2026-11-09 — the table is the schedule, the wheel the
+        /// fast path).
+        durable: bool,
     },
     Cancel(TimerId),
     /// Reclaim entries only: the job-entry path voids pending idle/
@@ -107,6 +113,22 @@ impl TimerHandle {
             id,
             entry: Entry::Deliver { target, tag },
             at,
+            durable: false,
+        });
+        id
+    }
+
+    /// A delivery timer that OUTLIVES the process: the same wake, plus a row in
+    /// the ns-27 table. A row that cannot be written is a timer that would be
+    /// silently forgotten on the next boot, so the caller still gets an id —
+    /// what it must not do is believe the timer is durable.
+    pub fn register_durable(&self, target: InstanceId, tag: String, at: Duration) -> TimerId {
+        let id = self.alloc_id();
+        let _ = self.tx.send(Command::Register {
+            id,
+            entry: Entry::Deliver { target, tag },
+            at,
+            durable: true,
         });
         id
     }
@@ -118,6 +140,8 @@ impl TimerHandle {
         let sent = self.tx.send(Command::Register {
             id,
             entry: Entry::Reclaim { target, kind },
+            // Reclaim is residency bookkeeping: it must die with the process.
+            durable: false,
             at,
         });
         sent.ok();
@@ -152,6 +176,13 @@ pub struct TimerDriver {
     queue: DelayQueue<(TimerId, Entry)>,
     /// id → queue key (cancellation) and id → entry (target matching).
     index: HashMap<TimerId, (tokio_util::time::delay_queue::Key, Entry)>,
+    /// The durable rows behind the entries that have one: id → the row's key.
+    /// A row is the schedule; this map is only "which of the armed entries owes
+    /// a delete when it fires or is cancelled".
+    durable: HashMap<TimerId, TimerEntryKey>,
+    /// The ns-27 table, bound at spawn so registration never has to lock the
+    /// realm (the driver runs while the realm is busy).
+    timers: TimerTable,
     commands: mpsc::UnboundedReceiver<Command>,
     /// Weak: the driver must never keep the realm (and its engine file
     /// lock) alive — same discipline as the evictor task (ADR-0016 §4).
@@ -162,11 +193,13 @@ pub struct TimerDriver {
 impl TimerDriver {
     /// Spawn the driver task; returns the caller-facing handle. One task
     /// per realm — task count is bounded by the realm count.
-    pub fn spawn(realm: crate::SharedRealm) -> TimerHandle {
+    pub fn spawn(realm: crate::SharedRealm, store: MqStore) -> TimerHandle {
         let (tx, commands) = mpsc::unbounded_channel();
         let driver = Self {
             queue: DelayQueue::new(),
             index: HashMap::new(),
+            durable: HashMap::new(),
+            timers: timer_entry::table(store),
             commands,
             realm: std::sync::Arc::downgrade(&realm),
         };
@@ -178,6 +211,10 @@ impl TimerDriver {
     }
 
     async fn run(mut self) {
+        // BOOT: the table is the schedule. Every row is armed where it is owed
+        // (a row that came due while nothing ran is armed at zero and fires on
+        // the first pass), so a restart resumes rather than forgets.
+        self.restore();
         loop {
             tokio::select! {
                 // Commands drain before expiries: a cancel arriving in the
@@ -206,9 +243,40 @@ impl TimerDriver {
                     };
                     let (id, entry) = expired.into_inner();
                     self.index.remove(&id);
-                    self.fire(entry).await;
+                    self.fire(id, entry).await;
                 }
             }
+        }
+    }
+
+    /// Rebuild the wheel from the table (ADR-0016: the table is the schedule,
+    /// the wheel only the fast path). A read failure arms nothing rather than
+    /// guessing: the rows are still there for the next boot.
+    fn restore(&mut self) {
+        let rows = match timer_entry::all(&self.timers) {
+            Ok(rows) => rows,
+            Err(error) => {
+                eprintln!("aura: timer restore could not read the table: {error}");
+                return;
+            }
+        };
+        let now = now_ms();
+        for (key, document) in rows {
+            let Some(document) = document else { continue };
+            let id = TimerId(key.id);
+            let entry = Entry::Deliver {
+                target: InstanceId {
+                    booth_type: document.booth_type.clone(),
+                    key: instance_key_of(&document.instance_key),
+                },
+                tag: document.tag.clone(),
+            };
+            let wait = Duration::from_millis(key.due_ms.saturating_sub(now));
+            let slot = self
+                .queue
+                .insert_at((id, entry.clone()), tokio::time::Instant::now() + wait);
+            self.index.insert(id, (slot, entry));
+            self.durable.insert(id, key);
         }
     }
 
@@ -216,7 +284,26 @@ impl TimerDriver {
     /// parking path).
     async fn apply(&mut self, cmd: Command) {
         match cmd {
-            Command::Register { id, entry, at } => {
+            Command::Register { id, entry, at, durable } => {
+                if durable {
+                    let key = TimerEntryKey {
+                        due_ms: now_ms().saturating_add(at.as_millis() as u64),
+                        id: id.0,
+                    };
+                    if let Entry::Deliver { target, tag } = &entry {
+                        if let Err(error) = timer_entry::put(
+                            &self.timers,
+                            key.clone(),
+                            &target.booth_type,
+                            &target.key.render().to_string(),
+                            tag,
+                        ) {
+                            eprintln!("aura: durable timer row not written ({id:?}): {error}");
+                        } else {
+                            self.durable.insert(id, key);
+                        }
+                    }
+                }
                 let key = self
                     .queue
                     .insert_at((id, entry.clone()), tokio::time::Instant::now() + at);
@@ -231,6 +318,12 @@ impl TimerDriver {
     fn cancel(&mut self, id: &TimerId) {
         if let Some((key, _)) = self.index.remove(id) {
             self.queue.remove(&key);
+        }
+        // A durable entry that is cancelled owes nothing to the next boot.
+        if let Some(row) = self.durable.remove(id) {
+            if let Err(error) = timer_entry::purge(&self.timers, &row) {
+                eprintln!("aura: cancelled timer row not purged ({id:?}): {error}");
+            }
         }
     }
 
@@ -247,7 +340,13 @@ impl TimerDriver {
         }
     }
 
-    async fn fire(&self, entry: Entry) {
+    async fn fire(&mut self, id: TimerId, entry: Entry) {
+        // The row goes when the wake is spent: this table keeps no history.
+        if let Some(row) = self.durable.remove(&id) {
+            if let Err(error) = timer_entry::purge(&self.timers, &row) {
+                eprintln!("aura: fired timer row not purged ({id:?}): {error}");
+            }
+        }
         let Some(realm) = std::sync::Weak::upgrade(&self.realm) else {
             return;
         };
@@ -264,5 +363,25 @@ impl TimerDriver {
                 }
             },
         }
+    }
+}
+
+/// The realm's clock, milliseconds since the epoch — the same unit the table's
+/// key uses (`due_ms`), so a row and an armed entry can be compared directly.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A stored instance key back to its variant: empty is the singleton (ADR-0042),
+/// anything else is a named key. The row stores the RENDERED form on purpose —
+/// a row must not depend on an in-process id.
+fn instance_key_of(rendered: &str) -> aura_booth::InstanceKey {
+    if rendered.is_empty() {
+        aura_booth::InstanceKey::Singleton
+    } else {
+        aura_booth::InstanceKey::Named(rendered.to_string())
     }
 }

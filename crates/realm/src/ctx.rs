@@ -332,11 +332,19 @@ impl Realm {
                     let tag = obj.get("tag").and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("ctx.timer.register: missing `tag` (delivered to the booth's __on_timer handler)"))?
                         .to_string();
-                    let id = timers_register.register_deliver(
-                        target.clone(),
-                        tag,
-                        std::time::Duration::from_millis(at_ms),
-                    );
+                    // DURABLE (ADR-0016 as amended 2026-11-09): the caller says so, and the
+                    // schedule is then a row in ns 27 — the wheel still fires it, but a restart
+                    // rebuilds the wheel from the table instead of forgetting the wake.
+                    let durable = obj
+                        .get("durable")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let at = std::time::Duration::from_millis(at_ms);
+                    let id = if durable {
+                        timers_register.register_durable(target.clone(), tag, at)
+                    } else {
+                        timers_register.register_deliver(target.clone(), tag, at)
+                    };
                     Ok(serde_json::json!({ "timer_id": id.0 }))
                 }) as HostFn,
             );

@@ -26,6 +26,7 @@ pub mod mq;
 pub mod realm_set;
 pub mod registry;
 pub mod remote;
+pub mod stop;
 pub mod store_exec;
 pub mod timer;
 pub mod timer_entry;
@@ -117,6 +118,8 @@ pub struct Realm {
     /// Unified scheduling surface (ADR-0016 revised): delivery + reclaim
     /// timers on one DelayQueue; the driver task fires entries on expiry.
     pub timers: timer::TimerHandle,
+    /// The stop bits (ADR-0047): one in-memory flag per activation, no storage.
+    pub stops: stop::Stops,
 }
 
 pub(crate) async fn dispatch_call(

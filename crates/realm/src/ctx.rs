@@ -126,6 +126,10 @@ impl Realm {
         // Deliver entries directly — the handle is a cheap command-
         // channel clone, no realm deref at call time.
         timers: &crate::timer::TimerHandle,
+        // The realm's stop bits (ADR-0047): a cheap handle, so the arm can
+        // answer without a realm deref — the same discipline as the timer
+        // handle, and for the same reason (this runs inside a busy activation).
+        stops: &crate::stop::Stops,
     ) -> std::collections::BTreeMap<String, effector_runtime::carrier::HostFn> {
         use effector_runtime::carrier::HostFn;
 
@@ -357,6 +361,30 @@ impl Realm {
                         .and_then(|v| v.as_u64())
                         .ok_or_else(|| anyhow::anyhow!("ctx.timer.cancel: missing `timer_id`"))?;
                     timers_cancel.cancel(crate::timer::TimerId(id));
+                    Ok(serde_json::Value::Null)
+                }) as HostFn,
+            );
+        }
+        {
+            // STAGE ONE OF THE STOP (ADR-0047 §2): the activation asks, at a boundary it
+            // already has, whether someone asked it to stop. A bit, read — never a message
+            // delivered: a delivery to a busy instance queues behind the work it means to
+            // end. `stop.clear` is for the guest that wants to answer and move on; the
+            // realm clears on eviction either way.
+            let stops_poll = stops.clone();
+            let me = ctx.self_id.clone();
+            fns.insert(
+                "stop.poll".into(),
+                Arc::new(move |_arg: serde_json::Value| {
+                    Ok(serde_json::json!(stops_poll.is_set(&me)))
+                }) as HostFn,
+            );
+            let stops_clear = stops.clone();
+            let me = ctx.self_id.clone();
+            fns.insert(
+                "stop.clear".into(),
+                Arc::new(move |_arg: serde_json::Value| {
+                    stops_clear.clear(&me);
                     Ok(serde_json::Value::Null)
                 }) as HostFn,
             );

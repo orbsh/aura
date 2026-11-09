@@ -13,6 +13,22 @@ use std::time::{Duration, Instant};
 use tokio::time::interval;
 
 impl Realm {
+    /// THE STOP DOOR (ADR-0047 §3): ask an activation to stop at its next boundary.
+    ///
+    /// A framework call, not an event: a delivery addressed to a busy instance
+    /// queues behind the work it means to stop (measured on gravity's turn
+    /// booth). Stage two — abandoning the operation in flight — is LIFT and is
+    /// not here yet; it needs the execution layer's one primitive.
+    pub fn stop_set(&self, instance: &aura_booth::InstanceId) {
+        self.stops.set(instance);
+    }
+
+    /// The activation answered the request (or none is running): forget it. A
+    /// bit that outlives its activation would stop the next one.
+    pub fn stop_clear(&self, instance: &aura_booth::InstanceId) {
+        self.stops.clear(instance);
+    }
+
     pub async fn shared_async(self) -> SharedRealm {
         let store = self.mq.clone();
         let arc = Arc::new(tokio::sync::Mutex::new(self));
@@ -27,6 +43,7 @@ impl Realm {
             instances: HashMap::new(),
             queue_capacity: 64,
             mq: mq_store.clone(),
+            stops: crate::stop::Stops::default(),
             idle_ttl: Duration::from_secs(30),
             cursor_ttl: DEFAULT_CURSOR_TTL,
             router: event::EventRouter::default(),
@@ -375,6 +392,7 @@ impl Realm {
         let effectors = realm.effectors.clone();
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
+        let realm_stops = realm.stops.clone();
         drop(realm);
         let mut result = match body {
             aura_booth::Body::Remote {
@@ -506,7 +524,7 @@ impl Realm {
                     // plan carries its ns; the raw engine handle rides
                     // the mq clone the ctx already holds.
                     let wasm_raw = realm_plan.as_ref().map(|p| (p.ns, realm_mq.clone()));
-                    let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq, &realm_timers);
+                    let fns = Self::host_bridge_for(&ctx, wasm_raw, &realm_mq, &realm_timers, &realm_stops);
                     // Python injection slot (ADR-0037 4.16a): the byte
                     // face rides the SAME realm-mq handle the ctx
                     // executor uses — `ns_raw` is the wasm plane
@@ -687,6 +705,9 @@ impl Realm {
             return;
         };
         locked.timers.cancel_target(id);
+        // A dead activation has nothing left to ask (ADR-0047): the bit goes with it,
+        // so the next activation of this instance starts unanswered.
+        locked.stops.clear(id);
         if let Some(booth) = locked.types.get(&id.booth_type) {
             if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                 let body = booth.body.clone();
@@ -734,7 +755,7 @@ impl Realm {
     ) -> Option<effector_runtime::carrier::HostBridge> {
         let realm_plan = self.plan_of(&id.booth_type).cloned();
         let wasm_raw = realm_plan.as_ref().map(|p| (p.ns, self.mq.clone()));
-        let fns = Self::host_bridge_for(ctx, wasm_raw, &self.mq, &self.timers);
+        let fns = Self::host_bridge_for(ctx, wasm_raw, &self.mq, &self.timers, &self.stops);
         // Same seam, same rule as the per-job arm: the store's error crosses
         // the byte face as its text, so the hook call itself carries it.
         let storage = realm_plan.as_ref().map(|plan| {

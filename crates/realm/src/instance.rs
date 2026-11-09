@@ -29,6 +29,14 @@ impl Realm {
         self.stops.clear(instance);
     }
 
+    /// THE LIFT DOOR (ADR-0047 §4, stage two): stop waiting for the call that is
+    /// running on this instance, and let the caller take the terminal value. `false`
+    /// means nothing was running — a page's cancel arriving after its turn ended is
+    /// exactly that, and it is not an error.
+    pub fn stop_lift(&self, instance: &aura_booth::InstanceId) -> bool {
+        self.stops.lift(instance)
+    }
+
     pub async fn shared_async(self) -> SharedRealm {
         let store = self.mq.clone();
         let arc = Arc::new(tokio::sync::Mutex::new(self));
@@ -394,6 +402,10 @@ impl Realm {
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
         drop(realm);
+        // ADR-0047 stage two: every dispatch arms a lift slot, so the door has
+        // something to notify. It is removed when this call ends — the guard drops
+        // with the future, whichever way the call finished.
+        let lift = realm_stops.begin_lift(id);
         let mut result = match body {
             aura_booth::Body::Remote {
                 node_alias,
@@ -473,11 +485,33 @@ impl Realm {
                     code,
                 };
                 let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
-                    Ok(()) => match rx.await {
-                        Ok(Ok(v)) => Ok(v),
-                        Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
-                        Err(_) => Err(anyhow::anyhow!("effector '{node_alias}' dropped the call")),
-                    },
+                    Ok(()) => {
+                        // The node's answer and the lift, whichever comes first. On a
+                        // lift the node is TOLD (`Frame::Interrupt`) — it is the only
+                        // party that can reach the work — but the caller does not wait
+                        // for its confirmation: the terminal value is already decided,
+                        // and `Interrupted` says whether a carrier could act, which
+                        // changes the node's cost, not this call's outcome.
+                        tokio::select! {
+                            reply = rx => match reply {
+                                Ok(Ok(v)) => Ok(v),
+                                Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
+                                Err(_) => Err(anyhow::anyhow!(
+                                    "effector '{node_alias}' dropped the call"
+                                )),
+                            },
+                            () = lift.notified() => {
+                                let _ = conn.sender.send(effector_protocol::Frame::Interrupt {
+                                    call_id: call_id.clone(),
+                                });
+                                // The pending entry belongs to a reply that is no
+                                // longer wanted; leaving it would be a leak with a
+                                // timeout attached.
+                                self_arc.lock().await.pending_remote.remove(&call_id);
+                                Err(anyhow::Error::new(crate::stop::Interrupted))
+                            }
+                        }
+                    }
                     Err(_) => Err(anyhow::anyhow!("effector '{node_alias}' connection closed")),
                 };
                 result
@@ -492,9 +526,16 @@ impl Realm {
                 // never a silent single-shot fallback.
                 match job.kind {
                     aura_booth::JobKind::Start => {
-                        handler(&ctx, job.args.clone()).await.map(|v| {
-                            aura_booth::Envelope::terminal(Some(v))
-                        })
+                        let args = job.args.clone();
+                        let call = handler(&ctx, args);
+                        tokio::select! {
+                            r = call => r.map(|v| {
+                                aura_booth::Envelope::terminal(Some(v))
+                            }),
+                            () = lift.notified() => Err(anyhow::Error::new(
+                                crate::stop::Interrupted
+                            )),
+                        }
                     }
                     aura_booth::JobKind::Next | aura_booth::JobKind::Dispose => {
                         Err(anyhow::anyhow!(

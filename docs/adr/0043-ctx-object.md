@@ -105,6 +105,8 @@ ctx.timer.register(at_ms, tag) -> id                # ADR-0016 §3b
 ctx.timer.cancel(id)          # idempotent
 ctx.queue.depth(event)        # backlog point-read
 ctx.queue.skip_to_head(event) # relief valve (`to_head` is load-bearing: directional discard, not filler)
+ctx.stop.poll() -> bool       # stopped? — stage one of a stop, ADR-0047 (read at a boundary)
+ctx.stop.clear()              # the activation answered the request
 ctx.schema                    # the persisted interface_schema copy, as data (reflection)
 ctx.on(event, handler)        # phase-gated: activation only (§3)
 ctx.receives                # the activation registry, readable (introspection: "what did I bind" — §3)

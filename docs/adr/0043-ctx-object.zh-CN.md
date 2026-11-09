@@ -83,6 +83,8 @@ ctx.timer.register(at_ms, tag) -> id                # ADR-0016 §3b
 ctx.timer.cancel(id)          # 幂等
 ctx.queue.depth(event)        # 积压点读
 ctx.queue.skip_to_head(event) # 泄压阀（`to_head` 是语义不是赘词：方向性丢弃）
+ctx.stop.poll() -> bool       # 被要求停了吗——停止的一级，ADR-0047（在边界上读）
+ctx.stop.clear()              # 本激活已应答该请求
 ctx.schema                    # 持久化 interface_schema 的副本，作为数据（反射）
 ctx.on(event, handler)        # 相位门控：仅 load/activation 期（§3）
 ctx.receives                  # activation 注册表，可读（反射："我绑了什么"——§3）

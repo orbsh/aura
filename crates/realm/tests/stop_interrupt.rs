@@ -5,10 +5,10 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-//! ADR-0047, stage two (the LIFT slot): a running call is not a bit anybody reads
+//! ADR-0047, stage two (the INTERRUPT slot): a running call is not a bit anybody reads
 //! later — it is a waiter, and the door notifies it. What these tests lock is the
 //! lifetime rule (a slot belongs to ONE call) and the answer the door gives when
-//! there is nothing to lift (a cancel arriving after its turn ended).
+//! there is nothing to interrupt (a cancel arriving after its turn ended).
 
 use aura_booth::{InstanceId, InstanceKey};
 use aura_realm::stop::Stops;
@@ -22,12 +22,12 @@ fn at(booth: &str, key: &str) -> InstanceId {
 }
 
 #[tokio::test]
-async fn a_lift_wakes_the_call_that_armed_the_slot() {
+async fn an_interrupt_wakes_the_call_that_armed_the_slot() {
     let stops = Stops::default();
     let a = at("turn", "device-a");
-    let armed = stops.begin_lift(&a);
+    let armed = stops.begin_interrupt(&a);
 
-    // Armed and not yet lifted: the future must still be pending.
+    // Armed and not yet raised: the future must still be pending.
     assert!(
         tokio::time::timeout(Duration::from_millis(50), armed.notified())
             .await
@@ -35,25 +35,25 @@ async fn a_lift_wakes_the_call_that_armed_the_slot() {
         "nothing asked yet"
     );
 
-    assert!(stops.lift(&a), "the slot is live, so the door has something to lift");
+    assert!(stops.interrupt(&a), "the slot is live, so the door has something to interrupt");
     tokio::time::timeout(Duration::from_millis(200), armed.notified())
         .await
-        .expect("the lift reaches the call that armed the slot");
+        .expect("the interrupt reaches the call that armed the slot");
 }
 
 #[tokio::test]
-async fn a_lift_with_no_call_running_says_so_instead_of_arming_one() {
+async fn an_interrupt_with_no_call_running_says_so_instead_of_arming_one() {
     let stops = Stops::default();
     let a = at("turn", "device-a");
     // A page's cancel can arrive after its turn ended. That is not an error, and
-    // it must not leave a slot behind that lifts the NEXT turn.
-    assert!(!stops.lift(&a));
+    // it must not leave a slot behind that interrupts the NEXT turn.
+    assert!(!stops.interrupt(&a));
 
-    let armed = stops.begin_lift(&a);
+    let armed = stops.begin_interrupt(&a);
     drop(armed);
     assert!(
-        !stops.lift(&a),
-        "the slot died with its call: a lift now has nothing to notify"
+        !stops.interrupt(&a),
+        "the slot died with its call: an interrupt now has nothing to notify"
     );
 }
 
@@ -61,13 +61,13 @@ async fn a_lift_with_no_call_running_says_so_instead_of_arming_one() {
 async fn one_slot_per_instance_and_the_newest_call_owns_it() {
     let stops = Stops::default();
     let a = at("turn", "device-a");
-    let first = stops.begin_lift(&a);
-    let second = stops.begin_lift(&a);
+    let first = stops.begin_interrupt(&a);
+    let second = stops.begin_interrupt(&a);
 
     // Dropping the superseded call's guard must NOT disarm the live one — the
-    // pointer check in `Drop` is what keeps a stale call from cancelling a lift.
+    // pointer check in `Drop` is what keeps a stale call from cancelling an interrupt.
     drop(first);
-    assert!(stops.lift(&a), "the second call still owns the slot");
+    assert!(stops.interrupt(&a), "the second call still owns the slot");
     tokio::time::timeout(Duration::from_millis(200), second.notified())
         .await
         .expect("the live call is the one that hears it");

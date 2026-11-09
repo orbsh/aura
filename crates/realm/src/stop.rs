@@ -12,9 +12,9 @@
 //! activation runs. That door is `Realm::stop_set` / `Realm::stop_clear`; a
 //! guest sees the consequence at its next boundary through the `stop.poll` arm.
 //!
-//! LIFT (stage two, ADR-0047 §4) lives here too, and it is a different kind of
+//! The INTERRUPT (stage two, ADR-0047 §4) lives here too, and it is a different kind of
 //! thing: not a flag anyone reads later but a SLOT the running call is already
-//! waiting on. The dispatch arms one before it runs a body; `Realm::stop_lift`
+//! waiting on. The dispatch arms one before it runs a body; `Realm::stop_interrupt`
 //! notifies it, and the caller gets the terminal error value instead of an
 //! answer. One per instance at a time (ADR-0047 §3: a stop names an activation).
 
@@ -36,25 +36,25 @@ impl std::fmt::Display for Interrupted {
 
 impl std::error::Error for Interrupted {}
 
-/// One running call's lift slot. Armed by the dispatch, notified by the door, and
+/// One running call's interrupt slot. Armed by the dispatch, notified by the door, and
 /// removed on drop (a slot that outlived its call would fire into the next one).
-pub struct Lift {
+pub struct InterruptSlot {
     key: String,
     slot: Arc<tokio::sync::Notify>,
-    lifts: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    slots: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
-impl Lift {
+impl InterruptSlot {
     /// The future a dispatch races its body against.
     pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
         self.slot.notified()
     }
 }
 
-impl Drop for Lift {
+impl Drop for InterruptSlot {
     fn drop(&mut self) {
         let mut map = self
-            .lifts
+            .slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Only if it is still OURS: a later call for the same instance may have
@@ -75,7 +75,7 @@ pub struct Stops {
     inner: Arc<RwLock<HashSet<String>>>,
     /// The stage-two slots, by instance identity. Empty in every process that is
     /// not running a call — which is the normal state of a stop bit's world.
-    lifts: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    slots: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
 /// The identity a flag is keyed by: booth type + rendered instance key. Rendered
@@ -120,28 +120,28 @@ impl Stops {
         }
     }
 
-    /// Arm this call's lift slot. `Some` for every dispatch that runs a body: a
-    /// call nobody can lift is the one case this shape is for.
-    pub fn begin_lift(&self, instance: &InstanceId) -> Lift {
+    /// Arm this call's interrupt slot. Every dispatch that runs a body gets one —
+    /// a call nobody can interrupt is the one case this shape exists for.
+    pub fn begin_interrupt(&self, instance: &InstanceId) -> InterruptSlot {
         let key = identity(instance);
         let slot = Arc::new(tokio::sync::Notify::new());
-        self.lifts
+        self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.clone(), Arc::clone(&slot));
-        Lift {
+        InterruptSlot {
             key,
             slot,
-            lifts: Arc::clone(&self.lifts),
+            slots: Arc::clone(&self.slots),
         }
     }
 
-    /// Raise the lift. `false` = no call is running for this instance, so there is
-    /// nothing to lift — which is not an error ("stop my turn" from a page whose
+    /// Raise it. `false` = no call is running for this instance, so there is
+    /// nothing to interrupt — which is not an error ("stop my turn" from a page whose
     /// turn already ended) and must not be reported as one.
-    pub fn lift(&self, instance: &InstanceId) -> bool {
+    pub fn interrupt(&self, instance: &InstanceId) -> bool {
         let slot = self
-            .lifts
+            .slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&identity(instance))
@@ -149,7 +149,7 @@ impl Stops {
         match slot {
             Some(slot) => {
                 // `notify_one` stores a permit if the waiter has not registered yet,
-                // so an early lift is not lost between the insert and the select.
+                // so an interrupt that arrives before the select registers is not lost.
                 slot.notify_one();
                 true
             }

@@ -17,7 +17,7 @@ impl Realm {
     ///
     /// A framework call, not an event: a delivery addressed to a busy instance
     /// queues behind the work it means to stop (measured on gravity's turn
-    /// booth). Stage two — abandoning the operation in flight — is LIFT and is
+    /// booth). Stage two — abandoning the operation in flight — is the INTERRUPT and is
     /// not here yet; it needs the execution layer's one primitive.
     pub fn stop_set(&self, instance: &aura_booth::InstanceId) {
         self.stops.set(instance);
@@ -29,12 +29,12 @@ impl Realm {
         self.stops.clear(instance);
     }
 
-    /// THE LIFT DOOR (ADR-0047 §4, stage two): stop waiting for the call that is
+    /// THE INTERRUPT DOOR (ADR-0047 §4, stage two): stop waiting for the call that is
     /// running on this instance, and let the caller take the terminal value. `false`
     /// means nothing was running — a page's cancel arriving after its turn ended is
     /// exactly that, and it is not an error.
-    pub fn stop_lift(&self, instance: &aura_booth::InstanceId) -> bool {
-        self.stops.lift(instance)
+    pub fn stop_interrupt(&self, instance: &aura_booth::InstanceId) -> bool {
+        self.stops.interrupt(instance)
     }
 
     pub async fn shared_async(self) -> SharedRealm {
@@ -402,10 +402,10 @@ impl Realm {
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
         drop(realm);
-        // ADR-0047 stage two: every dispatch arms a lift slot, so the door has
+        // ADR-0047 stage two: every dispatch arms an interrupt slot, so the door has
         // something to notify. It is removed when this call ends — the guard drops
         // with the future, whichever way the call finished.
-        let lift = realm_stops.begin_lift(id);
+        let interrupt = realm_stops.begin_interrupt(id);
         let mut result = match body {
             aura_booth::Body::Remote {
                 node_alias,
@@ -486,8 +486,8 @@ impl Realm {
                 };
                 let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
                     Ok(()) => {
-                        // The node's answer and the lift, whichever comes first. On a
-                        // lift the node is TOLD (`Frame::Interrupt`) — it is the only
+                        // The node's answer and the interrupt, whichever comes first. On
+                        // one the node is TOLD (`Frame::Interrupt`) — it is the only
                         // party that can reach the work — but the caller does not wait
                         // for its confirmation: the terminal value is already decided,
                         // and `Interrupted` says whether a carrier could act, which
@@ -500,7 +500,7 @@ impl Realm {
                                     "effector '{node_alias}' dropped the call"
                                 )),
                             },
-                            () = lift.notified() => {
+                            () = interrupt.notified() => {
                                 let _ = conn.sender.send(effector_protocol::Frame::Interrupt {
                                     call_id: call_id.clone(),
                                 });
@@ -532,7 +532,7 @@ impl Realm {
                             r = call => r.map(|v| {
                                 aura_booth::Envelope::terminal(Some(v))
                             }),
-                            () = lift.notified() => Err(anyhow::Error::new(
+                            () = interrupt.notified() => Err(anyhow::Error::new(
                                 crate::stop::Interrupted
                             )),
                         }

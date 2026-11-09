@@ -43,13 +43,12 @@ ns `30–39` = the meta plane. Within a band, table order is CONCEPTUAL
 | 23 | MqCursor — subscription cursors (third segment = the ns 30 booth id) | event |
 | 24 | MqHead — partition write heads (the sequence issuer) | event |
 | 25 | EventRoute — the persisted subscription registry (`by_booth` index) | event |
+| 27 | TimerEntry — the durable timer schedule (due time + target; ADR-0016; assigned 2026-11-09, not built yet) | event |
 | 30 | BoothName — the unique booth-TYPE dictionary (also allocates data ns `100+id`) | meta |
 | 31 | BoothDef — one row per booth type | meta |
 | 32 | CodeBlob — content-addressed code bytes | meta |
 
-Reserved: `27–29` (the rest of the event plane's empty middle) and `33–99`. ns 26 is the
-plane-version marker — one raw row, not a table (below). `BOOTH_NS_BASE = 100` is
-unchanged: booth types still allocate above the framework block.
+Reserved: `28–29` and `33–99`. **ns 26 retires, decided 2026-11-09** (the code still writes and checks it until the unit lands): it held one raw row naming the low block's generation, because a store written by the older layout would decode old rows as new tables. okm now answers that per table — a meta row at face `0x0F` inside each ns, carrying `version` and the structural `faces` fingerprint (okm ADR-0043 / ADR-0048) — and the operator's stance is that a store of another shape is WIPED and rebuilt, not migrated. A plane-wide number therefore guards nothing that a per-table stamp does not, and the row is deleted rather than kept as ceremony. `BOOTH_NS_BASE = 100` is unchanged: booth types still allocate above the framework block.
 
 ### Consequences of the renumbering that must be stated, not discovered
 
@@ -84,6 +83,8 @@ unchanged: booth types still allocate above the framework block.
 
 Nothing in the store says which layout wrote it, so an unchecked wipe would rest on the
 operator's memory. The wipe is therefore enforced at boot:
+
+**DECIDED 2026-11-09: this boot check goes away; the code still runs it, and the row and the check are deleted with the unit that removes it.** The answer it provides now lives per table: okm writes a meta row at face `0x0F` inside every ns, carrying `version` and the structural `faces` fingerprint (okm ADR-0043 / ADR-0048), and the stance for a store of another shape is a wipe, not a detection. What follows is the mechanism as it stood, kept because the failure it names — old rows decoded as new tables — remains the reason the number-reuse discipline exists.
 
 - One raw row at **ns 26** (`b"plane-version"` → `u32` BE date-stamp). The row is a MARKER,
   not a table: no derive, no schema, and the ns carries nothing else.

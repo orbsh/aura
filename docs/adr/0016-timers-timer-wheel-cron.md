@@ -1,6 +1,6 @@
 # ADR-0016: Timers — Timer-Wheel Delayed Emit and Cron Semantics
 
-**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; pending: durable tier, declarative `lifecycle.cron`)
+**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; 2026-11-09: the durable tier's carrier is decided — ns 27 `TimerEntry`, ADR-0040 — with the code still pending, as is declarative `lifecycle.cron`)
 **Date**: 2026-09-22
 **Chinese**: [0016-timers-timer-wheel-cron.zh-CN.md](0016-timers-timer-wheel-cron.zh-CN.md)
 
@@ -86,15 +86,7 @@ Deliver entries follow the ordinary job path:
   re-arm is evicted by TTL as usual. Timers keep an booth alive only
   as long as the booth keeps asking — no "self-feeding immortal"
   residency.
-- **Persistence question — timers do NOT survive eviction, by
-  default.** A timer is in-memory scheduling state like a queue; the
-  booth's durable truth lives in its StateStore. But two krystallizer
-  cases need timers to outlive eviction: the 50-minute compression
-  wake and cron. Therefore: a timer may be registered as **durable**
-  (written to a reserved StateStore field namespace, restored on
-  activation via `on_wake`). In-memory timers die with eviction — the
-  cheap default for short windows (interrupt checks) where a cold
-  re-arm on the next real event is correct.
+- **Persistence question — timers do NOT survive eviction, by default.** A timer is in-memory scheduling state like a queue, and a booth's durable truth lives in its declared collections. But two krystallizer cases need timers to outlive eviction: the 50-minute compression wake and cron. Therefore a timer may be registered as **durable**: a row in the realm's timer table `TimerEntry` at ns 27, in the event plane's band (ADR-0040), keyed by due time so that one range read rebuilds the wheel at boot and a due scan after a restart finds everything that came due while nothing was running. This is where the durability that this record once hung on `StateStore` lives — that store no longer exists (ADR-0026 §3), and the timer row is plane data (when to wake an instance), not booth data, so it does not belong in any type's ns either. In-memory timers die with eviction — the cheap default for short windows (interrupt checks) where a cold re-arm on the next real event is correct.
 - **Coalescing**: multiple due timers for one target coalesce into one
   job with a list of due tags — a burst of scheduled checks costs one
   wake, not N.

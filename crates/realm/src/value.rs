@@ -16,7 +16,7 @@ pub fn json_to_dyn(v: &serde_json::Value) -> DynamicValue {
         serde_json::Value::Bool(b) => DynamicValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                DynamicValue::Int(i)
+                DynamicValue::I64(i)
             } else {
                 DynamicValue::F64(n.as_f64().unwrap_or(0.0))
             }
@@ -37,8 +37,13 @@ pub fn dyn_to_json(v: &DynamicValue) -> serde_json::Value {
     match v {
         DynamicValue::Null => serde_json::Value::Null,
         DynamicValue::Bool(b) => serde_json::Value::Bool(*b),
-        DynamicValue::Int(i) => serde_json::Value::Number((*i).into()),
-        DynamicValue::UInt(u) => serde_json::Value::Number((*u).into()),
+        // The widths are a Rust-side convenience: JSON has one number, so every
+        // integer variant lands on it unchanged.
+        DynamicValue::I64(i) => serde_json::Value::Number((*i).into()),
+        DynamicValue::U8(u) => serde_json::Value::Number((*u).into()),
+        DynamicValue::U16(u) => serde_json::Value::Number((*u).into()),
+        DynamicValue::U32(u) => serde_json::Value::Number((*u).into()),
+        DynamicValue::U64(u) => serde_json::Value::Number((*u).into()),
         DynamicValue::F64(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),

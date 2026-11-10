@@ -147,7 +147,7 @@ pub(crate) async fn dispatch_call(
 
 impl Default for Realm {
     fn default() -> Self {
-        // State + mq both ride the okm TestStore through the document
+        // State + mq both ride okm's in-memory engine through the document
         // model (ADR-0018): there is no JSON state store left to default
         // to — and none is needed.
         Self::with_mq(crate::mq::MqStore::mem())

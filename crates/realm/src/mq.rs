@@ -226,41 +226,44 @@ pub enum MqEngine {
     /// okm's fjall adapter (production): its own keyspace on the engine's
     /// fjall database.
     Fjall(okm_core::FjallStore),
-    /// okm's test engine (TestStore): the REAL engine matrix — slatedb
-    /// in-memory by default, fjall temp-dir when only the fjall feature
-    /// is on. No aura-side stand-in: the test engine belongs to okm.
-    Test(okm_core::TestStore),
+    /// okm's in-memory engine (MemStore): a cloned handle shares the
+    /// keyspace. No aura-side stand-in — the store belongs to okm, and
+    /// this arm deliberately does NOT take okm-async's TestStore: that
+    /// would pull slatedb into every production binary (okm's engine
+    /// matrix is a test-side concern, not a runtime dependency of the
+    /// placeholder engine).
+    Mem(okm_core::engine::mem_store::MemStore),
 }
 
 impl okm_core::storage::VirtualStorage for MqEngine {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::Result<()> {
         match self {
             Self::Fjall(s) => s.put(key, value),
-            Self::Test(s) => s.put(key, value),
+            Self::Mem(s) => s.put(key, value),
         }
     }
     fn get(&self, key: &[u8]) -> okm_core::Result<Option<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.get(key),
-            Self::Test(s) => s.get(key),
+            Self::Mem(s) => s.get(key),
         }
     }
     fn del(&self, key: &[u8]) -> okm_core::Result<()> {
         match self {
             Self::Fjall(s) => s.del(key),
-            Self::Test(s) => s.del(key),
+            Self::Mem(s) => s.del(key),
         }
     }
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::Result<Vec<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.scan_suffix(prefix),
-            Self::Test(s) => s.scan_suffix(prefix),
+            Self::Mem(s) => s.scan_suffix(prefix),
         }
     }
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::Result<Vec<Vec<u8>>> {
         match self {
             Self::Fjall(s) => s.scan_range(begin, end),
-            Self::Test(s) => s.scan_range(begin, end),
+            Self::Mem(s) => s.scan_range(begin, end),
         }
     }
 }
@@ -290,9 +293,9 @@ impl MqStore {
     pub fn fjall(store: okm_core::FjallStore) -> Self {
         Self::with_engine(MqEngine::Fjall(store))
     }
-    /// okm's test engine (tests; real engines, no aura-side double).
+    /// okm's in-memory engine (tests and `Engine::Memory`, no aura-side double).
     pub fn mem() -> Self {
-        Self::with_engine(MqEngine::Test(okm_core::TestStore::default()))
+        Self::with_engine(MqEngine::Mem(okm_core::engine::mem_store::MemStore::new()))
     }
     fn with_engine(engine: MqEngine) -> Self {
         Self {

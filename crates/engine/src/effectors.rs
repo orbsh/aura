@@ -150,6 +150,20 @@ async fn handle_connection(
                 // drop the late result (the pending_calls scan owns
                 // timeout semantics; a late answer is not re-delivered).
             }
+            // THE NODE'S ANSWER TO A STOP (ADR-0047 stage two). The realm does not wait
+            // for it — its terminal value is decided by the time this frame is sent — so
+            // this is where the honest half lands instead of being dropped: a node that
+            // could NOT reach the work (steel and python are in-process VMs pinned to
+            // their thread; a call that never armed a handle) is said out loud, so
+            // "it stopped" is never the reading of silence.
+            Frame::Interrupted { call_id, landed } => {
+                if !landed {
+                    eprintln!(
+                        "aura: node '{node_alias}' could not reach call {call_id} — no \
+                         carrier on it can act on a stop, so that call kept running"
+                    );
+                }
+            }
             Frame::Host(HostFrame::Call(call)) => {
                 // Ctx bridge over the wire: resolve against the instance
                 // the enclosing remote call was routed to (looked up from

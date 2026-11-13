@@ -596,7 +596,13 @@ impl Realm {
                             }),
                             scan_range: std::sync::Arc::new({
                                 let store = realm_mq.clone();
-                                move |b, e| store.scan_range(b, e).map_err(|e| e.to_string())
+                                move |b, e| {
+                                    store
+                                        .scan_range(b, e)
+                                        .map(|item| item.map(|(k, _)| k))
+                                        .collect::<okm_core::Result<Vec<Vec<u8>>>>()
+                                        .map_err(|e| e.to_string())
+                                }
                             }),
                         });
                         let collections = plan
@@ -829,7 +835,13 @@ impl Realm {
                 }),
                 scan_range: std::sync::Arc::new({
                     let store = self.mq.clone();
-                    move |b, e| store.scan_range(b, e).map_err(|e| e.to_string())
+                    move |b, e| {
+                        store
+                            .scan_range(b, e)
+                            .map(|item| item.map(|(k, _)| k))
+                            .collect::<okm_core::Result<Vec<Vec<u8>>>>()
+                            .map_err(|e| e.to_string())
+                    }
                 }),
             });
             let collections = plan

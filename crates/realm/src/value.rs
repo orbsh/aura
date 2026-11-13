@@ -8,7 +8,9 @@
 //! base64 (JSON has no binary — that encoding is a display decision at
 //! the seam, never a storage shape).
 
-use okm_core::obj_dynamic::DynamicValue;
+// The dynamic value moved out of okm-core into its own crate (okm-value); the
+// realm's word for it is unchanged, so the alias carries the migration.
+use okm_dynamic::Value as DynamicValue;
 
 pub fn json_to_dyn(v: &serde_json::Value) -> DynamicValue {
     match v {
@@ -25,7 +27,7 @@ pub fn json_to_dyn(v: &serde_json::Value) -> DynamicValue {
         serde_json::Value::Array(items) => {
             DynamicValue::Array(items.iter().map(json_to_dyn).collect())
         }
-        serde_json::Value::Object(map) => DynamicValue::Obj(
+        serde_json::Value::Object(map) => DynamicValue::Map(
             map.iter()
                 .map(|(k, v)| (k.clone(), json_to_dyn(v)))
                 .collect(),
@@ -61,7 +63,7 @@ pub fn dyn_to_json(v: &DynamicValue) -> serde_json::Value {
         DynamicValue::Array(items) => {
             serde_json::Value::Array(items.iter().map(dyn_to_json).collect())
         }
-        DynamicValue::Obj(map) => serde_json::Value::Object(
+        DynamicValue::Map(map) => serde_json::Value::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), dyn_to_json(v)))
                 .collect(),

@@ -13,7 +13,7 @@
 
 use crate::mq::MqStore;
 use aura_booth::{StoreOp, StoreOpKind};
-use okm_dynamic::{AccessMethod, DynamicCollection, ReduceSpec, Value, ValueMap};
+use okm_dynamic::{AccessMethod, Dict, DynamicCollection, ReduceSpec, Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -45,7 +45,7 @@ fn declared_names(schema: &okm_core::schema::CollectionSchema) -> Vec<&str> {
 
 /// The document's dynamic half (the segment): `fetch` answers both slots
 /// (ADR-0035 — the document is one map), so the declared names are dropped.
-fn dynamic_half(schema: &okm_core::schema::CollectionSchema, doc: &ValueMap) -> ValueMap {
+fn dynamic_half(schema: &okm_core::schema::CollectionSchema, doc: &Dict) -> Dict {
     let declared = declared_names(schema);
     doc.iter()
         .filter(|(name, _)| !declared.contains(&name.as_str()))
@@ -55,7 +55,7 @@ fn dynamic_half(schema: &okm_core::schema::CollectionSchema, doc: &ValueMap) -> 
 
 /// The document's declared half: what `replace` needs to rebuild the row
 /// unchanged while leaving no segment at all.
-fn declared_half(schema: &okm_core::schema::CollectionSchema, doc: &ValueMap) -> ValueMap {
+fn declared_half(schema: &okm_core::schema::CollectionSchema, doc: &Dict) -> Dict {
     let declared = declared_names(schema);
     doc.iter()
         .filter(|(name, _)| declared.contains(&name.as_str()))
@@ -220,20 +220,20 @@ fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
         serde_json::Value::Object(map) => {
             // Nested object: legitimate as a dynamic-segment field value;
             // schema-declared fixed-width paths reject it downstream.
-            let mut m = ValueMap::new();
+            let mut m = Dict::new();
             for (k, v) in map {
                 m.insert(k.clone(), json_to_value(v)?);
             }
-            Value::Obj(m)
+            Value::Map(m)
         }
     })
 }
 
-fn json_map(v: &serde_json::Value, what: &str) -> Result<ValueMap, String> {
+fn json_map(v: &serde_json::Value, what: &str) -> Result<Dict, String> {
     let obj = v
         .as_object()
         .ok_or_else(|| format!("{what} must be an object"))?;
-    let mut m = ValueMap::new();
+    let mut m = Dict::new();
     for (k, v) in obj {
         m.insert(k.clone(), json_to_value(v)?);
     }
@@ -254,12 +254,12 @@ fn value_to_json(v: &Value) -> serde_json::Value {
             serde_json::Value::Array(b.iter().map(|&x| serde_json::json!(x)).collect())
         }
         Value::Str(s) => serde_json::json!(s),
-        Value::Obj(m) => map_to_json(m),
+        Value::Map(m) => map_to_json(m),
         Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
     }
 }
 
-fn map_to_json(m: &ValueMap) -> serde_json::Value {
+fn map_to_json(m: &Dict) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     for (k, v) in m {
         out.insert(k.clone(), value_to_json(v));
@@ -303,7 +303,7 @@ pub fn resolve_scan_targets(
         })?
         .access_method();
     drop(specs);
-    let mut key_values = ValueMap::new();
+    let mut key_values = Dict::new();
     key_values.insert(
         am.fields[0].clone(),
         json_to_value(effector).map_err(|e| format!("resolve: effector: {e}"))?,
@@ -403,7 +403,7 @@ pub fn execute(
             let d = json_map(doc, "doc")?;
             // `merge` is the document write (ADR-0035): declared names rebuild
             // the row, the rest ride the dynamic segment.
-            coll.merge(&k, &d)?;
+            coll.put(&k, &d)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetDocument { key } => {
@@ -435,7 +435,7 @@ pub fn execute(
             // overwrite), everything else through the segment arm — so a
             // fields-only write touches no row at all. Reading the document
             // here first would throw that away.
-            coll.merge(&k, &json_map(fields, "fields")?)?;
+            coll.put(&k, &json_map(fields, "fields")?)?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetFields { key, fields } => {
@@ -468,11 +468,12 @@ pub fn execute(
         StoreOpKind::DeleteFields { key } => {
             let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
-            // Dropping the segment means the document IS its declared half:
-            // `replace` rebuilds the row from that map and leaves no segment.
-            // Absent document → an empty map → replace is a no-op purge.
+            // Dropping the segment means the document IS its declared half: the
+            // whole-document payload (`(&Value,)`) rebuilds the row from that map and
+            // leaves no segment. Absent document → an empty map → a no-op purge.
             let doc = coll.fetch(&k)?.unwrap_or_default();
-            coll.replace(&k, &declared_half(schema, &doc))?;
+            let declared = declared_half(schema, &doc);
+            coll.put(&k, (&declared,))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::Scan {
@@ -505,7 +506,7 @@ pub fn execute(
                     .ok_or_else(|| format!("index `{index}` spec missing"))?;
                 (am.fields.clone(), am.slot)
             };
-            let mut key_values = ValueMap::new();
+            let mut key_values = Dict::new();
             for (fname, v) in index_fields.iter().zip(vals.iter()) {
                 key_values.insert(fname.clone(), json_to_value(v)?);
             }
@@ -544,7 +545,7 @@ pub fn execute(
             let g = json_map(group, "group")?;
             // Entry key: [ns 2B][slot u16 BE][group fields in declaration order].
 
-            let mut key_values = ValueMap::new();
+            let mut key_values = Dict::new();
             for fname in &spec_group {
                 let v = g
                     .get(fname.as_str())
@@ -729,7 +730,7 @@ struct PresetLogic {
 }
 
 impl PresetLogic {
-    fn field_u64(doc: &ValueMap, field: &str) -> Result<u64, String> {
+    fn field_u64(doc: &Dict, field: &str) -> Result<u64, String> {
         match doc.get(field) {
             Some(Value::U64(v)) => Ok(*v),
             Some(other) => Err(format!("reduce field `{field}` is not U64: {other:?}")),
@@ -745,7 +746,7 @@ impl okm_dynamic::ReduceLogic for PresetLogic {
             PresetKind::LowWater(_) => u64::MAX.to_be_bytes().to_vec(),
         }
     }
-    fn fold(&self, acc: &mut Vec<u8>, _key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _key: &Dict, document: &Dict) -> Result<(), String> {
         let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
         match &self.kind {
             PresetKind::Count => cur += 1,
@@ -758,8 +759,8 @@ impl okm_dynamic::ReduceLogic for PresetLogic {
     fn unfold(
         &self,
         acc: &mut Vec<u8>,
-        _key: &ValueMap,
-        _document: &ValueMap,
+        _key: &Dict,
+        _document: &Dict,
     ) -> Result<(), String> {
         match &self.kind {
             PresetKind::Count => {

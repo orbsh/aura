@@ -83,16 +83,22 @@ pub fn due_by(
     table: &TimerTable,
     now_ms: u64,
 ) -> okm_core::Result<Vec<(TimerEntryKey, Option<TimerEntry>)>> {
-    let hits = table.scan_range::<__OkmIndex_TimerEntry_by_due>(
-        &[],
-        Some(&now_ms.saturating_add(1).to_be_bytes()),
-    )?;
+    let hits = table
+        .scan_range::<__OkmIndex_TimerEntry_by_due>(
+            &[],
+            Some(&now_ms.saturating_add(1).to_be_bytes()),
+        )
+        .map(|hit| hit.map(|(_, key, row)| (key, row)))
+        .collect::<okm_core::Result<_>>()?;
     Ok(decoded(hits))
 }
 
 /// The whole table, oldest first — what a boot reads to rebuild the wheel.
 pub fn all(table: &TimerTable) -> okm_core::Result<Vec<(TimerEntryKey, Option<TimerEntry>)>> {
-    let hits = table.scan_range::<__OkmIndex_TimerEntry_by_due>(&[], None)?;
+    let hits = table
+        .scan_range::<__OkmIndex_TimerEntry_by_due>(&[], None)
+        .map(|hit| hit.map(|(_, key, row)| (key, row)))
+        .collect::<okm_core::Result<_>>()?;
     Ok(decoded(hits))
 }
 

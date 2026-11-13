@@ -294,7 +294,12 @@ impl Realm {
                             okm_wire::OP_PUT => s.put(key.clone(), value.clone())?,
                             okm_wire::OP_DELETE => s.del(key)?,
                             okm_wire::OP_GET => out.value = s.get(key)?,
-                            okm_wire::OP_SCAN => out.suffixes = s.scan_range(key, None)?,
+                            okm_wire::OP_SCAN => {
+                                out.suffixes = s
+                                    .scan_range(key, None)
+                                    .map(|item| item.map(|(k, _)| k))
+                                    .collect::<okm_core::Result<Vec<Vec<u8>>>>()?
+                            }
                             other => anyhow::bail!("ctx.store.frame: unsupported op tag {other}"),
                         }
                     }

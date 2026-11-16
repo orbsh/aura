@@ -187,27 +187,21 @@ fn serve_code_source(src: &str) -> u16 {
     port
 }
 
-/// The key the shim node signs its challenge with (the handshake has no shared secret).
-fn shim_key_path() -> String {
-    let mut path = std::env::temp_dir();
-    path.push(format!("aura-remote-{}.key", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    effector_protocol::write_keypair(&path).unwrap();
-    path.to_string_lossy().into_owned()
-}
-
 fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
     effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{port}"),
         // The deployed remote-effector form is the wrapped one; this test
         // exercises the call path, not the sandbox (steel runs in-process).
         sandbox: true,
-        private_key_path: shim_key_path(),
+        // This gateway is the unplanned one: it checks no registry, so the token is only
+        // required to be non-empty (ADR-0003 puts the check on prism, where the registry is).
+        token: "test-token".into(),
         capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
             ..Default::default()
         },
+        lease: Default::default(),
     }
 }
 

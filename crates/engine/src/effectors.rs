@@ -48,36 +48,17 @@ async fn handle_connection(
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
 
-    // The host speaks first (effector ADR-0004): a fresh nonce, in every mode. The signature
-    // that answers it is verified here too — local mode has no node REGISTRY (that is prism's,
-    // ADR-0015 §3), but "no registry" has never meant "no proof".
-    let nonce = effector_protocol::nonce();
-    sink.send(Message::Text(serde_json::to_string(&Frame::Challenge {
-        nonce: nonce.clone(),
-    })?))
-    .await?;
-
-    // Registration: alias + carriers + proof. The alias keys the connection.
+    // The node speaks first, and it declares shape only: alias + carriers. Identity rides the
+    // dial as a token, and this gateway is the UNPLANED one — it has no registry to check that
+    // token against (the registry is prism's, ADR-0015 §3), which is why the disclosure above
+    // says the network is the boundary here. No challenge, no signature: a proof carried inside
+    // a frame is a credential inside every log that carries frames (effector ADR-0003).
     let (node_alias, _carriers) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
             Frame::Register {
                 node_alias,
                 carriers,
-                public_key,
-                signature,
-            } => {
-                if let Err(why) =
-                    effector_protocol::verify_register(&public_key, &nonce, &node_alias, &signature)
-                {
-                    let _ = sink
-                        .send(Message::Text(serde_json::to_string(&Frame::Refused {
-                            reason: format!("signature: {why}"),
-                        })?))
-                        .await;
-                    anyhow::bail!("register refused for '{node_alias}': {why}");
-                }
-                (node_alias, carriers)
-            }
+            } => (node_alias, carriers),
             other => anyhow::bail!("expected Register, got {other:?}"),
         },
         other => anyhow::bail!("bad register frame: {other:?}"),

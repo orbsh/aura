@@ -486,6 +486,9 @@ impl Realm {
                     encoding,
                     args: job.args.clone(),
                     code,
+                    // Resources are a gravity/prism decision today; the realm dispatches
+                    // operations and declares none (ADR-0003 §7 arrives with its own slice).
+                    resources: Vec::new(),
                 };
                 let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
                     Ok(()) => {

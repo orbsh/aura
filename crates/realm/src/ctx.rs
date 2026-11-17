@@ -48,16 +48,20 @@ impl Realm {
         // observation kept in force under the new placement).
         let emit_realm = Arc::downgrade(&self_arc);
         let emitter = id.booth_type.clone();
+        let caller = id.clone();
         let mut ctx = aura_booth::Ctx::new(
             id.clone(),
             Arc::new(move |target, handler: &str, args| {
                 let realm = dispatch_realm.clone();
                 let handler = handler.to_string();
+                // The ctx belongs to ONE instance, and that is the caller this dispatch acts for:
+                // it is what lets the callee inherit the turn's environment (ADR-0048).
+                let from = caller.clone();
                 Box::pin(async move {
                     let realm = std::sync::Weak::upgrade(&realm).ok_or_else(|| {
                         anyhow::anyhow!("realm dropped: dispatch after engine shutdown")
                     })?;
-                    dispatch_call(realm, target, &handler, args).await
+                    dispatch_call(realm, Some(from), target, &handler, args).await
                 })
             }),
             // ADR-0034: the iterate dispatch handle rides the same Weak

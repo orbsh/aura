@@ -157,6 +157,17 @@ impl Registry {
     /// Declare a resource for an owner. Re-declaring updates the description, never the pointer:
     /// the current version is what publishing writes.
     pub fn declare(&self, id: &Id, row: &Row, mode: Mode, now_ms: u64) -> anyhow::Result<()> {
+        // The row is this venue's to keep, so its SHAPE is checked here, next to the list of kinds
+        // this venue serves. The rule itself is not restated: `effector_protocol::resource` is the
+        // same code the node runs before it moves the data, so the door and the transfer cannot
+        // disagree about what an `s3` source may look like.
+        if row.source.trim().is_empty() {
+            anyhow::bail!("a `{}` resource needs a source", id.kind);
+        }
+        if id.kind == "s3" {
+            effector_protocol::resource::object_name(&row.source)
+                .map_err(|e| anyhow::anyhow!("resource `{id}`: {e}"))?;
+        }
         let current = self
             .row(id)?
             .and_then(|r| r.get("current").and_then(Value::as_u64))
@@ -427,6 +438,40 @@ mod tests {
         assert_eq!(Mode::parse("ro").unwrap(), Mode::ReadOnly);
         assert_eq!(Mode::parse("rw").unwrap(), Mode::ReadWrite);
         assert!(Mode::parse("readwrite").is_err());
+    }
+
+    #[test]
+    fn the_venue_refuses_a_row_it_could_not_serve() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        let row = |source: &str| Row {
+            desc: String::new(),
+            source: source.into(),
+            at: String::new(),
+            secret: 0,
+            secret_name: String::new(),
+        };
+
+        // An `s3` source names ONE object. A URL ending in `/` names a prefix — a shape this venue
+        // does not serve — and it dies here, at the declaration, not on a node halfway through.
+        let bucket = Id::new("alice", "s3", 1).unwrap();
+        let err = registry
+            .declare(&bucket, &row("s3://bucket/builds/"), Mode::ReadOnly, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prefix"), "the refusal says what is wrong: {err}");
+
+        // A row with no source at all is refused for every kind: nothing can move to nowhere.
+        let git = Id::new("alice", "git", 2).unwrap();
+        let err = registry
+            .declare(&git, &row("  "), Mode::ReadOnly, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs a source"), "{err}");
+
+        // And the shape it does serve goes in.
+        registry
+            .declare(&bucket, &row("s3://bucket/builds/out.tar"), Mode::ReadOnly, 1)
+            .expect("one object is a declaration this venue can keep");
     }
 
     #[test]

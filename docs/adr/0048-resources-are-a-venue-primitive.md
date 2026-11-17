@@ -26,14 +26,15 @@ dispatch; nothing else about it changes.
 **Resources are an aura primitive.** The venue owns three things and nothing
 more:
 
-1. **The declaration.** An activation declares what it needs, in its own start
-   args (`resources: [{kind, seq}]`). The realm stamps the OWNER from the
-   turn's envelope and hands the declaration to every dispatch of that
-   activation. A task never names an owner — one that could would borrow
-   another account's data. The environment follows the call: a booth the
-   activation invokes (a mount, a sub-booth) inherits the declaration and the
-   account, because it is the one that dispatches to the node, and a callee that
-   declares resources of its own still wins over what it inherited.
+1. **The declaration.** An activation names what it needs WHILE IT RUNS —
+   `ctx.resource({op, kind, seq})`, the same ctx surface as `ctx.store` — because
+   a script's data need is decided by the script, as §5 of effector ADR-0003
+   already said. Nothing rides the call: a list fixed at start would be a
+   declaration nobody could fill, and two ways to name a resource is one too
+   many. The realm stamps the OWNER from the turn's envelope; an activation never
+   names one — one that could would borrow another account's data. The account
+   follows the call: a booth the activation invokes (a mount, a sub-booth)
+   inherits it, because it is the one that dispatches to the node.
 2. **The registry.** Rows in the venue's store — the same place an owner's data
    lives — in a framework band of its own (ns 36, ADR-0040's meta band; versions at 37 and
    secrets at 38 — one table per ns, because okm's structural stamp is one row per

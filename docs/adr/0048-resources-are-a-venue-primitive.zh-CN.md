@@ -14,7 +14,7 @@
 
 **资源是 aura 的原语。** venue 只拥有三样东西：
 
-1. **声明**。一次 activation 在自己的 start args 里声明它需要什么（`resources: [{kind, seq}]`）。realm 从 turn 的信封上盖下 OWNER，并把声明交给这次 activation 的每一次派发。任务永远不声明 owner——能声明 owner 的任务就能借用别人的数据。环境跟着调用走：activation 调用的 booth（mount、子 booth）继承这份声明和这个账号，因为往节点上派发的是它；而被调方自己声明了资源的，以它自己的为准。
+1. **声明**。一次 activation 在**跑起来之后**才说要什么——`ctx.resource({op, kind, seq})`，和 `ctx.store` 挂在同一个 ctx 上，因为需要什么数据是脚本自己决定的（effector ADR-0003 §5 早已这么写）。声明不跟着调用走：开跑前就固定的那张表没人能填，而"两种说法指同一件事"就是多出来的一种。realm 从 turn 的信封上盖下 OWNER，activation 自己永远不声明 owner——能声明 owner 的就能借用别人的数据。账号跟着调用走：activation 调用的 booth（mount、子 booth）继承它，因为往节点上派发的是它。
 2. **名册**。行在 venue 的 store 里——也就是 owner 数据所在的那一处——用框架自留的号段（ns 36，ADR-0040 的 meta 段；版本在 37、密钥在 38——一个 ns 一张表，
     因为 okm 的结构戳是按 ns 一行，共用号位会让一张表的布局变化替另一张说话）。键是 store 的**有类型键**（一个判别子加一个数字），不是 `owner/kind/seq` 的字节拼法：okm 的键是定宽有类型的字段，只有末段可以是变宽字符串，所以文本的身份部分是**声明字段**，`by_owner` 索引让"我拥有的一切"仍然是一次区间读。行里放固定的部分（`desc`、`mode`、`created_at`、指向当前版本的指针），随 kind 变化的进动态段。版本自成一列行并带 `previous` 链，于是撤销是一次读，不需要索引。
 3. **接口**。内置在 realm 里，不是 booth：`resource.register`、`resource.secret`、`resource.material`、`resource.published`。平面（prism）像管理节点和令牌那样管理它。

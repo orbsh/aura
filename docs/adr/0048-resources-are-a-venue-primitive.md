@@ -30,7 +30,10 @@ more:
    args (`resources: [{kind, seq}]`). The realm stamps the OWNER from the
    turn's envelope and hands the declaration to every dispatch of that
    activation. A task never names an owner — one that could would borrow
-   another account's data.
+   another account's data. The environment follows the call: a booth the
+   activation invokes (a mount, a sub-booth) inherits the declaration and the
+   account, because it is the one that dispatches to the node, and a callee that
+   declares resources of its own still wins over what it inherited.
 2. **The registry.** Rows in the venue's store — the same place an owner's data
    lives — in a framework band of its own (ns 36, ADR-0040's meta band; versions at 37 and
    secrets at 38 — one table per ns, because okm's structural stamp is one row per

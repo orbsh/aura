@@ -965,10 +965,6 @@ pub struct Instance {
     )>,
     /// Last job arrival; the evictor compares against idle_ttl.
     pub last_activity: std::time::Instant,
-    /// The execution environment this instance declared with its start args (ADR-0003 §7): the
-    /// resources a turn may touch. Opaque here — the booth owns the shape, the realm only carries
-    /// it to the dispatcher — and never persisted: it is a property of one activation.
-    pub environment: Value,
     /// The account this activation runs for, as the turn's ENVELOPE stated it (`sender.user`).
     /// The realm records it once at the entrance; nothing downstream re-derives it from an id's
     /// shape, and no booth reads it — it exists so the plane can be told "whose call is this"
@@ -984,7 +980,6 @@ impl Instance {
             queue,
             subscriptions: Vec::new(),
             last_activity: std::time::Instant::now(),
-            environment: Value::Null,
             owner: None,
         }
     }

@@ -146,17 +146,14 @@ pub(crate) async fn dispatch_call(
         let inherited = r
             .instances
             .get(&(from.booth_type.clone(), from.key.clone()))
-            .map(|i| (i.environment.clone(), i.owner.clone()));
-        if let Some((environment, owner)) = inherited {
+            .and_then(|i| i.owner.clone());
+        if let Some(owner) = inherited {
             let asked = (target.booth_type.clone(), target.key.clone());
             // Creating it here is the same creation the call would do a moment later.
             let _ = r.instance(realm.clone(), &target).await?;
             if let Some(i) = r.instances.get_mut(&asked) {
-                if !environment.is_null() {
-                    i.environment = environment;
-                }
                 if i.owner.is_none() {
-                    i.owner = owner;
+                    i.owner = Some(owner);
                 }
             }
         }
@@ -280,17 +277,15 @@ pub(crate) async fn next_seq(self_arc: &SharedRealm) -> u64 {
     realm.call_seq
 }
 
-/// ADR-0048: the environment follows the call. A turn declares the resources it may touch in its
-/// own args; when it invokes a mount, the mount is what dispatches to the node, so the declaration
-/// (and the account) has to arrive there — or the node is asked to work on data nobody named.
-/// These tests sit on that seam. In-crate because the door they exercise is crate-private.
+/// ADR-0048: the account follows the call. A turn is who the envelope says; when it invokes a
+/// mount, the mount is what dispatches to the node, so the account has to arrive there too — the
+/// plane answers a node's material ask from it. These tests sit on that seam. In-crate because the
+/// door they exercise is crate-private.
 #[cfg(test)]
 mod follows_call_tests {
     use super::*;
     use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
     use crate::mq::MqStore;
-    use std::sync::Arc;
-
 
 fn at(booth: &str, key: &str) -> InstanceId {
     InstanceId {
@@ -317,7 +312,7 @@ fn remote_type(name: &str, node_alias: &str) -> BoothType {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_mount_inherits_the_turn_it_acts_for() {
+async fn a_mount_inherits_the_account_of_the_turn_it_acts_for() {
     let realm = Realm::with_mq(MqStore::mem()).shared_async().await;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     {
@@ -333,9 +328,8 @@ async fn a_mount_inherits_the_turn_it_acts_for() {
         );
     }
 
-    // The turn: its key is the device, and its environment is what it declared on the way in.
+    // The turn: its key is the device, its account came from the envelope at the entrance.
     let turn = at("turn", "device-a");
-    let mount = at("mount", "run-7");
     {
         let mut r = realm.lock().await;
         let _ = r.instance(realm.clone(), &turn).await.unwrap();
@@ -343,14 +337,13 @@ async fn a_mount_inherits_the_turn_it_acts_for() {
             .instances
             .get_mut(&(turn.booth_type.clone(), turn.key.clone()))
             .expect("the turn instance");
-        i.environment = serde_json::json!([{ "kind": "git", "seq": 1 }]);
         i.owner = Some("alice".into());
     }
 
     // The invocation: the turn acts, the mount carries the consequence.
     let dispatch = {
         let realm = realm.clone();
-        let mount = mount.clone();
+        let mount = at("mount", "run-7");
         tokio::spawn(async move {
             crate::dispatch_call(
                 realm,
@@ -370,15 +363,9 @@ async fn a_mount_inherits_the_turn_it_acts_for() {
     let effector_protocol::Frame::Call(call) = frame else {
         panic!("the dispatch reaches the node as a Call, got {frame:?}");
     };
-    let declared: Vec<(String, u64)> = call.resources.iter().map(|r| (r.kind.clone(), r.seq)).collect();
-    assert_eq!(
-        declared,
-        vec![("git".to_string(), 1)],
-        "the mount dispatches what the turn declared"
-    );
 
-    // And the account travels with the call, so the plane can answer a material ask without
-    // parsing anybody's key.
+    // The account travels with the call, so the plane can answer a material ask without parsing
+    // anybody's key.
     let owner = {
         let r = realm.lock().await;
         r.pending_remote
@@ -387,68 +374,6 @@ async fn a_mount_inherits_the_turn_it_acts_for() {
     };
     assert_eq!(owner.as_deref(), Some("alice"));
 
-    dispatch.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_callee_that_declares_its_own_is_not_overwritten() {
-    let realm = Realm::with_mq(MqStore::mem()).shared_async().await;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    {
-        let mut r = realm.lock().await;
-        r.code_base_url = Some("http://plane.invalid/code".into());
-        r.register_type(remote_type("mount", "node-1"));
-        r.effectors.insert(
-            "node-1".into(),
-            crate::ActuatorConn {
-                sender: tx,
-                peer: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
-            },
-        );
-    }
-
-    let turn = at("turn", "device-a");
-    let mount = at("mount", "run-8");
-    {
-        let mut r = realm.lock().await;
-        let _ = r.instance(realm.clone(), &turn).await.unwrap();
-        let i = r
-            .instances
-            .get_mut(&(turn.booth_type.clone(), turn.key.clone()))
-            .expect("the turn instance");
-        i.environment = serde_json::json!([{ "kind": "git", "seq": 1 }]);
-    }
-
-    let dispatch = {
-        let realm = realm.clone();
-        let mount = mount.clone();
-        tokio::spawn(async move {
-            // The job itself declares something different: a booth's own word wins.
-            crate::dispatch_call(
-                realm,
-                Some(at("turn", "device-a")),
-                mount,
-                "execute",
-                serde_json::json!({ "resources": [{ "kind": "s3", "seq": 2 }] }),
-            )
-            .await
-        })
-    };
-
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
-        .await
-        .expect("a frame within ten seconds")
-        .expect("the node channel stays open");
-    let effector_protocol::Frame::Call(call) = frame else {
-        panic!("the dispatch reaches the node as a Call, got {frame:?}");
-    };
-    let declared: Vec<(String, u64)> = call.resources.iter().map(|r| (r.kind.clone(), r.seq)).collect();
-    assert_eq!(
-        declared,
-        vec![("s3".to_string(), 2)],
-        "a callee's own declaration overrides what it inherited"
-    );
-    let _ = Arc::strong_count(&realm);
     dispatch.abort();
 }
 }

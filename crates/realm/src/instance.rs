@@ -367,16 +367,6 @@ impl Realm {
             .get_mut(&(id.booth_type.clone(), id.key.clone()))
         {
             i.last_activity = Instant::now();
-            // ADR-0003 §7: a turn declares the resources it may touch IN ITS ARGS, and that
-            // declaration is the execution environment for everything this instance dispatches —
-            // so it is remembered here, on the way in. No new wire, no new ctx arm: the booth's
-            // own start payload is where the environment comes from, and the dispatcher below is
-            // what hands it to the node.
-            if let Some(resources) = job.args.get("resources") {
-                if resources.is_array() {
-                    i.environment = resources.clone();
-                }
-            }
             // Who this activation is FOR is a fact the envelope already carries (the sender the
             // plane authenticated). Recorded here, once, so no later layer has to infer it from an
             // instance key's shape — that inference was a fact about ADR-0018 living outside its
@@ -424,15 +414,8 @@ impl Realm {
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
-        // The declared environment, read while the realm is held: every remote dispatch from this
-        // instance carries it (a node that is told nothing touches no persistent data).
-        let environment = realm
-            .instances
-            .get(&(id.booth_type.clone(), id.key.clone()))
-            .map(|i| i.environment.clone())
-            .unwrap_or(serde_json::Value::Null);
-        // Same read, same reason: the owner travels with the call so the plane can answer a node's
-        // material ask without parsing keys that belong to somebody else's vocabulary.
+        // Read while the realm is held: the owner travels with the call so the plane can answer a
+        // node's material ask without parsing keys that belong to somebody else's vocabulary.
         let owner = realm
             .instances
             .get(&(id.booth_type.clone(), id.key.clone()))
@@ -523,10 +506,6 @@ impl Realm {
                     encoding,
                     args: job.args.clone(),
                     code,
-                    // ADR-0003 §7: the environment the booth declared with its start args. The
-                    // realm does not judge it — gravity minted and validated the table, and the
-                    // node is the one that acts on a declaration (ensure before, publish after).
-                    resources: declared_resources(&environment),
                 };
                 let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
                     Ok(()) => {
@@ -1168,51 +1147,6 @@ impl Realm {
     pub fn is_resident(&self, id: &InstanceId) -> bool {
         self.instances
             .contains_key(&(id.booth_type.clone(), id.key.clone()))
-    }
-}
-
-/// The resources a booth declared with its start args, in the node protocol's spelling. A
-/// declaration that does not decode is DROPPED WITH A LINE, not carried broken: the table was
-/// validated where it was minted (gravity refuses a bad row outright), and this side is a carrier,
-/// not a judge — but silently widening what a turn may touch would be worse than saying so.
-fn declared_resources(environment: &serde_json::Value) -> Vec<effector_protocol::ResourceDecl> {
-    if environment.is_null() {
-        return Vec::new();
-    }
-    match serde_json::from_value::<Vec<effector_protocol::ResourceDecl>>(environment.clone()) {
-        Ok(declarations) => declarations,
-        Err(e) => {
-            eprintln!("realm: the declared resources are not readable as declarations: {e}");
-            Vec::new()
-        }
-    }
-}
-
-#[cfg(test)]
-mod environment_tests {
-    use super::declared_resources;
-
-    #[test]
-    fn a_turn_that_declares_nothing_dispatches_with_nothing() {
-        assert!(declared_resources(&serde_json::Value::Null).is_empty());
-    }
-
-    #[test]
-    fn the_declaration_reaches_the_node_as_kind_and_sequence() {
-        let environment = serde_json::json!([
-            { "kind": "git", "seq": 7 },
-            { "kind": "snapshot", "seq": 1 },
-        ]);
-        let declarations = declared_resources(&environment);
-        assert_eq!(declarations.len(), 2);
-        assert_eq!(declarations[0].kind, "git");
-        assert_eq!(declarations[0].seq, 7);
-    }
-
-    #[test]
-    fn a_broken_declaration_is_not_silently_widened() {
-        let environment = serde_json::json!([{ "kind": "git" }]);
-        assert!(declared_resources(&environment).is_empty());
     }
 }
 

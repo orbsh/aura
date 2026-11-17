@@ -28,7 +28,7 @@ fn script() -> &'static str {
         "layout_version" 1 "hot_width" 8 "payload_header_len" 3
         "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
         "cold_fields" (list)
-        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 16385 "declared_reduce_base" 20481 "junction_base" 12288)))))))
 (define (interface_schema args) (schema))
 
 ;; A handler arms a one-shot wake: `at_ms` from the payload, tag fixed.

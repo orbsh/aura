@@ -598,7 +598,7 @@ mod tests {
                 { "name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": null }
             ],
             "cold_fields": [],
-            "slots": { "primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3, "declared_index_base": 4096, "declared_reduce_base": 8192, "junction_base": 12288 }
+            "slots": { "primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3, "declared_index_base": 16385, "declared_reduce_base": 20481, "junction_base": 12288 }
         })
     }
 
@@ -657,9 +657,9 @@ mod tests {
 // ---------------------------------------------------------------------
 // Schema-declared access methods and preset reduces (from the
 // interface_schema's storage block, as data):
-//   "indexes":  [ { "name": "by_user", "slot": 4097, "fields": [...],
+//   "indexes":  [ { "name": "by_user", "slot": 16385, "fields": [...],
 //                   "includes": [...], "kind": "plain" } ]
-//   "reduces":  [ { "name": "total", "slot": 8193, "group": [...],
+//   "reduces":  [ { "name": "total", "slot": 20481, "group": [...],
 //                   "kind": "count" | {"high_water": "field"} | {"low_water": "field"} } ]
 // Preset logics implement okm-dynamic's ReduceLogic in Rust (the acc is
 // u64 BE — the same layout okm-core's presets use); host-language logic
@@ -829,9 +829,9 @@ mod scan_tests {
         let plan = StorePlan::from_schema(710, &serde_json::json!({
             "storage": { "collections": { "orders": {
                 "schema": schema_json(),
-                "indexes": [ { "name": "by_count", "slot": 4097, "fields": ["count"], "kind": "plain" } ],
-                "reduces": [ { "name": "n", "slot": 8193, "group": ["id"], "kind": "count" },
-                             { "name": "peak", "slot": 8194, "group": ["id"], "kind": { "high_water": "count" } } ]
+                "indexes": [ { "name": "by_count", "slot": 16385, "fields": ["count"], "kind": "plain" } ],
+                "reduces": [ { "name": "n", "slot": 20481, "group": ["id"], "kind": "count" },
+                             { "name": "peak", "slot": 20482, "group": ["id"], "kind": { "high_water": "count" } } ]
             } } }
         }))
         .unwrap();

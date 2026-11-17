@@ -71,7 +71,7 @@ fn schema(hot: Value, cold: Value) -> Value {
         "hot_fields": hot,
         "cold_fields": cold,
         "slots": {"primary": 0, "dynamic": 1, "dict_id": 2, "dict_name": 3,
-                  "declared_index_base": 4096, "declared_reduce_base": 8192},
+                  "declared_index_base": 16385, "declared_reduce_base": 20481},
     })
 }
 

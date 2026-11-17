@@ -33,7 +33,7 @@ fn counter_script(events: &[&'static str]) -> String {
         "layout_version" 1 "hot_width" 8 "payload_header_len" 3
         "hot_fields" (list (hash "name" "count" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
         "cold_fields" (list)
-        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288)))))))
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 16385 "declared_reduce_base" 20481 "junction_base" 12288)))))))
 (define (interface_schema args) (schema))
 (define (count args)
   (let* ((n (user-n (hash-ref args "user_id")))
@@ -826,8 +826,8 @@ async fn scan_route_fans_out_to_the_hit_rows() {
         "layout_version" 1 "hot_width" 8 "payload_header_len" 3
         "hot_fields" (list (hash "name" "hits" "ty" "U64" "width" 8 "offset" 0 "tag" 0))
         "cold_fields" (list (hash "name" "email" "ty" "Str" "width" 0 "offset" 0 "tag" 0))
-        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 4096 "declared_reduce_base" 8192 "junction_base" 12288))
-  "indexes" (list (hash "name" "by_email" "slot" 4096 "fields" (list "email") "kind" "plain")))))))
+        "slots" (hash "primary" 0 "dynamic" 1 "dict_id" 2 "dict_name" 3 "declared_index_base" 16385 "declared_reduce_base" 20481 "junction_base" 12288))
+  "indexes" (list (hash "name" "by_email" "slot" 16385 "fields" (list "email") "kind" "plain")))))))
 (define (interface_schema args) (schema))
 (define (newsletter args)
   (let* ((me (hash-ref args "me"))

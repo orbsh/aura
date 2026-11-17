@@ -53,10 +53,10 @@ def emit_write_bind_read(args):
 @on("bind_scan", key="user_id")
 def bind_scan(args):
     Counters.merge(_k(3), {"count": 43})
-    # Declared-index scan through the binding face: slot 4097 is the
-    # DSL-assigned first index slot (INDEX_BASE = 4096 | 1); count=43
+    # Declared-index scan through the binding face: slot 16385 is the
+    # DSL-assigned first index slot (INDEX_BASE = 0x4001, the index family); count=43
     # BE is the prefix.
-    hits = Counters.scan(4097, (43).to_bytes(8, "big"))
+    hits = Counters.scan(16385, (43).to_bytes(8, "big"))
     return {"hits": len(hits)}
 "##;
 

@@ -121,6 +121,10 @@ pub struct Realm {
     pub timers: timer::TimerHandle,
     /// The stop bits (ADR-0047): one in-memory flag per activation, no storage.
     pub stops: stop::Stops,
+    /// The resource registry (ADR-0048): rows, versions and keys, in the venue's own store. Built
+    /// here rather than by a booth, because a booth that owned it would make every other booth
+    /// depend on that one — a build pipeline would have to ask a chat venue for a bucket.
+    pub resources: crate::resources::Registry,
 }
 
 pub(crate) async fn dispatch_call(

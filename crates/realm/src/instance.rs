@@ -66,6 +66,8 @@ impl Realm {
             store_plans: HashMap::new(),
             persisted_schemas: HashMap::new(),
             dead_events: event::DeadEvents::default(),
+            resources: crate::resources::Registry::new(mq_store.clone())
+                .expect("the resource registry's own schemas are fixed at compile time"),
             // Placeholder; the real handle lands right after the realm
             // is wrapped in its Arc (the driver needs the SharedRealm).
             timers: timer::TimerHandle::detached(),

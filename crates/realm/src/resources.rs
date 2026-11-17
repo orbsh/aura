@@ -33,6 +33,7 @@ const SECRET: u64 = 1;
 /// one table's layout change speak for another's. Secrets get their own ns so that "the code that
 /// reads a row cannot read a key" is a schema fact rather than a habit: a booth's plan addresses
 /// only its own ns (100+), so none of these tables is reachable from booth code at all.
+#[derive(Clone)]
 pub struct Registry {
     store: MqStore,
     resources: StorePlan,

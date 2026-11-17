@@ -1,57 +1,68 @@
-//! Resources: the venue's primitive for everything an execution needs besides its arguments
-//! (ADR-0048).
+//! Resources: the venue's primitive for the durable data an execution needs (ADR-0048, revised by
+//! ADR-0049 — a resource is a GRANT, not a snapshot).
 //!
-//! Three things live here and nothing else: the identity a resource is addressed by, the words a
-//! declaration speaks (`kind`, `mode`), and the version arithmetic the registry keys rows with.
+//! Two things live here and nothing else: a grant per kind (where the bytes are reachable and on
+//! what terms) and the credential that reaches them.
 //!
-//! What deliberately does NOT live here: any transfer. Cloning, fetching, GET/PUT, pulling an image
-//! belong to the executor that holds the bytes (effector), and the venue only authorises one
-//! transfer at a time — an address plus a one-shot credential, minted per call, read and write
-//! separately, so a leaked read credential cannot publish.
+//! What deliberately does NOT live here:
 //!
-//! Keys are NOT here either. A row names the secret it uses (`secret`), and the secret itself sits
-//! in a namespace no booth declares, which is why a dumped row hands nobody a key.
+//! - **Any transfer.** Cloning, GET/PUT, `rustic restore/backup` belong to the node that holds the
+//!   bytes (effector). The venue hands over an address and a credential; it never moves data.
+//! - **Any version.** A store already keeps its own history — a git ref, an object version, a rustic
+//!   snapshot — and a pointer kept here would be a second copy of the truth that can disagree with
+//!   the first one. The reference a publish produces goes back to the caller, not into a table.
+//! - **Any per-resource row.** A script names WHAT it wants (`remote`) under the grant's base, the
+//!   way an S3 client names a key. Registering every object would make the registry a slower bucket.
+//!
+//! The layout is one bucket for everybody, separated by a prefix this code composes:
+//! `<base>/<tenant>/<kind>/<remote>`. The prefix is not a security boundary — a credential reaches
+//! the whole store — it is what keeps two tenants' files from colliding, and it exists because the
+//! node builds the path, not because the caller asked for it.
 
 use crate::mq::MqStore;
 use crate::store_exec::{self, StorePlan};
 use aura_booth::{StoreOp, StoreOpKind};
 use serde_json::{json, Value};
 
-/// ns numbers (ADR-0040's meta band, extended by ADR-0048).
-pub const NS_RESOURCE: u16 = 36;
-pub const NS_VERSION: u16 = 37;
+/// ns numbers (ADR-0040's meta band). `37` was the version table and is retired with ADR-0049.
+pub const NS_GRANT: u16 = 36;
 pub const NS_SECRET: u16 = 38;
 
 /// The discriminator inside a table: a row is `(disc, number)`.
-const RESOURCE: u64 = 1;
-const VERSION: u64 = 1;
+const GRANT: u64 = 1;
 const SECRET: u64 = 1;
 
-/// The registry: three tables in three framework namespaces.
+/// The kinds this venue serves. A kind is an IDENTITY, and it names the MECHANISM the node uses, not
+/// the store the bytes happen to sit in: `git` keeps history and answers a `branch@sha`, `object` is
+/// one blob and answers an ETag, `archive` is an incremental repository (rustic, or anything else
+/// that keeps snapshots in a store) and answers a snapshot id.
+///
+/// `image` is not here: what a container IS belongs to the environment the node declares, not to the
+/// data a script reads. `volume` is not here either: "a directory that outlives the call" is a
+/// node-local cache policy, not something a row can describe.
+pub const KINDS: [&str; 3] = ["git", "object", "archive"];
+
+/// The registry: two tables in two framework namespaces.
 ///
 /// One table per ns, because okm's structural stamp is one row per ns — sharing a number would let
 /// one table's layout change speak for another's. Secrets get their own ns so that "the code that
-/// reads a row cannot read a key" is a schema fact rather than a habit: a booth's plan addresses
-/// only its own ns (100+), so none of these tables is reachable from booth code at all.
+/// reads a grant cannot read a key" is a schema fact rather than a habit.
 #[derive(Clone)]
 pub struct Registry {
     store: MqStore,
-    resources: StorePlan,
-    versions: StorePlan,
+    grants: StorePlan,
     secrets: StorePlan,
 }
 
-/// A row as the registry keeps it. `secret` numbers a secret entry; the value never rides a row.
+/// A grant as an operator declares it: where the bytes are, on what terms, and under which key.
 #[derive(Clone, Debug, Default)]
-pub struct Row {
+pub struct Grant {
     pub desc: String,
-    /// The store's address for this resource (a repository URL, a bucket, an image ref).
-    pub source: String,
-    /// The version to check out by default, when the kind has versions.
-    pub at: String,
-    /// The secret entry's number, `0` = none.
-    pub secret: u64,
-    /// A human word for the secret, so a dumped row can be understood without the number.
+    /// The store root this kind lives under — a host for `git`, a bucket for `object`/`archive`.
+    /// NOT the tenant's slice: this code appends `<tenant>/<kind>/`.
+    pub base: String,
+    pub mode: Mode,
+    /// A human word for the credential, so a dumped grant can be understood without a number.
     pub secret_name: String,
 }
 
@@ -75,48 +86,48 @@ fn schema(hot: Value, cold: Value) -> Value {
     })
 }
 
+/// A plain name: something that can sit inside a path without changing where it points. Anything
+/// else is refused where it is handed over rather than escaped later.
+fn plain_name(what: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value == "."
+        || value == ".."
+        || value.contains('\u{1f}')
+    {
+        anyhow::bail!("{what} `{value}` is not a plain name");
+    }
+    Ok(())
+}
+
 impl Registry {
     pub fn new(store: MqStore) -> anyhow::Result<Self> {
-        let resources = json!({ "storage": { "collections": { "resources": { "schema": schema(
+        let grants = json!({ "storage": { "collections": { "grants": { "schema": schema(
             json!([
                 {"name": "mode", "ty": "U64", "width": 8, "offset": 0, "tag": 0},
-                {"name": "current", "ty": "U64", "width": 8, "offset": 8, "tag": 0},
-                {"name": "secret", "ty": "U64", "width": 8, "offset": 16, "tag": 0},
+                {"name": "secret", "ty": "U64", "width": 8, "offset": 8, "tag": 0},
             ]),
             json!([
-                {"name": "owner", "ty": "Str", "width": 0, "offset": 0, "tag": 1},
-                {"name": "rkind", "ty": "Str", "width": 0, "offset": 0, "tag": 2},
+                // Not `kind`: the key field already owns that name, and a cold field with the same
+                // name is read as the key's value ("expected string", from a number).
+                {"name": "rkind", "ty": "Str", "width": 0, "offset": 0, "tag": 1},
+                {"name": "scope", "ty": "Str", "width": 0, "offset": 0, "tag": 2},
                 {"name": "desc", "ty": "Str", "width": 0, "offset": 0, "tag": 3},
-                {"name": "source", "ty": "Str", "width": 0, "offset": 0, "tag": 4},
-                {"name": "at", "ty": "Str", "width": 0, "offset": 0, "tag": 5},
-                {"name": "secret_name", "ty": "Str", "width": 0, "offset": 0, "tag": 6},
-            ]),
-        ) } } } });
-        let versions = json!({ "storage": { "collections": { "versions": { "schema": schema(
-            json!([
-                {"name": "seq", "ty": "U64", "width": 8, "offset": 0, "tag": 0},
-                {"name": "previous", "ty": "U64", "width": 8, "offset": 8, "tag": 0},
-                {"name": "created_at", "ty": "U64", "width": 8, "offset": 16, "tag": 0},
-            ]),
-            json!([
-                {"name": "owner", "ty": "Str", "width": 0, "offset": 0, "tag": 1},
-                {"name": "rkind", "ty": "Str", "width": 0, "offset": 0, "tag": 2},
-                {"name": "reference", "ty": "Str", "width": 0, "offset": 0, "tag": 3},
-                {"name": "call_id", "ty": "Str", "width": 0, "offset": 0, "tag": 4},
+                {"name": "base", "ty": "Str", "width": 0, "offset": 0, "tag": 4},
+                {"name": "secret_name", "ty": "Str", "width": 0, "offset": 0, "tag": 5},
             ]),
         ) } } } });
         let secrets = json!({ "storage": { "collections": { "secrets": { "schema": schema(
             json!([]),
             json!([
-                {"name": "owner", "ty": "Str", "width": 0, "offset": 0, "tag": 1},
-                {"name": "name", "ty": "Str", "width": 0, "offset": 0, "tag": 2},
-                {"name": "value", "ty": "Str", "width": 0, "offset": 0, "tag": 3},
+                {"name": "rkind", "ty": "Str", "width": 0, "offset": 0, "tag": 1},
+                {"name": "value", "ty": "Str", "width": 0, "offset": 0, "tag": 2},
             ]),
         ) } } } });
         Ok(Self {
             store: store.clone(),
-            resources: StorePlan::from_schema(NS_RESOURCE, &resources)?,
-            versions: StorePlan::from_schema(NS_VERSION, &versions)?,
+            grants: StorePlan::from_schema(NS_GRANT, &grants)?,
             secrets: StorePlan::from_schema(NS_SECRET, &secrets)?,
         })
     }
@@ -134,90 +145,92 @@ impl Registry {
         json!({ "kind": disc, "id": id })
     }
 
-    /// The row as stored, for a management surface that has to show it. The secret is NOT part of
-    /// it — a row names its key, and reading the row must never be reading the key.
-    pub fn row(&self, id: &Id) -> anyhow::Result<Option<Value>> {
+    /// A kind's number in the key. The list is the vocabulary, so its position IS the number and a
+    /// kind that is not in it has no row to look for.
+    fn kind_no(kind: &str) -> anyhow::Result<u64> {
+        KINDS
+            .iter()
+            .position(|known| *known == kind)
+            .map(|at| at as u64 + 1)
+            .ok_or_else(|| {
+                anyhow::anyhow!("this venue cannot serve kind `{kind}` (kinds: {KINDS:?})")
+            })
+    }
+
+    /// The grant as stored, for a management surface that has to show it. The credential is NOT part
+    /// of it — a grant names its key, and reading the grant must never be reading the key.
+    pub fn grant(&self, kind: &str) -> anyhow::Result<Option<Value>> {
         let row = self.exec(
-            &self.resources,
-            "resources",
-            StoreOpKind::GetDocument { key: Self::key(RESOURCE, id.seq) },
+            &self.grants,
+            "grants",
+            StoreOpKind::GetDocument { key: Self::key(GRANT, Self::kind_no(kind)?) },
         )?;
         Ok(if row.is_null() { None } else { Some(row) })
     }
 
-    /// Which version the pointer names, `0` for never published. The one read a plane needs to
-    /// show "this is what the resource is" without touching the row's other fields.
-    pub fn current(&self, id: &Id) -> anyhow::Result<u64> {
-        Ok(self
-            .row(id)?
-            .and_then(|row| row.get("current").and_then(Value::as_u64))
-            .unwrap_or(0))
-    }
-
-    /// Declare a resource for an owner. Re-declaring updates the description, never the pointer:
-    /// the current version is what publishing writes.
-    pub fn declare(&self, id: &Id, row: &Row, mode: Mode, now_ms: u64) -> anyhow::Result<()> {
-        // The row is this venue's to keep, so its SHAPE is checked here, next to the list of kinds
-        // this venue serves. The rule itself is not restated: `effector_protocol::resource` is the
-        // same code the node runs before it moves the data, so the door and the transfer cannot
-        // disagree about what an `s3` source may look like.
-        if row.source.trim().is_empty() {
-            anyhow::bail!("a `{}` resource needs a source", id.kind);
+    /// Declare (or re-declare) what this venue offers for one kind.
+    pub fn declare(&self, kind: &str, grant: &Grant, now_ms: u64) -> anyhow::Result<()> {
+        let kind_no = Self::kind_no(kind)?;
+        if grant.base.trim().is_empty() {
+            // Nothing can be reached through a grant with no root: refused here, at the
+            // declaration, rather than as a failed transfer on a machine hours later.
+            anyhow::bail!("a `{kind}` grant needs a base");
         }
-        if id.kind == "s3" {
-            effector_protocol::resource::object_name(&row.source)
-                .map_err(|e| anyhow::anyhow!("resource `{id}`: {e}"))?;
+        if grant.base.contains("..") {
+            anyhow::bail!("a `{kind}` base `{}` may not climb", grant.base);
         }
-        let current = self
-            .row(id)?
-            .and_then(|r| r.get("current").and_then(Value::as_u64))
-            .unwrap_or(0);
         self.exec(
-            &self.resources,
-            "resources",
+            &self.grants,
+            "grants",
             StoreOpKind::PutDocument {
-                key: Self::key(RESOURCE, id.seq),
+                key: Self::key(GRANT, kind_no),
                 doc: json!({
-                    "owner": id.owner, "rkind": id.kind,
-                    "desc": row.desc, "source": row.source, "at": row.at,
-                    "secret": row.secret, "secret_name": row.secret_name,
-                    "mode": match mode { Mode::ReadWrite => 1u64, Mode::ReadOnly => 0u64 },
-                    "current": current, "created_at": now_ms,
+                    "rkind": kind,
+                    // One bucket serves every tenant; the scope says so, and a later per-tenant
+                    // override would be a second row with the tenant in this field.
+                    "scope": "*",
+                    "desc": grant.desc,
+                    "base": grant.base.trim_end_matches('/'),
+                    "secret": if grant.secret_name.is_empty() { 0 } else { 1 },
+                    "secret_name": grant.secret_name,
+                    "mode": match grant.mode { Mode::ReadWrite => 1u64, Mode::ReadOnly => 0u64 },
+                    "created_at": now_ms,
                 }),
             },
         )?;
         Ok(())
     }
 
-    /// Store a key. The value crosses into the store here and is read back only to mint.
-    pub fn secret(&self, owner: &str, seq: u64, name: &str, value: &str) -> anyhow::Result<()> {
+    /// Store the credential for one kind. The value crosses into the store here and is read back
+    /// only to mint.
+    pub fn secret(&self, kind: &str, value: &str) -> anyhow::Result<()> {
+        let kind_no = Self::kind_no(kind)?;
         self.exec(
             &self.secrets,
             "secrets",
             StoreOpKind::PutDocument {
-                key: Self::key(SECRET, seq),
-                doc: json!({ "owner": owner, "name": name, "value": value }),
+                key: Self::key(SECRET, kind_no),
+                doc: json!({ "rkind": kind, "value": value }),
             },
         )?;
         Ok(())
     }
 
-    /// Material for ONE transfer. The owner comparison is the authorization, not a convenience: the
-    /// plane passes the owner it derived from the turn, so another account's resource is refused even
-    /// if a caller guessed its number.
-    pub fn material(&self, id: &Id, write: bool) -> anyhow::Result<Material> {
+    /// What an execution gets for one kind: the root IT may reach (already separated by tenant),
+    /// the credential, and the terms. The tenant comes from the plane, derived from the turn — a
+    /// script that could name another tenant could write into somebody else's slice.
+    pub fn material(&self, tenant: &str, kind: &str, write: bool) -> anyhow::Result<Material> {
+        plain_name("tenant", tenant)?;
+        let kind_no = Self::kind_no(kind)?;
         let row = self
-            .row(id)?
-            .ok_or_else(|| anyhow::anyhow!("no resource {id} is declared"))?;
+            .grant(kind)?
+            .ok_or_else(|| anyhow::anyhow!("no `{kind}` grant is declared"))?;
         let text = |name: &str| {
             row.get(name)
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string()
         };
-        if text("owner") != id.owner {
-            anyhow::bail!("resource {id} belongs to another owner");
-        }
         let mode = if row.get("mode").and_then(Value::as_u64) == Some(1) {
             Mode::ReadWrite
         } else {
@@ -226,15 +239,14 @@ impl Registry {
         if write && mode != Mode::ReadWrite {
             // A write against `ro` is an error, not a no-op: "it saved nothing" must not look like
             // it saved something.
-            anyhow::bail!("resource {id} is read-only");
+            anyhow::bail!("the `{kind}` grant is read-only");
         }
         let mut credential = None;
-        let secret_seq = row.get("secret").and_then(Value::as_u64).unwrap_or(0);
-        if secret_seq != 0 {
+        if row.get("secret").and_then(Value::as_u64).unwrap_or(0) != 0 {
             let entry = self.exec(
                 &self.secrets,
                 "secrets",
-                StoreOpKind::GetDocument { key: Self::key(SECRET, secret_seq) },
+                StoreOpKind::GetDocument { key: Self::key(SECRET, kind_no) },
             )?;
             credential = entry
                 .get("value")
@@ -243,126 +255,18 @@ impl Registry {
                 .map(str::to_string);
         }
         Ok(Material {
-            url: text("source"),
+            base: format!("{}/{}/{}", text("base"), tenant, kind),
             credential,
             mode,
-            at: row
-                .get("at")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
         })
-    }
-
-    /// Record a published version and advance the pointer. The row is written FIRST: a crash between
-    /// the two leaves a version nobody points at (harmless) rather than a pointer to a version that
-    /// was never recorded.
-    pub fn published(
-        &self,
-        id: &Id,
-        call_id: &str,
-        reference: &str,
-        now_ms: u64,
-    ) -> anyhow::Result<(u64, u64)> {
-        let row = self
-            .row(id)?
-            .ok_or_else(|| anyhow::anyhow!("no resource {id} is declared"))?;
-        let previous = row.get("current").and_then(Value::as_u64).unwrap_or(0);
-        let version = next_version(previous, now_ms);
-        self.exec(
-            &self.versions,
-            "versions",
-            StoreOpKind::PutDocument {
-                key: Self::key(VERSION, version),
-                doc: json!({
-                    "seq": id.seq, "previous": previous, "created_at": now_ms,
-                    "owner": id.owner, "rkind": id.kind,
-                    "reference": reference, "call_id": call_id,
-                }),
-            },
-        )?;
-        self.exec(
-            &self.resources,
-            "resources",
-            StoreOpKind::PutFields {
-                key: Self::key(RESOURCE, id.seq),
-                fields: json!({ "current": version }),
-            },
-        )?;
-        Ok((version, previous))
-    }
-}
-
-use std::fmt;
-
-/// The kinds the venue knows. A kind is an IDENTITY, not an axis: the same repository delivered by
-/// `git` and as a `rustic` snapshot are two resources, because they are two things an execution can
-/// ask for and get different answers to.
-pub const KINDS: [&str; 5] = ["git", "volume", "s3", "rustic", "image"];
-
-/// A resource's identity: whose it is, what kind it is, which one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Id {
-    /// The account that owns it. Stamped by the venue from the turn's envelope — a task never names
-    /// its owner, because a task that could would borrow another account's data.
-    pub owner: String,
-    pub kind: String,
-    /// Unique within (owner, kind). The owner's own numbering: a resource outlives every
-    /// activation that touches it, so its name cannot come from one.
-    pub seq: u64,
-}
-
-impl Id {
-    /// Validate the parts that are allowed to be text. Both are plain names: a separator would put
-    /// the data somewhere nobody asked for, and a resource is identified, never searched.
-    pub fn new(owner: &str, kind: &str, seq: u64) -> anyhow::Result<Self> {
-        for (what, value) in [("owner", owner), ("kind", kind)] {
-            if value.is_empty()
-                || value.contains('/')
-                || value.contains('\\')
-                || value == "."
-                || value == ".."
-                || value.contains('\u{1f}')
-            {
-                anyhow::bail!("resource {what} `{value}` is not a plain name");
-            }
-        }
-        if !KINDS.contains(&kind) {
-            // Refused by NAME, at the declaration, before any call runs: a venue that cannot serve
-            // a kind says so rather than failing halfway through a transfer.
-            anyhow::bail!("this venue cannot serve kind `{kind}` (kinds: {KINDS:?})");
-        }
-        Ok(Self {
-            owner: owner.to_string(),
-            kind: kind.to_string(),
-            seq,
-        })
-    }
-
-    /// The key a row is stored under. Owner first — "everything I own" is the one query that has
-    /// to be a prefix scan, and it is also the only field that carries an authorization boundary.
-    pub fn key(&self) -> Vec<u8> {
-        let mut key = Vec::new();
-        for part in [self.owner.as_str(), self.kind.as_str()] {
-            key.extend_from_slice(part.as_bytes());
-            key.push(0x1f);
-        }
-        // Big endian: byte order is numeric order, so a range walk is a sequence walk.
-        key.extend_from_slice(&self.seq.to_be_bytes());
-        key
-    }
-}
-
-impl fmt::Display for Id {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}/{}", self.owner, self.kind, self.seq)
     }
 }
 
 /// Whether an execution may publish. `ro` is the default everywhere: omitting a mode never grants a
 /// write, and a write against `ro` is an error rather than a silent no-op.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
+    #[default]
     ReadOnly,
     ReadWrite,
 }
@@ -384,53 +288,107 @@ impl Mode {
     }
 }
 
-/// What one transfer is authorised with. Minted per call and per half: the read material cannot
-/// publish, which is what makes a leaked read credential harmless.
+/// What one transfer is handed: a root to join the caller's own name onto, the credential for it, and
+/// the terms. Held by the node for the length of the transfer and never passed to the script.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Material {
-    /// Where the bytes are, as the executor needs it (a repository URL, a signed URL, an image ref,
-    /// a directory). Never a credential-bearing URL unless the mint signed it.
-    pub url: String,
-    /// The one-shot secret, if this kind needs one. The venue holds the long-lived key; this value
-    /// lives in the node's memory for one transfer.
+    /// The effective root: `<base>/<tenant>/<kind>`. The node appends the caller's `remote` to it.
+    pub base: String,
+    /// The credential, if this kind needs one.
     pub credential: Option<String>,
     pub mode: Mode,
-    /// The version to check out, when the caller asked for one.
-    pub at: Option<String>,
-}
-
-/// The version id a publish gets: 41 bits of milliseconds over 23 of a counter, so byte order is
-/// time order, the width is fixed, and it is a number a declared `U64` key can hold.
-pub fn next_version(previous: u64, now_ms: u64) -> u64 {
-    let counter = (previous & 0x7f_ffff).wrapping_add(1) & 0x7f_ffff;
-    (now_ms << 23) | counter
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_identity_is_a_plain_name_and_a_known_kind() {
-        assert!(Id::new("alice", "git", 7).is_ok());
-        for bad in ["", "a/b", "..", "a\u{1f}b"] {
-            assert!(Id::new("alice", bad, 7).is_err(), "kind `{bad}` must be refused");
-            assert!(Id::new(bad, "git", 7).is_err(), "owner `{bad}` must be refused");
+    fn grant(base: &str, mode: Mode) -> Grant {
+        Grant {
+            desc: String::new(),
+            base: base.into(),
+            mode,
+            secret_name: if mode == Mode::ReadWrite { "s3".into() } else { String::new() },
         }
-        let err = Id::new("alice", "table", 7).unwrap_err().to_string();
-        assert!(err.contains("table"), "the refusal names the kind: {err}");
     }
 
     #[test]
-    fn the_key_orders_by_owner_kind_and_then_by_number() {
-        let two = Id::new("alice", "git", 2).unwrap();
-        let ten = Id::new("alice", "git", 10).unwrap();
-        let other = Id::new("bob", "git", 1).unwrap();
-        // Big-endian widths: 2 sorts before 10 even though "10" sorts before "2" as text.
-        assert!(two.key() < ten.key());
-        assert!(ten.key() < other.key(), "owners do not share a prefix");
-        let prefix = [&b"alice"[..], &[0x1f], &b"git"[..], &[0x1f]].concat();
-        assert!(two.key().starts_with(&prefix));
+    fn the_kinds_are_three_mechanisms_and_an_unknown_one_is_refused_by_name() {
+        assert_eq!(KINDS, ["git", "object", "archive"]);
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        let err = registry
+            .declare("image", &grant("s3://bucket", Mode::ReadOnly), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("image"), "the refusal names the kind: {err}");
+    }
+
+    #[test]
+    fn a_tenant_cannot_climb_out_of_its_own_slice() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        registry
+            .declare("object", &grant("s3://bucket", Mode::ReadWrite), 1)
+            .expect("declared");
+        for bad in ["", "..", "a/b", "a\\b"] {
+            let err = registry.material(bad, "object", false).unwrap_err().to_string();
+            assert!(err.contains("plain name"), "tenant `{bad}` is refused: {err}");
+        }
+    }
+
+    #[test]
+    fn the_root_a_caller_reaches_is_its_own_slice_of_the_shared_base() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        registry
+            .secret("object", "s3cr3t")
+            .expect("the credential is stored");
+        registry
+            .declare("object", &grant("s3://bucket/", Mode::ReadWrite), 1)
+            .expect("declared");
+
+        let material = registry.material("alice", "object", false).expect("minted");
+        assert_eq!(
+            material.base, "s3://bucket/alice/object",
+            "the prefix is composed by this side, not named by the caller"
+        );
+        assert_eq!(material.credential.as_deref(), Some("s3cr3t"));
+        assert_eq!(material.mode, Mode::ReadWrite);
+
+        let other = registry.material("bob", "object", false).expect("minted");
+        assert_ne!(other.base, material.base, "two tenants never share a slice");
+    }
+
+    #[test]
+    fn a_read_only_grant_refuses_the_write_half_by_name() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        registry
+            .declare("git", &grant("https://gitea.s", Mode::ReadOnly), 1)
+            .expect("declared");
+        assert!(registry.material("alice", "git", false).is_ok());
+        let err = registry.material("alice", "git", true).unwrap_err().to_string();
+        assert!(err.contains("read-only"), "{err}");
+    }
+
+    #[test]
+    fn a_grant_that_reaches_nowhere_is_refused_at_the_declaration() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        let err = registry
+            .declare("archive", &grant("  ", Mode::ReadOnly), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs a base"), "{err}");
+        let err = registry
+            .declare("archive", &grant("s3://bucket/../etc", Mode::ReadOnly), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("climb"), "{err}");
+    }
+
+    #[test]
+    fn a_kind_with_no_grant_says_so_instead_of_inventing_a_root() {
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        let err = registry.material("alice", "git", false).unwrap_err().to_string();
+        assert!(err.contains("no `git` grant"), "{err}");
+        assert!(registry.grant("git").unwrap().is_none());
     }
 
     #[test]
@@ -438,108 +396,6 @@ mod tests {
         assert_eq!(Mode::parse("ro").unwrap(), Mode::ReadOnly);
         assert_eq!(Mode::parse("rw").unwrap(), Mode::ReadWrite);
         assert!(Mode::parse("readwrite").is_err());
-    }
-
-    #[test]
-    fn the_venue_refuses_a_row_it_could_not_serve() {
-        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
-        let row = |source: &str| Row {
-            desc: String::new(),
-            source: source.into(),
-            at: String::new(),
-            secret: 0,
-            secret_name: String::new(),
-        };
-
-        // An `s3` source names ONE object. A URL ending in `/` names a prefix — a shape this venue
-        // does not serve — and it dies here, at the declaration, not on a node halfway through.
-        let bucket = Id::new("alice", "s3", 1).unwrap();
-        let err = registry
-            .declare(&bucket, &row("s3://bucket/builds/"), Mode::ReadOnly, 1)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("prefix"), "the refusal says what is wrong: {err}");
-
-        // A row with no source at all is refused for every kind: nothing can move to nowhere.
-        let git = Id::new("alice", "git", 2).unwrap();
-        let err = registry
-            .declare(&git, &row("  "), Mode::ReadOnly, 1)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("needs a source"), "{err}");
-
-        // And the shape it does serve goes in.
-        registry
-            .declare(&bucket, &row("s3://bucket/builds/out.tar"), Mode::ReadOnly, 1)
-            .expect("one object is a declaration this venue can keep");
-    }
-
-    #[test]
-    fn a_resource_is_declared_minted_and_published_against_the_store() {
-        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
-        let id = Id::new("alice", "git", 7).unwrap();
-        registry
-            .secret("alice", 1, "gitea-token", "s3cr3t")
-            .expect("the key is stored");
-        let row = Row {
-            desc: "notes".into(),
-            source: "https://gitea.s/alice/notes.git".into(),
-            at: "main".into(),
-            secret: 1,
-            secret_name: "gitea-token".into(),
-        };
-        registry
-            .declare(&id, &row, Mode::ReadWrite, 1_700_000_000_000)
-            .expect("the row is stored");
-
-        // The read half: address + the key, minted per call.
-        let material = registry.material(&id, false).expect("minted");
-        assert_eq!(material.url, "https://gitea.s/alice/notes.git");
-        assert_eq!(material.credential.as_deref(), Some("s3cr3t"));
-        assert_eq!(material.mode, Mode::ReadWrite);
-
-        // Another owner's number is not another owner's resource.
-        let thief = Id::new("bob", "git", 7).unwrap();
-        assert!(registry.material(&thief, false).is_err());
-
-        // Publishing records a version and moves the pointer; the history is a chain.
-        let (first, previous) = registry
-            .published(&id, "call-1", "main@abc", 1_700_000_000_500)
-            .expect("published");
-        assert_eq!(previous, 0);
-        let (second, previous) = registry
-            .published(&id, "call-2", "main@def", 1_700_000_000_500)
-            .expect("published");
-        assert_eq!(previous, first);
-        assert!(second > first, "the second publish is a later version");
-        let row = registry.row(&id).unwrap().expect("the row is still there");
-        assert_eq!(row["current"].as_u64(), Some(second));
-    }
-
-    #[test]
-    fn a_read_only_resource_refuses_a_write_halves_material() {
-        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
-        let id = Id::new("alice", "s3", 1).unwrap();
-        registry
-            .declare(
-                &id,
-                &Row { desc: "inputs".into(), source: "s3://alice/in".into(), ..Default::default() },
-                Mode::ReadOnly,
-                0,
-            )
-            .expect("declared");
-        assert!(registry.material(&id, false).is_ok());
-        let err = registry.material(&id, true).unwrap_err().to_string();
-        assert!(err.contains("read-only"), "{err}");
-    }
-
-    #[test]
-    fn versions_order_by_time_and_never_repeat_inside_a_millisecond() {
-        let ms = 1_700_000_000_000;
-        let first = next_version(0, ms);
-        let second = next_version(first, ms);
-        assert!(second > first, "the counter orders within a millisecond");
-        assert!(next_version(second, ms + 1) > second, "the clock orders across them");
-        assert_eq!(first >> 23, ms);
+        assert_eq!(Mode::default(), Mode::ReadOnly);
     }
 }

@@ -1,6 +1,9 @@
 # 0048 — Resources are a venue primitive
 
-Status: Accepted (2026-11-23)
+Status: Accepted (2026-11-23). **Superseded in part by [0049](0049-a-resource-is-a-grant.md)
+(2026-11-17):** the declaration, the per-resource registry keyed by `(owner, kind, seq)` and the
+version pointer are replaced by a grant per kind. What still holds: resources are the venue's
+primitive, the registry's rows live in the meta band, and the credential never rides a row.
 
 ## Context
 

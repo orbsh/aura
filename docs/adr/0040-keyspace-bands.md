@@ -47,8 +47,11 @@ ns `30–39` = the meta plane. Within a band, table order is CONCEPTUAL
 | 30 | BoothName — the unique booth-TYPE dictionary (also allocates data ns `100+id`) | meta |
 | 31 | BoothDef — one row per booth type | meta |
 | 32 | CodeBlob — content-addressed code bytes | meta |
+| 36 | Resource — the resource registry's rows (ADR-0048; key is the store's typed key, `owner`/`kind` are declared fields with a `by_owner` index) | meta |
+| 37 | ResourceVersion — one row per published version, `previous`-linked | meta |
+| 38 | ResourceSecret — the keys a resource row NAMES (never the row's own value; a booth's plan cannot address this ns, which is what does the isolating) | meta |
 
-Reserved: `28–29` and `33–99`. **ns 26 retires, decided 2026-11-09** (the code still writes and checks it until the unit lands): it held one raw row naming the low block's generation, because a store written by the older layout would decode old rows as new tables. okm now answers that per table — a meta row at face `0x0F` inside each ns, carrying `version` and the structural `faces` fingerprint (okm ADR-0043 / ADR-0048) — and the operator's stance is that a store of another shape is WIPED and rebuilt, not migrated. A plane-wide number therefore guards nothing that a per-table stamp does not, and the row is deleted rather than kept as ceremony. `BOOTH_NS_BASE = 100` is unchanged: booth types still allocate above the framework block.
+Reserved: `28–29`, `33–35` and `39–99`. **ns 26 retires, decided 2026-11-09** (the code still writes and checks it until the unit lands): it held one raw row naming the low block's generation, because a store written by the older layout would decode old rows as new tables. okm now answers that per table — a meta row at face `0x0F` inside each ns, carrying `version` and the structural `faces` fingerprint (okm ADR-0043 / ADR-0048) — and the operator's stance is that a store of another shape is WIPED and rebuilt, not migrated. A plane-wide number therefore guards nothing that a per-table stamp does not, and the row is deleted rather than kept as ceremony. `BOOTH_NS_BASE = 100` is unchanged: booth types still allocate above the framework block.
 
 ### Consequences of the renumbering that must be stated, not discovered
 

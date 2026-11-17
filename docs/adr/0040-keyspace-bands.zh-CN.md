@@ -40,8 +40,11 @@ PartitionName 21、MqData 22、MqCursor 23、MqHead 24、EventRoute 25），
 | 30 | BoothName —— 唯一类型字典（同时分配数据 ns `100+id`） | meta |
 | 31 | BoothDef —— 一行一个摊位类型 | meta |
 | 32 | CodeBlob —— 内容寻址的代码字节 | meta |
+| 36 | Resource —— 资源名册的行（ADR-0048；键是 store 的有类型键，`owner`/`kind` 是声明字段并带 `by_owner` 索引） | meta |
+| 37 | ResourceVersion —— 每个已发布版本一行，`previous` 相连 | meta |
+| 38 | ResourceSecret —— 资源行**指名**的那把钥匙（值不在行里；booth 的 plan 寻址不到这个 ns，隔离靠的就是这个） | meta |
 
-预留：`28–29` 与 `33–99`。**ns 26 退役，2026-11-09 决定**（代码在对应单元落地前仍会写它、校验它）：它只有一行，记录 low block 的代数，防的是旧布局写下的 store 把旧行当作新表解码。如今这件事 okm 按表回答——每个 ns 内一个 face `0x0F` 的 meta 行，带 `version` 与结构面指纹 `faces`（okm ADR-0043 / ADR-0048）——而运维的立场是另一形状的 store 一律清空重来，不做迁移。一个平面级的数字护不住任何按表时间戳护不住的东西，那行随之删除，而不是留着当仪式。`BOOTH_NS_BASE = 100` 不变——摊位类型仍从框架块之上分配。
+预留：`28–29`、`33–35` 与 `39–99`。**ns 26 退役，2026-11-09 决定**（代码在对应单元落地前仍会写它、校验它）：它只有一行，记录 low block 的代数，防的是旧布局写下的 store 把旧行当作新表解码。如今这件事 okm 按表回答——每个 ns 内一个 face `0x0F` 的 meta 行，带 `version` 与结构面指纹 `faces`（okm ADR-0043 / ADR-0048）——而运维的立场是另一形状的 store 一律清空重来，不做迁移。一个平面级的数字护不住任何按表时间戳护不住的东西，那行随之删除，而不是留着当仪式。`BOOTH_NS_BASE = 100` 不变——摊位类型仍从框架块之上分配。
 
 ### 必须写明、而不是让人撞见的后果
 

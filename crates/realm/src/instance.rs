@@ -361,6 +361,16 @@ impl Realm {
             .get_mut(&(id.booth_type.clone(), id.key.clone()))
         {
             i.last_activity = Instant::now();
+            // ADR-0003 §7: a turn declares the resources it may touch IN ITS ARGS, and that
+            // declaration is the execution environment for everything this instance dispatches —
+            // so it is remembered here, on the way in. No new wire, no new ctx arm: the booth's
+            // own start payload is where the environment comes from, and the dispatcher below is
+            // what hands it to the node.
+            if let Some(resources) = job.args.get("resources") {
+                if resources.is_array() {
+                    i.environment = resources.clone();
+                }
+            }
         }
         // ADR-0016 revised: the instance's pending idle-reclaim entry is
         // void the moment work arrives (work CANCELLED it — idempotent
@@ -401,6 +411,13 @@ impl Realm {
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
+        // The declared environment, read while the realm is held: every remote dispatch from this
+        // instance carries it (a node that is told nothing touches no persistent data).
+        let environment = realm
+            .instances
+            .get(&(id.booth_type.clone(), id.key.clone()))
+            .map(|i| i.environment.clone())
+            .unwrap_or(serde_json::Value::Null);
         drop(realm);
         // ADR-0047 stage two: every dispatch arms an interrupt slot, so the door has
         // something to notify. It is removed when this call ends — the guard drops
@@ -486,9 +503,10 @@ impl Realm {
                     encoding,
                     args: job.args.clone(),
                     code,
-                    // Resources are a gravity/prism decision today; the realm dispatches
-                    // operations and declares none (ADR-0003 §7 arrives with its own slice).
-                    resources: Vec::new(),
+                    // ADR-0003 §7: the environment the booth declared with its start args. The
+                    // realm does not judge it — gravity minted and validated the table, and the
+                    // node is the one that acts on a declaration (ensure before, publish after).
+                    resources: declared_resources(&environment),
                 };
                 let result = match conn.sender.send(effector_protocol::Frame::Call(call)) {
                     Ok(()) => {
@@ -1130,6 +1148,51 @@ impl Realm {
     pub fn is_resident(&self, id: &InstanceId) -> bool {
         self.instances
             .contains_key(&(id.booth_type.clone(), id.key.clone()))
+    }
+}
+
+/// The resources a booth declared with its start args, in the node protocol's spelling. A
+/// declaration that does not decode is DROPPED WITH A LINE, not carried broken: the table was
+/// validated where it was minted (gravity refuses a bad row outright), and this side is a carrier,
+/// not a judge — but silently widening what a turn may touch would be worse than saying so.
+fn declared_resources(environment: &serde_json::Value) -> Vec<effector_protocol::ResourceDecl> {
+    if environment.is_null() {
+        return Vec::new();
+    }
+    match serde_json::from_value::<Vec<effector_protocol::ResourceDecl>>(environment.clone()) {
+        Ok(declarations) => declarations,
+        Err(e) => {
+            eprintln!("realm: the declared resources are not readable as declarations: {e}");
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::declared_resources;
+
+    #[test]
+    fn a_turn_that_declares_nothing_dispatches_with_nothing() {
+        assert!(declared_resources(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn the_declaration_reaches_the_node_as_kind_and_sequence() {
+        let environment = serde_json::json!([
+            { "kind": "git", "seq": 7 },
+            { "kind": "snapshot", "seq": 1 },
+        ]);
+        let declarations = declared_resources(&environment);
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].kind, "git");
+        assert_eq!(declarations[0].seq, 7);
+    }
+
+    #[test]
+    fn a_broken_declaration_is_not_silently_widened() {
+        let environment = serde_json::json!([{ "kind": "git" }]);
+        assert!(declared_resources(&environment).is_empty());
     }
 }
 

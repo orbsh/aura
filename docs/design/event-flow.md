@@ -303,6 +303,9 @@ emit 的一趟分两段：先逐条匹配 route 解析出切片（并同 pass �
 | 30 | **BoothName**（原 TypeName；改名 dbc5d60、改号 Phase 4.18） | `id u32` | 摊位类型唯一字典：`by_name` 索引 + `HighWater(id)` preset + 数据 ns 分配（`100+id`）；双向解析（名→id `resolve_booth_id`、id→名 `booth_name_of`） | meta.rs |
 | 31 | BoothDef | `booth_id u32` | 摊位定义行：name/language/encoding/idle_ttl + `code_sha256` 指针；introspected schema 走动态段 nTLV | meta.rs |
 | 32 | CodeBlob | `sha256 [u8;32]` | 代码字节内容寻址（ADR-0027）：纯内容行，构造性不可变 | meta.rs |
+| 36 | Resource | `[disc u64][seq u64]` | 资源名册（ADR-0048）：`owner`/`rkind` 是**声明字段**不是键（okm 的键是定宽有类型字段，只有末段可变宽），`by_owner` 索引承担"我拥有的一切"；行里只写密钥编号与名字，值不在此表 | realm/resources.rs |
+| 37 | ResourceVersion | `[disc u64][version u64]` | 每个已发布版本一行，`previous` 相连：撤销是一次读，历史不需要"某资源的版本"索引 | realm/resources.rs |
+| 38 | ResourceSecret | `[disc u64][seq u64]` | 资源行**指名**的钥匙，值在此。独立 ns 是结构性的：booth 的 store plan 只有自己的 ns（100+），这张表它们寻址不到 | realm/resources.rs |
 
 事件面自留的订阅者身份字典（旧 ns 33）**已删除**（ADR-0038 §2），不占新分段任何号位；
 双字典的收编由此完成——唯一字典 = ns 30。

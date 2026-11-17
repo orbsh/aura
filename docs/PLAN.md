@@ -1306,3 +1306,18 @@ A RECEIVE DECLARATION CARRIES ITS OWN GATE 2026-11-06: `ReceiveDecl.auth` (and `
   **THE INTERRUPT LANDED 2026-11-09:** the realm arms an interrupt slot per running call (`stop.rs`), races the body against it (`instance.rs`), and the caller takes `Interrupted` — the terminal value of ADR-0012, downcastable so a retry policy can tell "the caller changed its mind" from "the call failed". A Remote body also sends `Frame::Interrupt`; the node answers `Frame::Interrupted { landed }`, whose `false` means the carrier could not reach the work (steel/python) and must not be read as "it stopped". Gates: `tests/stop_interrupt.rs` 3/3 (the slot's lifetime and the no-call case) plus realm 23/23.
   **Every carrier answers now, and the answer is honest.** The one-shot `exec` carrier kills its child (effector); the `induction` carrier writes the interrupt frame and the shared/unbounded seam carries the handle per call; `steel` and `python` arm nothing by design (in-process VMs) and report `landed: false`. Gravity's half is in: its provider stream runs on a worker and its member checks the token every 50 ms — including during the connect, which is where a slow provider used to hold a turn with nobody reading.
 
+## Ideas（未裁决）
+
+### 数据库作为一种资源：SQL 文本进，JSON 出
+
+一个 booth 想要关系型存储时，它要的不该是"一份连接字符串"。若把 Postgres 做成资源，形状应当是
+`ctx.resource({op: "sql", kind: "pg", …})` 加一段 SQL 文本，节点执行、返回 JSON —— 脚本端不装驱动、
+不持连接、不知道版本，和 `git`/`object`/`archive` 一样是"节点替它搬"。这样资源抽象统一在"节点有一个
+能力，脚本只说它要什么"上，而不是"谁跑什么客户端"。
+
+多 booth 因此可以靠一张共享库通讯，权限用行级安全策略表达。这条路的风险写在明处：SQL 是最熟悉的接口，
+一旦可用，用户会用它取代 okm 的集合与事件面，于是同一个系统里有两套状态、两套权限、两套一致性模型，
+而跨 booth 的写入没有调度、没有顺序、没有事件 —— RLS 给的是"谁能动哪行"，不是"两次写入谁先"。
+
+未裁决。真要落，先回答"两个 booth 用 SQL 通讯时，谁保证它们看到的是同一个顺序"。
+

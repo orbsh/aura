@@ -189,6 +189,7 @@ fn serve_code_source(src: &str) -> u16 {
 
 fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
     effector_config::EffectorConfig {
+        class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{port}"),
         // The deployed remote-effector form is the wrapped one; this test
         // exercises the call path, not the sandbox (steel runs in-process).

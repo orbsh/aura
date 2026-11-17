@@ -58,6 +58,10 @@ async fn handle_connection(
             Frame::Register {
                 node_alias,
                 carriers,
+                // The class is a deployment fact this unplanned gateway does not act on: it has no
+                // routing table to refuse with. Bound explicitly so a future field cannot be
+                // dropped here by accident.
+                class: _,
             } => (node_alias, carriers),
             other => anyhow::bail!("expected Register, got {other:?}"),
         },

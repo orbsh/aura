@@ -30,6 +30,7 @@ fn dial(port: u16, _tag: &str) -> tokio::task::JoinHandle<()> {
             serde_json::to_string(&Frame::Register {
                 node_alias,
                 carriers: vec!["steel".into()],
+                class: effector_protocol::NodeClass::Host,
             })
             .unwrap(),
         ))

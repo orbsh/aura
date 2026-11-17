@@ -496,6 +496,10 @@ impl Realm {
                 };
                 let call = effector_protocol::ToolCall {
                     call_id: call_id.clone(),
+                    // Nothing is required of the node: a mount runs where the turn was routed, and
+                    // the class rule (a container-only call refused by a host node) is for code the
+                    // caller knows nobody reviewed. A realm-dispatched mount is the venue's own.
+                    requires: None,
                     kind,
                     stream: Some(job.stream.clone()),
                     executor,

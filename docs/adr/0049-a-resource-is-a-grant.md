@@ -36,8 +36,8 @@ may name.
 2. **The kinds are mechanisms, not stores.** `KINDS = ["git", "object", "archive"]`. `object` is one
    blob over an S3-shaped wire protocol; `archive` is an incremental repository (rustic today, any
    equivalent tomorrow); `git` is a repository with its own reference vocabulary. `image` is gone —
-   what a container IS belongs to the environment a node declares (ADR-0003 §11), not to the data a
-   script reads. `volume` is gone — "a directory that outlives the call" is a node-local cache
+   what a container IS belongs to the environment a node declares (effector ADR-0003 §1, and its
+   "the image is the mount" consequence), not to the data a script reads. `volume` is gone — "a directory that outlives the call" is a node-local cache
    policy, and a row cannot describe a machine.
 
 3. **The effective root is composed, never named by the caller.** `material(tenant, kind)` answers

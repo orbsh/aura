@@ -29,7 +29,8 @@ ADR-0048 给 venue 派了三件事：携带声明、按 `(owner, kind, seq)` 维
 
 2. **kind 是机制，不是存储。** `KINDS = ["git", "object", "archive"]`。`object` 是一个 blob，走 S3
    形状的线协议；`archive` 是增量仓库（今天 rustic，明天任何等价物）；`git` 是有自己引用词汇的仓库。
-   `image` 删掉——容器**是什么**属于节点声明的环境（ADR-0003 §11），不是脚本读的数据。`volume` 删掉——
+   `image` 删掉——容器**是什么**属于节点声明的环境（effector ADR-0003 §1，以及它那条「the image is the
+mount」的后果），不是脚本读的数据。`volume` 删掉——
    "活过一次调用的目录"是节点本地缓存策略，一行描述不了一台机器。
 
 3. **有效根是拼出来的，不是调用方给的。** `material(tenant, kind)` 回答 `<base>/<tenant>/<kind>`。

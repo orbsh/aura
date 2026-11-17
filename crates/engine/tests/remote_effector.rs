@@ -194,7 +194,6 @@ fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{port}"),
         // The deployed remote-effector form is the wrapped one; this test
         // exercises the call path, not the sandbox (steel runs in-process).
-        sandbox: true,
         // This gateway is the unplanned one: it checks no registry, so the token is only
         // required to be non-empty (ADR-0003 puts the check on prism, where the registry is).
         token: "test-token".into(),

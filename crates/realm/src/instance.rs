@@ -678,7 +678,6 @@ impl Realm {
                                 &instance_key,
                                 &language,
                                 &source,
-                                &effector_runtime::environment::Environment::Host,
                                 encoding,
                                 host.as_ref(),
                                 move |s| {
@@ -695,7 +694,6 @@ impl Realm {
                             &language,
                             &source,
                             host.as_ref(),
-                            &effector_runtime::environment::Environment::Host,
                             // ADR-0037 §2: the declared codec drives the
                             // process carriers' channel; embedded carriers
                             // ignore it (no channel).
@@ -949,7 +947,6 @@ impl Realm {
                                     &instance_key,
                                     &language,
                                     &source,
-                                    &effector_runtime::environment::Environment::Host,
                                     encoding,
                                     host.as_ref(),
                                     move |s| {
@@ -971,7 +968,6 @@ impl Realm {
                                 &language,
                                 &source,
                                 host.as_ref(),
-                                &effector_runtime::environment::Environment::Host,
                                 encoding,
                                 concurrency.slots(),
                                 move |s| s.call(&name, &serde_json::Value::Null),

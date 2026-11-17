@@ -219,6 +219,9 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 pub struct RemotePending {
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     pub instance: InstanceId,
+    /// The account the dispatching instance runs for, recorded when the call went out. The plane
+    /// answers "whose resources may this node touch" from here — one field, stamped once.
+    pub owner: Option<String>,
 }
 
 /// One live iterate stream (ADR-0034 §2): the producer binding a

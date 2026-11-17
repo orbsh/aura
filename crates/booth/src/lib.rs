@@ -969,6 +969,11 @@ pub struct Instance {
     /// resources a turn may touch. Opaque here — the booth owns the shape, the realm only carries
     /// it to the dispatcher — and never persisted: it is a property of one activation.
     pub environment: Value,
+    /// The account this activation runs for, as the turn's ENVELOPE stated it (`sender.user`).
+    /// The realm records it once at the entrance; nothing downstream re-derives it from an id's
+    /// shape, and no booth reads it — it exists so the plane can be told "whose call is this"
+    /// without knowing how any other layer keys its instances.
+    pub owner: Option<String>,
 }
 
 impl Instance {
@@ -980,6 +985,7 @@ impl Instance {
             subscriptions: Vec::new(),
             last_activity: std::time::Instant::now(),
             environment: Value::Null,
+            owner: None,
         }
     }
 }

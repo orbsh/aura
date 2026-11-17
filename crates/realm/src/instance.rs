@@ -66,6 +66,10 @@ impl Realm {
             store_plans: HashMap::new(),
             persisted_schemas: HashMap::new(),
             dead_events: event::DeadEvents::default(),
+            // The registry's schemas are compile-time constants, so a failure here is a bug in
+            // this crate, not a condition to report — the same shape `json_response` uses for its
+            // own infallible encode.
+            #[allow(clippy::expect_used)]
             resources: crate::resources::Registry::new(mq_store.clone())
                 .expect("the resource registry's own schemas are fixed at compile time"),
             // Placeholder; the real handle lands right after the realm
@@ -373,6 +377,13 @@ impl Realm {
                     i.environment = resources.clone();
                 }
             }
+            // Who this activation is FOR is a fact the envelope already carries (the sender the
+            // plane authenticated). Recorded here, once, so no later layer has to infer it from an
+            // instance key's shape — that inference was a fact about ADR-0018 living outside its
+            // home, and it broke the moment a mount instance carried the call instead of a turn.
+            if let Some(user) = job.args.pointer("/sender/user").and_then(|v| v.as_str()) {
+                i.owner = Some(user.to_string());
+            }
         }
         // ADR-0016 revised: the instance's pending idle-reclaim entry is
         // void the moment work arrives (work CANCELLED it — idempotent
@@ -420,6 +431,12 @@ impl Realm {
             .get(&(id.booth_type.clone(), id.key.clone()))
             .map(|i| i.environment.clone())
             .unwrap_or(serde_json::Value::Null);
+        // Same read, same reason: the owner travels with the call so the plane can answer a node's
+        // material ask without parsing keys that belong to somebody else's vocabulary.
+        let owner = realm
+            .instances
+            .get(&(id.booth_type.clone(), id.key.clone()))
+            .and_then(|i| i.owner.clone());
         drop(realm);
         // ADR-0047 stage two: every dispatch arms an interrupt slot, so the door has
         // something to notify. It is removed when this call ends — the guard drops
@@ -475,6 +492,7 @@ impl Realm {
                     RemotePending {
                         reply: tx,
                         instance: id.clone(),
+                        owner: owner.clone(),
                     },
                 );
                 // Residency identity = this booth INSTANCE (type/key), not the handler:

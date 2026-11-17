@@ -434,6 +434,7 @@ impl Realm {
                 language,
                 source,
                 encoding,
+                requires,
             } => {
                 // Remote effector execution (Phase 3): find the effector's live
                 // outbound connection, send Frame::Call (inline payload),
@@ -496,10 +497,16 @@ impl Realm {
                 };
                 let call = effector_protocol::ToolCall {
                     call_id: call_id.clone(),
-                    // Nothing is required of the node: a mount runs where the turn was routed, and
-                    // the class rule (a container-only call refused by a host node) is for code the
-                    // caller knows nobody reviewed. A realm-dispatched mount is the venue's own.
-                    requires: None,
+                    // What the MOUNT declared (effector ADR-0003 §1). **Silence means the
+                    // container**: a mount that says nothing gets the separated path, and a node
+                    // that cannot separate refuses the call by name. `Host` is the exception a mount
+                    // has to write down — bare metal never arrives by omission.
+                    requires: match requires {
+                        None | Some(aura_booth::Requires::Container) => {
+                            effector_protocol::NodeClass::Container
+                        }
+                        Some(aura_booth::Requires::Host) => effector_protocol::NodeClass::Host,
+                    },
                     kind,
                     stream: Some(job.stream.clone()),
                     executor,

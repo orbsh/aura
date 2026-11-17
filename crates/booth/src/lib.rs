@@ -58,7 +58,21 @@ pub enum Body {
         /// The declared frame codec rides the ToolCall to the node's
         /// process carriers (ADR-0037 §2); inert for embedded carriers.
         encoding: Encoding,
+        /// What the node must be for this mount to be allowed to run it (effector ADR-0003 §1).
+        /// `None` = nothing special: the node runs the call with whatever authority it has.
+        /// `Container` = the code was written a moment ago by a model, and a host node refuses it
+        /// BY NAME. Declared once, by the mount, instead of remembered by every caller.
+        requires: Option<Requires>,
     },
+}
+
+/// What a mount requires of the node that runs it. Deliberately its own vocabulary: this crate is
+/// effector-free (ADR-0037 §2), and the realm converts to the wire's `NodeClass` at the one place
+/// the call is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requires {
+    Host,
+    Container,
 }
 
 /// The declared frame codec of a process-carrier booth (ADR-0037 §2,

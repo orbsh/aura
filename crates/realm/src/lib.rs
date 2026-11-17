@@ -302,6 +302,7 @@ fn remote_type(name: &str, node_alias: &str) -> BoothType {
             language: "exec".into(),
             source: "runner".into(),
             encoding: aura_booth::Encoding::Json,
+            requires: None,
         },
         idle_ttl: None,
         max_exec: None,

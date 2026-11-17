@@ -134,13 +134,24 @@ impl Registry {
         json!({ "kind": disc, "id": id })
     }
 
-    fn row(&self, id: &Id) -> anyhow::Result<Option<Value>> {
+    /// The row as stored, for a management surface that has to show it. The secret is NOT part of
+    /// it — a row names its key, and reading the row must never be reading the key.
+    pub fn row(&self, id: &Id) -> anyhow::Result<Option<Value>> {
         let row = self.exec(
             &self.resources,
             "resources",
             StoreOpKind::GetDocument { key: Self::key(RESOURCE, id.seq) },
         )?;
         Ok(if row.is_null() { None } else { Some(row) })
+    }
+
+    /// Which version the pointer names, `0` for never published. The one read a plane needs to
+    /// show "this is what the resource is" without touching the row's other fields.
+    pub fn current(&self, id: &Id) -> anyhow::Result<u64> {
+        Ok(self
+            .row(id)?
+            .and_then(|row| row.get("current").and_then(Value::as_u64))
+            .unwrap_or(0))
     }
 
     /// Declare a resource for an owner. Re-declaring updates the description, never the pointer:

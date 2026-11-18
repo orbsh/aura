@@ -37,6 +37,10 @@ impl Realm {
         // The venue's registry, cloned as DATA like the store plan above: the handle must not
         // dereference the realm at emit time (ctx_for is called under the lock everywhere).
         resources: &crate::resources::Registry,
+        // The activation's stop bit (ADR-0047), so a transfer started from here can be abandoned.
+        // A venue has no per-call control to interrupt — what an operator cancels is the
+        // ACTIVATION — and that is the same question from the transfer's side.
+        stops: &crate::stop::Stops,
     ) -> aura_booth::Ctx {
         // The store is already a shared Arc: handlers get a direct handle.
         // (Phase 1 single-node: the store is lock-free per operation. The
@@ -121,8 +125,11 @@ impl Realm {
         // the script can act on, not a function that silently is not there.
         {
             let registry = resources.clone();
+            let stops = stops.clone();
+            let me = id.clone();
             ctx = ctx.with_resource(Arc::new(move |op: aura_booth::ResourceOp| {
-                crate::resource_bridge::ask(&registry, owner.as_deref(), &op)
+                let bit = crate::resource_bridge::StopBit::new(&stops, &me);
+                crate::resource_bridge::ask(&registry, owner.as_deref(), &op, Some(&bit))
             }));
         }
         ctx

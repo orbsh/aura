@@ -104,6 +104,7 @@ impl Realm {
                         id,
                         owner,
                         &self.resources,
+                        &self.stops,
                     );
                     let host = self.delivery_bridge_for(&ctx, id);
                     Self::run_hook(
@@ -414,6 +415,7 @@ impl Realm {
             id,
             owner,
             &realm.resources,
+            &realm.stops,
         );
         let executors = realm.executors.clone();
         let effectors = realm.effectors.clone();
@@ -817,6 +819,7 @@ impl Realm {
                     id,
                     owner,
                     &locked.resources,
+                    &locked.stops,
                 );
                 let host = locked.delivery_bridge_for(&ctx, id);
                 if let Err(e) =
@@ -1104,6 +1107,7 @@ impl Realm {
                         &inst.id,
                         owner,
                         &self.resources,
+                        &self.stops,
                     );
                     let host = self.delivery_bridge_for(&ctx, &inst.id);
                     if let Err(e) = Self::run_hook(

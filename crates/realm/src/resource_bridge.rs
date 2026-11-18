@@ -27,13 +27,42 @@ fn root() -> PathBuf {
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("resources"))
 }
 
+/// The venue's answer to "was this cancelled?": the activation's STOP BIT (ADR-0047).
+///
+/// A node has a per-call control because the plane talks to it about one call; a venue has no such
+/// conversation — what an operator cancels here is the ACTIVATION, and from the transfer's point of
+/// view that is the same question. Reading the bit rather than subscribing to an event is the same
+/// decision the stop arm already made: a delivery to a busy instance queues behind the work it means
+/// to end.
+pub struct StopBit<'a> {
+    stops: &'a crate::stop::Stops,
+    id: &'a aura_booth::InstanceId,
+}
+
+impl<'a> StopBit<'a> {
+    pub fn new(stops: &'a crate::stop::Stops, id: &'a aura_booth::InstanceId) -> Self {
+        Self { stops, id }
+    }
+}
+
+impl resource::Interrupt for StopBit<'_> {
+    fn cancelled(&self) -> bool {
+        self.stops.is_set(self.id)
+    }
+}
+
 /// Answer one `ctx.resource` ask from the venue's own side.
 ///
 /// `tenant` is the account the activation runs for — recorded once at the entrance from the turn's
 /// envelope (`Instance.owner`), never re-derived from an id's shape and never named by the script.
 /// A missing account is a refusal, not a default: materialising for "somebody" would be minting a
 /// grant nobody asked for.
-pub fn ask(registry: &Registry, tenant: Option<&str>, op: &ResourceOp) -> Result<String, String> {
+pub fn ask(
+    registry: &Registry,
+    tenant: Option<&str>,
+    op: &ResourceOp,
+    cancel: Option<&dyn resource::Interrupt>,
+) -> Result<String, String> {
     let tenant = tenant.ok_or(
         "ctx.resource: this activation runs for no account, and a resource is minted for the turn's \
          own account — the venue refuses to guess whose slice this is",
@@ -50,13 +79,14 @@ pub fn ask(registry: &Registry, tenant: Option<&str>, op: &ResourceOp) -> Result
     };
     let mount = op.mount.as_deref().map(Path::new);
     let root = root();
-    let path = resource::ensure(&spec, &reach, &op.remote, mount, &root).map_err(|e| e.to_string())?;
+    let path = resource::ensure(&spec, &reach, &op.remote, mount, &root, cancel)
+        .map_err(|e| e.to_string())?;
     if !write {
         return Ok(path.to_string_lossy().into_owned());
     }
     // The reference the store answered is the caller's handle on what it just wrote — a git
     // `<branch>@<sha>`, an object's ETag. It goes back to the script; the venue keeps no copy.
-    resource::sync(&spec, &reach, &op.remote, mount, &root).map_err(|e| e.to_string())
+    resource::sync(&spec, &reach, &op.remote, mount, &root, cancel).map_err(|e| e.to_string())
 }
 
 fn mode_text(mode: Mode) -> &'static str {
@@ -137,7 +167,7 @@ mod tests {
         }))
         .expect("parses");
 
-        let path = ask(&registry, Some("alice"), &op).expect("the venue answers with a path");
+        let path = ask(&registry, Some("alice"), &op, None).expect("the venue answers with a path");
         assert!(
             path.starts_with(dir.join("root").to_str().unwrap()),
             "the path sits beside the venue, under its own root: {path}"
@@ -150,6 +180,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The in-process side of the same rule the node learned: a cancelled activation does not keep
+    /// moving bytes. Here the token is already up before the ask, which is the honest worst case —
+    /// nothing may be created at all.
+    #[test]
+    fn a_cancelled_activation_never_starts_the_transfer() {
+        struct Up;
+        impl resource::Interrupt for Up {
+            fn cancelled(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = scratch("cancelled");
+        std::env::set_var("EFFECTOR_RESOURCES_ROOT", dir.join("root").to_str().unwrap());
+        let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
+        registry
+            .declare(
+                "git",
+                &Grant {
+                    desc: String::new(),
+                    base: dir.display().to_string(),
+                    mode: Mode::ReadOnly,
+                    secret_name: String::new(),
+                },
+                1,
+            )
+            .expect("declared");
+        let op = ResourceOp::parse(&serde_json::json!({
+            "op": "get", "kind": "git", "remote": "mine"
+        }))
+        .expect("parses");
+
+        let err = ask(&registry, Some("alice"), &op, Some(&Up)).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert!(
+            !dir.join("root").join("alice").join("git").join("mine").exists(),
+            "a cancelled activation leaves nothing behind"
+        );
+    }
+
     #[test]
     fn an_activation_with_no_account_gets_a_refusal_not_somebody_elses_slice() {
         let registry = Registry::new(MqStore::mem()).expect("a mem store takes the schemas");
@@ -157,7 +227,7 @@ mod tests {
             "op": "get", "kind": "git", "remote": "mine"
         }))
         .expect("parses");
-        let err = ask(&registry, None, &op).unwrap_err();
+        let err = ask(&registry, None, &op, None).unwrap_err();
         assert!(err.contains("no account"), "{err}");
     }
 
@@ -180,7 +250,7 @@ mod tests {
             "op": "publish", "kind": "git", "remote": "mine"
         }))
         .expect("parses");
-        let err = ask(&registry, Some("alice"), &op).unwrap_err();
+        let err = ask(&registry, Some("alice"), &op, None).unwrap_err();
         assert!(err.contains("read-only"), "{err}");
     }
 }

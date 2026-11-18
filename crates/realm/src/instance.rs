@@ -422,6 +422,14 @@ impl Realm {
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
+        // How long the CALLER is willing to wait, from its call spec. The dispatch reads the same
+        // number for one reason: the plane must stop the NODE at the moment it stops waiting. An
+        // expiry that only abandoned the result left the node moving bytes nobody would ever read —
+        // and a clone big enough to blow the deadline is the ordinary case, not the pathological one.
+        let call_timeout = realm
+            .call_specs
+            .get(&id.booth_type)
+            .and_then(|spec| spec.timeout);
         // Read while the realm is held: the owner travels with the call so the plane can answer a
         // node's material ask without parsing keys that belong to somebody else's vocabulary.
         let owner = realm
@@ -551,6 +559,24 @@ impl Realm {
                                 // timeout attached.
                                 self_arc.lock().await.pending_remote.remove(&call_id);
                                 Err(anyhow::Error::new(crate::stop::Interrupted))
+                            }
+                            // The deadline, raised HERE and not only in the caller's wait: the
+                            // caller giving up is an abandonment of the result, and abandoning a
+                            // result while the node keeps transferring is the leak this arm closes.
+                            // The frame is the same one an operator's stop sends — one vocabulary
+                            // for "stop what you are doing", whoever decided it.
+                            () = stop_at(call_timeout) => {
+                                let _ = conn.sender.send(effector_protocol::Frame::Interrupt {
+                                    call_id: call_id.clone(),
+                                });
+                                self_arc.lock().await.pending_remote.remove(&call_id);
+                                Err(anyhow::anyhow!(
+                                    "call timed out after {}; the node was told to stop, so the \
+                                     transfer it was running stops with it",
+                                    call_timeout
+                                        .map(|t| format!("{}s", t.as_secs()))
+                                        .unwrap_or_else(|| "the deadline".into())
+                                ))
                             }
                         }
                     }
@@ -1198,5 +1224,17 @@ pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::executor::Strea
             handler: job.handler.clone(),
             args: job.args.clone(),
         },
+    }
+}
+
+/// Completes when the call's deadline passes, or never when its type declared none.
+///
+/// A function so the `select!` arm that uses it reads as one statement: "the deadline raised" is a
+/// third outcome beside "the node answered" and "somebody asked us to stop", and all three end the
+/// same way — the node is told, the pending entry goes, the caller gets an error.
+async fn stop_at(timeout: Option<std::time::Duration>) {
+    match timeout {
+        Some(t) => tokio::time::sleep(t).await,
+        None => std::future::pending::<()>().await,
     }
 }

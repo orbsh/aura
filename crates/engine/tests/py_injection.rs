@@ -38,7 +38,7 @@ def _k(i):
 
 @on("bind_write_emit_read", key="user_id")
 def bind_write_emit_read(args):
-    Counters.merge(_k(1), {"count": 41})
+    Counters.put(_k(1), {"count": 41})
     cur = ctx.store(json.dumps({"collection": "Counters", "op": "get_document",
                                      "key": {"id": 1}}))
     return {"count": cur["count"]}
@@ -52,7 +52,7 @@ def emit_write_bind_read(args):
 
 @on("bind_scan", key="user_id")
 def bind_scan(args):
-    Counters.merge(_k(3), {"count": 43})
+    Counters.put(_k(3), {"count": 43})
     # Declared-index scan through the binding face: slot 16385 is the
     # DSL-assigned first index slot (INDEX_BASE = 0x4001, the index family); count=43
     # BE is the prefix.

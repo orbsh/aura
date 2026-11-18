@@ -26,27 +26,6 @@ pub struct EngineConfig {
     /// denominator — its backlog is forfeit. One engine-wide value, never
     /// per-type; default 30 days (finite by design).
     pub cursor_ttl_secs: u64,
-    /// What this venue offers as durable data (ADR-0048/0049), one row per kind. Declared at boot
-    /// because a grant is a DEPLOYMENT fact: if a script could create one, "a resource is a grant"
-    /// would be a sentence about nothing.
-    #[serde(default)]
-    pub resources: std::collections::BTreeMap<String, ResourceConfig>,
-}
-
-/// One grant as configured: where the bytes are, on what terms, and which environment variable holds
-/// the credential. The value is deliberately absent — a config that carried the key would be the key
-/// in a file that gets copied around.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ResourceConfig {
-    pub base: String,
-    /// `ro` or `rw`; anything else is refused at boot rather than silently read-only.
-    #[serde(default)]
-    pub mode: String,
-    /// The environment variable the credential is read from. Empty = this kind needs none.
-    #[serde(default)]
-    pub secret_env: String,
-    #[serde(default)]
-    pub desc: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +47,6 @@ impl Default for EngineConfig {
             data_dir: None,
             code_base_url: None,
             cursor_ttl_secs: 30 * 24 * 3600,
-            resources: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -90,25 +68,6 @@ impl TryFrom<crate::kdl::RootConfig> for EngineConfig {
             engine: parse_engine(&root.data.engine)?,
             data_dir: Some(root.data.path.into()),
             code_base_url: root.node.code_base_url.clone(),
-            resources: root
-                .resources
-                .map(|r| {
-                    r.kinds
-                        .into_iter()
-                        .map(|k| {
-                            (
-                                k.name,
-                                ResourceConfig {
-                                    base: k.base,
-                                    mode: k.mode.unwrap_or_else(|| "ro".into()),
-                                    secret_env: k.secret_env.unwrap_or_default(),
-                                    desc: k.desc.unwrap_or_default(),
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
             cursor_ttl_secs: match root.mq.as_ref().and_then(|m| m.cursor_ttl.as_deref()) {
                 None => 30 * 24 * 3600,
                 Some(text) => parse_duration_secs(text)?,

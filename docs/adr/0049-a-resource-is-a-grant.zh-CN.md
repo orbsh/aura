@@ -46,8 +46,10 @@ mount」的后果），不是脚本读的数据。`volume` 删掉——
    而 venue 容纳它自己的脚本——对它们来说，无处可问、也没有线可等：`realm::resource_bridge` 从同一行
    授权里铸出 material，调用同一个 `effector_runtime::resource::{ensure, sync}`，根是 venue 自己的
    （`EFFECTOR_RESOURCES_ROOT`，没有则 `<cwd>/resources`）。数据落在 venue 旁边，这正是 in-process
-   类所主张的事实，不是绕过它的捷径。授权在启动时从 `aura.kdl` 声明（`resources { kind "git" { base … mode … secret-env … } }`，
-   凭证以环境变量命名）——一个脚本能自己创造的授权，会让「资源即授权」变成一句空话。
+   类所主张的事实，不是绕过它的捷径。授权是 venue 自己表里的行——ns 36 放授权、ns 38 放凭证——通过
+   `Engine::declare_grant` / `revoke_grant` 写入。不放在配置文件里：基地址和模式是运行期会变的
+   运维状态，为改它们而发一次部署，等于把注册表变回编译期常量。不变的是模型依赖的那条界限：
+   脚本没有任何一条臂能写授权，所以脚本和运维者的区别，恰好就是谁持有平面的管理面。
 
 5. **没有版本表、没有 `Synced` 帧、没有指针。** 发布的引用回给脚本。撤销是 store 自己的事：git revert、
    rustic 的快照、开了 versioning 的桶。
@@ -58,7 +60,7 @@ mount」的后果），不是脚本读的数据。`volume` 删掉——
 ## 后果
 
 - **三张表变两张**（`grants` 在 ns 36，`secrets` 在 ns 38），ns 37 退休。注册表是"每种 kind 一行"
-  加它的凭证，管理面只剩两个路由：声明授权、读授权。
+  加它的凭证，管理面有三个路由：声明授权、列出已声明的、撤销一个。
 - **脚本可以在自己那片里随便命名。** 这是目的，也是代价：venue 不再知道某个租户写了什么，
   "这个 owner 有什么"是 store 的问题，不是我们的。
 - **泄漏一份凭证等于泄漏整个 store，不是一片。** 前缀防的是撞名，不是访问。这条界限写在这里，

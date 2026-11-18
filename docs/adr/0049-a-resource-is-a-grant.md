@@ -56,10 +56,13 @@ may name.
    ask and no wire to wait on: `realm::resource_bridge` mints from the same registry row and calls the
    same `effector_runtime::resource::{ensure, sync}`, and the root is the venue's own
    (`EFFECTOR_RESOURCES_ROOT`, else `<cwd>/resources`). The data lands beside the venue, which is what
-   the in-process class claims rather than a shortcut around it. Grants are declared at boot from
-   `aura.kdl` (`resources { kind "git" { base … mode … secret-env … } }`, the credential named by
-   environment variable) — a grant a script could create would make "a resource is a grant" a
-   sentence about nothing.
+   the in-process class claims rather than a shortcut around it. Grants are ROWS in the venue's own tables — ns 36
+   for the grant, ns 38 for the credential — written through `Engine::declare_grant` /
+   `revoke_grant`. Not a config file: a base address and a mode are operational state that changes
+   while the venue runs, and a deploy to change them would make the registry a compile-time
+   constant. What stays true is the distinction the model rests on: a SCRIPT has no arm that writes a
+   grant, so the difference between a script and an operator is exactly who holds the plane's admin
+   face.
 
 5. **No version table, no `Synced` frame, no pointer.** A publish's reference goes back to the
    script. Undo is the store's own: a git revert, a rustic snapshot, a bucket with versioning on.
@@ -70,8 +73,8 @@ may name.
 ## Consequences
 
 - **Three tables become two** (`grants` at ns 36, `secrets` at ns 38); ns 37 is retired. The registry
-  holds one row per kind plus its credential, and the admin face has two routes: declare a grant,
-  read a grant.
+  holds one row per kind plus its credential, and the admin face has three routes: declare a grant,
+  list the declared ones, withdraw one.
 - **A script may name anything under its slice.** That is the point, and it is also the cost: the
   venue no longer knows what a tenant has written, so "what does this owner have?" is a question for
   the store, not for us.

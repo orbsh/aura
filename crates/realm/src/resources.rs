@@ -201,6 +201,36 @@ impl Registry {
         Ok(())
     }
 
+    /// Every kind that has a row, in the vocabulary's order. The listing's shape is the store's own
+    /// (whatever [`Self::grant`] returns), so a management surface shows exactly what is stored
+    /// rather than a re-typed view that can drift from it.
+    pub fn declared(&self) -> anyhow::Result<Vec<(String, Value)>> {
+        let mut out = Vec::new();
+        for kind in KINDS {
+            if let Some(row) = self.grant(kind)? {
+                out.push((kind.to_string(), row));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Withdraw a kind: BOTH rows. Deleting the grant but keeping the credential would leave a key
+    /// nobody can reach through — and a key that a later re-declare would silently inherit.
+    pub fn revoke(&self, kind: &str) -> anyhow::Result<()> {
+        let kind_no = Self::kind_no(kind)?;
+        self.exec(
+            &self.grants,
+            "grants",
+            StoreOpKind::DeleteDocument { key: Self::key(GRANT, kind_no) },
+        )?;
+        self.exec(
+            &self.secrets,
+            "secrets",
+            StoreOpKind::DeleteDocument { key: Self::key(SECRET, kind_no) },
+        )?;
+        Ok(())
+    }
+
     /// Store the credential for one kind. The value crosses into the store here and is read back
     /// only to mint.
     pub fn secret(&self, kind: &str, value: &str) -> anyhow::Result<()> {

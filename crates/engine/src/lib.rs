@@ -31,55 +31,6 @@ impl Engine {
             .with_cursor_ttl(cursor_ttl)
             .shared_async()
             .await;
-        // The venue's own grants (ADR-0048/0049). Declared from config at boot, once — a grant is a
-        // deployment fact, and if a script could create one, "a resource is a grant" would be a
-        // sentence about nothing. The credential is read from the NAMED environment variable here
-        // and lives only in the registry afterwards: a config file that carried the key would be the
-        // key in a file that gets copied around.
-        for (kind, decl) in &config.resources {
-            let mode = match decl.mode.as_str() {
-                "" | "ro" => aura_realm::resources::Mode::ReadOnly,
-                "rw" => aura_realm::resources::Mode::ReadWrite,
-                other => anyhow::bail!(
-                    "resources.{kind}.mode: `{other}` is not a mode (ro or rw) — an unknown mode is \
-                     a typo, and reading it as read-only would hide it"
-                ),
-            };
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            {
-                let mut r = realm.lock().await;
-                r.resources.declare(
-                    kind,
-                    &aura_realm::resources::Grant {
-                        desc: decl.desc.clone(),
-                        base: decl.base.clone(),
-                        mode,
-                        secret_name: if decl.secret_env.is_empty() {
-                            String::new()
-                        } else {
-                            decl.secret_env.clone()
-                        },
-                    },
-                    now_ms,
-                )?;
-                // A declared kind whose credential is not in the environment is refused at boot: the
-                // alternative is a transfer that fails on some machine hours later, with a message
-                // about a token nobody connected back to this file.
-                if !decl.secret_env.is_empty() {
-                    let value = std::env::var(&decl.secret_env).map_err(|_| {
-                        anyhow::anyhow!(
-                            "resources.{kind}.secret_env: `${}` is not set, and this kind's grant \
-                             declares a credential",
-                            decl.secret_env
-                        )
-                    })?;
-                    r.resources.secret(kind, &value)?;
-                }
-            }
-        }
         Realm::spawn_evictor(&realm);
         // Realms share the SAME okm engine (one fjall keyspace); each
         // realm derives a prefix-bound handle at construction —
@@ -162,6 +113,49 @@ impl Engine {
             r.idle_ttl = ttl;
         }
         self
+    }
+
+    /// Declare (or replace) what this venue offers for one kind (ADR-0048/0049).
+    ///
+    /// A grant is a ROW in this venue's own okm table (ns 36), not a line in a config file: it can be
+    /// changed while the venue runs, and the surface that changes it is the plane's management API
+    /// rather than a deploy. That is the whole distinction the model rests on — a SCRIPT cannot
+    /// create one (there is no ctx arm for it), an operator can, and the difference between those two
+    /// parties is who holds the plane's admin face.
+    ///
+    /// The credential is handed in as a VALUE once and lives in the registry's separate table (ns
+    /// 38) afterwards; reading the grant never reads the key, which is why they are two namespaces.
+    pub async fn declare_grant(
+        &self,
+        kind: &str,
+        grant: aura_realm::resources::Grant,
+        secret: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut r = self.realm.lock().await;
+        r.resources.declare(kind, &grant, now_ms)?;
+        if let Some(value) = secret {
+            r.resources.secret(kind, value)?;
+        }
+        Ok(())
+    }
+
+    /// Every declared grant, in the kind vocabulary's order — what a management surface lists. The
+    /// credential is not part of an answer: a grant names its key, it does not carry it.
+    pub async fn grants(&self) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
+        let r = self.realm.lock().await;
+        r.resources.declared()
+    }
+
+    /// Withdraw a kind: the grant row AND its credential. `ctx.resource` then answers that kind the
+    /// way it answers one that was never declared — by name — because a withdrawn grant that still
+    /// resolved would be a grant nobody can see in the listing.
+    pub async fn revoke_grant(&self, kind: &str) -> anyhow::Result<()> {
+        let mut r = self.realm.lock().await;
+        r.resources.revoke(kind)
     }
 
     /// Register an booth type with this engine's realm.

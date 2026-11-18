@@ -68,21 +68,24 @@ async fn an_in_process_booth_gets_a_path_from_the_venue_itself() {
     // "the directory this process materialises into".
     std::env::set_var("EFFECTOR_RESOURCES_ROOT", dir.join("root"));
 
-    let config = EngineConfig {
-        resources: [(
-            "git".to_string(),
-            aura_config::ResourceConfig {
-                base: base.display().to_string(),
-                mode: "ro".into(),
-                secret_env: String::new(),
+    let engine = Engine::start(&EngineConfig::default())
+        .await
+        .expect("engine boot");
+    // A grant is a row written through the plane's management API, not a line in a config file: it
+    // can change while the venue runs, and a script has no arm that could write it.
+    engine
+        .declare_grant(
+            "git",
+            aura_realm::resources::Grant {
                 desc: "the test's repositories".into(),
+                base: base.display().to_string(),
+                mode: aura_realm::resources::Mode::ReadOnly,
+                secret_name: String::new(),
             },
-        )]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    };
-    let engine = Engine::start(&config).await.expect("engine boot");
+            None,
+        )
+        .await
+        .expect("the grant is declared");
     engine
         .register(BoothType::script("fetcher", "steel", script()))
         .await
@@ -111,4 +114,48 @@ async fn an_in_process_booth_gets_a_path_from_the_venue_itself() {
         "the venue moved these bytes\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A grant is a ROW the plane's management API writes and withdraws — that is what makes it
+/// changeable while the venue runs. Two facts this test pins: the listing never carries the
+/// credential (a grant names its key), and a withdrawn kind disappears from it, so "declared" and
+/// "listed" cannot disagree.
+#[tokio::test]
+async fn a_grant_is_a_row_that_can_be_withdrawn() {
+    let engine = Engine::start(&EngineConfig::default())
+        .await
+        .expect("engine boot");
+    assert!(engine.grants().await.expect("listing").is_empty());
+
+    engine
+        .declare_grant(
+            "object",
+            aura_realm::resources::Grant {
+                desc: "the org's bucket".into(),
+                base: "s3://bucket".into(),
+                mode: aura_realm::resources::Mode::ReadWrite,
+                secret_name: "S3_KEY".into(),
+            },
+            Some("the-secret-value"),
+        )
+        .await
+        .expect("declared");
+
+    let rows = engine.grants().await.expect("listing");
+    assert_eq!(rows.len(), 1, "one row per kind");
+    assert_eq!(rows[0].0, "object");
+    assert_eq!(rows[0].1["base"], "s3://bucket");
+    assert_eq!(rows[0].1["mode"], 1, "rw");
+    assert_eq!(rows[0].1["secret_name"], "S3_KEY");
+    assert!(
+        rows[0].1.get("value").is_none(),
+        "reading a grant must never be reading the key: {}",
+        rows[0].1
+    );
+
+    engine.revoke_grant("object").await.expect("withdrawn");
+    assert!(
+        engine.grants().await.expect("listing").is_empty(),
+        "a withdrawn grant that still listed would be a grant nobody can see"
+    );
 }

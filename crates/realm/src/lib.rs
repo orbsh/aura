@@ -27,6 +27,7 @@ pub mod realm_set;
 pub mod registry;
 pub mod remote;
 pub mod stop;
+pub mod resource_bridge;
 pub mod resources;
 pub mod store_exec;
 pub mod timer;

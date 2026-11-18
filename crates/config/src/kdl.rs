@@ -34,6 +34,41 @@ pub struct RootConfig {
     /// Absent = the defaults apply.
     #[knus(child)]
     pub mq: Option<MqConfig>,
+    /// `resources { ... }` — what this venue offers as durable data (ADR-0048/0049).
+    /// Absent = this venue mints no resources, and `ctx.resource` says so by name.
+    #[knus(child)]
+    pub resources: Option<ResourcesConfig>,
+}
+
+/// `resources { kind "<name>" { ... } }` — one block per kind, the kind named as an argument
+/// because that is what the block IS (`git`, `object`, `archive`).
+#[derive(Decode, Debug, Clone)]
+pub struct ResourcesConfig {
+    #[knus(children(name = "kind"))]
+    pub kinds: Vec<ResourceKindConfig>,
+}
+
+/// One kind's grant, as an operator writes it. The credential is NAMED, never carried: the file names
+/// an environment variable and boot reads it (`krystallizer` ADR-0007's rule, which is the same wall
+/// as effector's `EFFECTOR_RESOURCE_CREDENTIAL`).
+#[derive(Decode, Debug, Clone)]
+pub struct ResourceKindConfig {
+    #[knus(argument)]
+    pub name: String,
+    /// Where the bytes are reachable: a host for `git`, a bucket for `object`.
+    #[knus(child, unwrap(argument))]
+    pub base: String,
+    /// `ro` (default) or `rw`.
+    #[knus(child, unwrap(argument))]
+    pub mode: Option<String>,
+    /// The environment variable holding the credential. KDL node name is kebab (`secret-env`):
+    /// knus derives node names from field names with `heck`, so an underscore here would be a node
+    /// nobody writes.
+    #[knus(child, unwrap(argument))]
+    pub secret_env: Option<String>,
+    /// A human word for the row, so a dumped grant is understandable without the operator.
+    #[knus(child, unwrap(argument))]
+    pub desc: Option<String>,
 }
 
 /// Event-plane configuration. `cursor_ttl` is the retention promise: how
@@ -133,5 +168,50 @@ impl RootConfig {
                 report: err.into(),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn a_resources_block_names_each_kind_and_its_grant() {
+        // One node per LINE: KDL terminates a node at the newline, so `id "n" realm "default"` on one
+        // line would be one node with three arguments and no realm.
+        let text = r#"
+node {
+    id "n"
+    realm "default"
+}
+data {
+    engine "memory"
+    path "/tmp/aura-test"
+}
+resources {
+    kind "git" {
+        base "https://gitea.s"
+        mode "rw"
+        secret-env "AURA_GIT_TOKEN"
+        desc "the org's repositories"
+    }
+    kind "object" {
+        base "s3://bucket"
+    }
+}
+"#;
+        let root = knus::parse::<RootConfig>("test.kdl", text).expect("parses");
+        let cfg = crate::EngineConfig::try_from(root).expect("converts");
+        assert_eq!(cfg.resources.len(), 2, "one row per kind");
+        let git = &cfg.resources["git"];
+        assert_eq!(git.base, "https://gitea.s");
+        assert_eq!(git.mode, "rw");
+        assert_eq!(git.secret_env, "AURA_GIT_TOKEN");
+        assert_eq!(
+            cfg.resources["object"].mode, "ro",
+            "a mode that is not written is read-only — silence never grants a write"
+        );
     }
 }

@@ -42,6 +42,13 @@ mount」的后果），不是脚本读的数据。`volume` 删掉——
    （默认 `<root>/<remote>`），`publish` 把同一路径推回去，并回答 store 铸出的引用（`branch@sha`、
    ETag）。git 和 curl 由节点跑；脚本不装客户端，凭证也到不了它手里。
 
+   **进程内时，venue 自己就是节点。** effector ADR-0003 §1 把「什么容纳了代码」当作唯一的容纳叙事，
+   而 venue 容纳它自己的脚本——对它们来说，无处可问、也没有线可等：`realm::resource_bridge` 从同一行
+   授权里铸出 material，调用同一个 `effector_runtime::resource::{ensure, sync}`，根是 venue 自己的
+   （`EFFECTOR_RESOURCES_ROOT`，没有则 `<cwd>/resources`）。数据落在 venue 旁边，这正是 in-process
+   类所主张的事实，不是绕过它的捷径。授权在启动时从 `aura.kdl` 声明（`resources { kind "git" { base … mode … secret-env … } }`，
+   凭证以环境变量命名）——一个脚本能自己创造的授权，会让「资源即授权」变成一句空话。
+
 5. **没有版本表、没有 `Synced` 帧、没有指针。** 发布的引用回给脚本。撤销是 store 自己的事：git revert、
    rustic 的快照、开了 versioning 的桶。
 

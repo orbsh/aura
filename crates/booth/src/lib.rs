@@ -408,7 +408,9 @@ impl BoothType {
 pub mod call;
 pub mod persist;
 pub mod store_emit;
+pub mod resource;
 pub use persist::PersistedBooth;
+pub use resource::ResourceOp;
 pub use store_emit::{StoreOp, StoreOpKind};
 
 pub mod futures_boxed {
@@ -443,6 +445,9 @@ pub struct Ctx {
     /// expressible through it. `None` when the runtime has no storage plan
     /// for the type (no declared collections → no storage surface).
     store_emit: Option<store_emit_handle::StoreEmitHandle>,
+    /// `ctx.resource` (ADR-0048/0049): the venue's own answer, when this Ctx belongs to code the
+    /// venue contains. `None` = nobody bound one, and the guest is told the fn is not bridged.
+    resource: Option<resource_handle::ResourceHandle>,
     /// The persisted interface_schema copy (uploaded version, 4.5b
     /// lifecycle). `None` = the type declared none.
     interface_schema: Option<Value>,
@@ -745,6 +750,15 @@ impl StreamCursor {
     }
 }
 
+pub mod resource_handle {
+    use super::*;
+    use crate::ResourceOp;
+    /// One resource ask, answered by whoever contains the code: a node over the wire, the venue
+    /// in-process. Returns the local path (`get`) or the store's reference (`publish`).
+    /// Sync: script host fns run inside spawn_blocking.
+    pub type ResourceHandle = Arc<dyn Fn(ResourceOp) -> Result<String, String> + Send + Sync>;
+}
+
 pub mod store_emit_handle {
     use super::*;
     use crate::StoreOp;
@@ -779,6 +793,7 @@ impl Ctx {
             iterate: Some(iterate),
             emit: None,
             store_emit: None,
+            resource: None,
             interface_schema: None,
         }
     }
@@ -795,6 +810,18 @@ impl Ctx {
     pub fn with_store_emit(mut self, handle: store_emit_handle::StoreEmitHandle) -> Self {
         self.store_emit = Some(handle);
         self
+    }
+
+    /// Inject the resource answer (realm-side assembly): in-process, the venue is the node, so it
+    /// mints the grant and moves the bytes itself (`realm::resource_bridge`).
+    pub fn with_resource(mut self, handle: resource_handle::ResourceHandle) -> Self {
+        self.resource = Some(handle);
+        self
+    }
+
+    /// The resource answer, for the script host bridge.
+    pub fn resource_handle(&self) -> Option<&resource_handle::ResourceHandle> {
+        self.resource.as_ref()
     }
 
     /// Inject the persisted interface_schema copy.

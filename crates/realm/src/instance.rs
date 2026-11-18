@@ -95,12 +95,15 @@ impl Realm {
                 if let Some(hook) = booth.hooks.get("__wake").cloned() {
                     let body = booth.body.clone();
                     let executors = self.executors.clone();
+                    let owner = self.owner_of(id);
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
                         self.plan_of(&id.booth_type),
                         self.schema_of(&id.booth_type).cloned().flatten(),
                         id,
+                        owner,
+                        &self.resources,
                     );
                     let host = self.delivery_bridge_for(&ctx, id);
                     Self::run_hook(
@@ -402,12 +405,15 @@ impl Realm {
         let concurrency = booth.concurrency;
         let realm_plan = realm.plan_of(&id.booth_type).cloned();
         let realm_mq = realm.mq.clone();
+        let owner = realm.owner_of(id);
         let ctx = Self::ctx_for(
             self_arc.clone(),
             realm.mq.clone(),
             realm_plan.as_ref(),
             realm.schema_of(&id.booth_type).cloned().flatten(),
             id,
+            owner,
+            &realm.resources,
         );
         let executors = realm.executors.clone();
         let effectors = realm.effectors.clone();
@@ -802,12 +808,15 @@ impl Realm {
             if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                 let body = booth.body.clone();
                 let executors = locked.executors.clone();
+                let owner = locked.owner_of(id);
                 let ctx = Self::ctx_for(
                     realm.clone(),
                     locked.mq.clone(),
                     locked.plan_of(&id.booth_type),
                     locked.schema_of(&id.booth_type).cloned().flatten(),
                     id,
+                    owner,
+                    &locked.resources,
                 );
                 let host = locked.delivery_bridge_for(&ctx, id);
                 if let Err(e) =
@@ -1086,12 +1095,15 @@ impl Realm {
                 if let Some(hook) = booth.hooks.get("__sleep").cloned() {
                     let body = booth.body.clone();
                     let executors = self.executors.clone();
+                    let owner = self.owner_of(&inst.id);
                     let ctx = Self::ctx_for(
                         self_arc.clone(),
                         self.mq.clone(),
                         self.plan_of(&key.0),
                         self.schema_of(&key.0).cloned().flatten(),
                         &inst.id,
+                        owner,
+                        &self.resources,
                     );
                     let host = self.delivery_bridge_for(&ctx, &inst.id);
                     if let Err(e) = Self::run_hook(

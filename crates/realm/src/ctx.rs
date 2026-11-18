@@ -31,6 +31,12 @@ impl Realm {
         plan: Option<&store_exec::StorePlan>,
         schema: Option<serde_json::Value>,
         id: &InstanceId,
+        // The account this activation runs for (ADR-0048): recorded once at the entrance from the
+        // turn's envelope, and the only thing a resource is ever minted for.
+        owner: Option<String>,
+        // The venue's registry, cloned as DATA like the store plan above: the handle must not
+        // dereference the realm at emit time (ctx_for is called under the lock everywhere).
+        resources: &crate::resources::Registry,
     ) -> aura_booth::Ctx {
         // The store is already a shared Arc: handlers get a direct handle.
         // (Phase 1 single-node: the store is lock-free per operation. The
@@ -109,7 +115,25 @@ impl Realm {
         if let Some(schema) = schema {
             ctx = ctx.with_interface_schema(schema);
         }
+        // ctx.resource (ADR-0048/0049): in-process the venue IS the node (effector ADR-0003 §1), so
+        // there is no plane to ask and no wire to wait on — the handle mints from this venue's
+        // registry and moves the bytes itself. Bound even with no account: the refusal is a sentence
+        // the script can act on, not a function that silently is not there.
+        {
+            let registry = resources.clone();
+            ctx = ctx.with_resource(Arc::new(move |op: aura_booth::ResourceOp| {
+                crate::resource_bridge::ask(&registry, owner.as_deref(), &op)
+            }));
+        }
         ctx
+    }
+
+    /// Whose account an instance runs for — the entrance records it once (ADR-0048), and it is read
+    /// here so a resource is minted for the turn's own slice rather than a plausible guess.
+    pub(crate) fn owner_of(&self, id: &InstanceId) -> Option<String> {
+        self.instances
+            .get(&(id.booth_type.clone(), id.key.clone()))
+            .and_then(|i| i.owner.clone())
     }
 
     pub(crate) fn host_bridge_for(
@@ -247,6 +271,19 @@ impl Realm {
         // Type-scoped storage (ADR-0026 §3): ONE entry, okm Collection
         // instructions as data. The handle is bound to the owning type's
         // ns at ctx construction — the fn itself carries no addressing.
+        // Durable data (`ctx.resource`, ADR-0048/0049). The handle is the venue's own node: it mints
+        // from this venue's registry and moves the bytes, so this arm is a forward, not a wire. The
+        // guest gets a path (get) or the store's reference (publish) — never a credential.
+        if let Some(resource) = ctx.resource_handle() {
+            let resource = resource.clone();
+            fns.insert(
+                "resource".into(),
+                Arc::new(move |arg: serde_json::Value| {
+                    let op = aura_booth::ResourceOp::parse(&arg)?;
+                    (resource)(op).map_err(|e| anyhow::anyhow!(e)).map(serde_json::Value::String)
+                }) as HostFn,
+            );
+        }
         if let Some(surface) = ctx.store_emit_handle() {
             let emit_fn = surface.clone();
             fns.insert(

@@ -51,6 +51,16 @@ may name.
    answers the reference the store minted (`branch@sha`, an ETag). The node runs git and curl; the
    script installs no client, and the credential never reaches it.
 
+   **In-process, the venue is the node.** Effector ADR-0003 §1 makes "what contains the code" the
+   only containment story, and the venue contains its own scripts — so for them there is nobody to
+   ask and no wire to wait on: `realm::resource_bridge` mints from the same registry row and calls the
+   same `effector_runtime::resource::{ensure, sync}`, and the root is the venue's own
+   (`EFFECTOR_RESOURCES_ROOT`, else `<cwd>/resources`). The data lands beside the venue, which is what
+   the in-process class claims rather than a shortcut around it. Grants are declared at boot from
+   `aura.kdl` (`resources { kind "git" { base … mode … secret-env … } }`, the credential named by
+   environment variable) — a grant a script could create would make "a resource is a grant" a
+   sentence about nothing.
+
 5. **No version table, no `Synced` frame, no pointer.** A publish's reference goes back to the
    script. Undo is the store's own: a git revert, a rustic snapshot, a bucket with versioning on.
 

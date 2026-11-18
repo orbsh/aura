@@ -31,6 +31,55 @@ impl Engine {
             .with_cursor_ttl(cursor_ttl)
             .shared_async()
             .await;
+        // The venue's own grants (ADR-0048/0049). Declared from config at boot, once — a grant is a
+        // deployment fact, and if a script could create one, "a resource is a grant" would be a
+        // sentence about nothing. The credential is read from the NAMED environment variable here
+        // and lives only in the registry afterwards: a config file that carried the key would be the
+        // key in a file that gets copied around.
+        for (kind, decl) in &config.resources {
+            let mode = match decl.mode.as_str() {
+                "" | "ro" => aura_realm::resources::Mode::ReadOnly,
+                "rw" => aura_realm::resources::Mode::ReadWrite,
+                other => anyhow::bail!(
+                    "resources.{kind}.mode: `{other}` is not a mode (ro or rw) — an unknown mode is \
+                     a typo, and reading it as read-only would hide it"
+                ),
+            };
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            {
+                let mut r = realm.lock().await;
+                r.resources.declare(
+                    kind,
+                    &aura_realm::resources::Grant {
+                        desc: decl.desc.clone(),
+                        base: decl.base.clone(),
+                        mode,
+                        secret_name: if decl.secret_env.is_empty() {
+                            String::new()
+                        } else {
+                            decl.secret_env.clone()
+                        },
+                    },
+                    now_ms,
+                )?;
+                // A declared kind whose credential is not in the environment is refused at boot: the
+                // alternative is a transfer that fails on some machine hours later, with a message
+                // about a token nobody connected back to this file.
+                if !decl.secret_env.is_empty() {
+                    let value = std::env::var(&decl.secret_env).map_err(|_| {
+                        anyhow::anyhow!(
+                            "resources.{kind}.secret_env: `${}` is not set, and this kind's grant \
+                             declares a credential",
+                            decl.secret_env
+                        )
+                    })?;
+                    r.resources.secret(kind, &value)?;
+                }
+            }
+        }
         Realm::spawn_evictor(&realm);
         // Realms share the SAME okm engine (one fjall keyspace); each
         // realm derives a prefix-bound handle at construction —

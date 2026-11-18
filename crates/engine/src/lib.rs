@@ -135,7 +135,7 @@ impl Engine {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let mut r = self.realm.lock().await;
+        let r = self.realm.lock().await;
         r.resources.declare(kind, &grant, now_ms)?;
         if let Some(value) = secret {
             r.resources.secret(kind, value)?;
@@ -154,7 +154,7 @@ impl Engine {
     /// way it answers one that was never declared — by name — because a withdrawn grant that still
     /// resolved would be a grant nobody can see in the listing.
     pub async fn revoke_grant(&self, kind: &str) -> anyhow::Result<()> {
-        let mut r = self.realm.lock().await;
+        let r = self.realm.lock().await;
         r.resources.revoke(kind)
     }
 

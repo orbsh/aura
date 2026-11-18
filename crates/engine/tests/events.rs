@@ -546,7 +546,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
     let known: Vec<u64> = mq::backlog(&vs, "order.created", &named("u1"), 0)
         .unwrap()
         .into_iter()
-        .map(|(s, _)| s)
+        .map(|(s, _, _)| s)
         .collect();
     let first_seq = known.first().copied().unwrap_or(min.saturating_sub(1));
     let remaining: Vec<u64> = {
@@ -558,7 +558,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         mq::backlog(&vs, "order.created", &named("u1"), after)
             .unwrap()
             .into_iter()
-            .map(|(s, _)| s)
+            .map(|(s, _, _)| s)
             .collect()
     };
     assert!(
@@ -588,7 +588,7 @@ async fn watermark_compaction_deletes_below_min_cursor() {
         .unwrap();
     let surviving = mq::backlog(&vs, "order.created", &named("u1"), 0).unwrap();
     assert!(
-        surviving.iter().all(|(s, _)| *s > first_seq),
+        surviving.iter().all(|(s, _, _)| *s > first_seq),
         "rows at/below the pinned watermark are gone: {surviving:?}"
     );
     assert!(!surviving.is_empty(), "at/above-watermark rows survive");
@@ -759,8 +759,8 @@ async fn expired_cursor_forfeits_its_backlog() {
         false,
     )
     .unwrap();
-    let s1 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
-    let s2 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
+    let s1 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 1}), None).unwrap();
+    let s2 = mq::append(&vs, "e", &named("u1"), &serde_json::json!({"n": 2}), None).unwrap();
     mq::advance(&vs, "e", &named("u1"), "stats", s2).unwrap();
     mq::advance(&vs, "e", &named("u1"), "cart", s1).unwrap();
 
@@ -789,7 +789,7 @@ async fn expired_cursor_forfeits_its_backlog() {
         "the forfeited backlog is compacted away: {surviving:?}"
     );
     assert!(
-        surviving.iter().all(|(s, _)| *s > s1),
+        surviving.iter().all(|(s, _, _)| *s > s1),
         "only rows at/above the new watermark survive"
     );
 

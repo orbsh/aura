@@ -427,6 +427,12 @@ pub struct Ctx {
     /// lives in the type's declared collections (the store_emit handle),
     /// never in this struct.
     pub self_id: InstanceId,
+    /// WHO EMITTED the message this ctx is answering — the emitting booth's TYPE, stamped by the
+    /// venue at emit time (it is the venue's own knowledge: it routed the event). `None` for a
+    /// direct call and for anything emitted before this fact existed. A subscriber that has to tell
+    /// one speaker from another (a fan-in queue, a per-booth cache) reads it here instead of asking
+    /// every application to write its own name into its payloads.
+    pub origin: Option<String>,
     /// Call surface — the single controlled path (ADR-0011).
     invoke: Invoke,
     /// Streaming call surface (ADR-0034): iterate/dispose ride the same
@@ -789,6 +795,7 @@ impl Ctx {
     ) -> Self {
         Self {
             self_id,
+            origin: None,
             invoke: Invoke { dispatch },
             iterate: Some(iterate),
             emit: None,
@@ -800,6 +807,12 @@ impl Ctx {
 
     /// Inject the MQ publish closure (realm-side assembly; same
     /// Weak-realm discipline as dispatch/iterate).
+    /// Stamp who spoke. The venue calls this on the delivery path; a body never sets its own.
+    pub fn with_origin(mut self, origin: Option<String>) -> Self {
+        self.origin = origin;
+        self
+    }
+
     pub fn with_emit(mut self, handle: emit_handle::EmitHandle) -> Self {
         self.emit = Some(handle);
         self

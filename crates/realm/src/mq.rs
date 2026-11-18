@@ -567,6 +567,7 @@ pub fn append(
     event: &str,
     part: &InstanceKey,
     payload: &serde_json::Value,
+    emitter: Option<&str>,
 ) -> anyhow::Result<u64> {
     let event_id = resolve_event_id(store, event)?;
     let instance_key_id = instance_key_id(store, part)?;
@@ -595,6 +596,13 @@ pub fn append(
     for (k, v) in map {
         obj.insert(k.clone(), json_to_dyn(v));
     }
+    // WHO SPOKE, beside WHAT was said: the emitter is a property of the message, so it rides the
+    // message — one row, one write, one read, and no second table to keep in step with compaction.
+    // A reserved key (the underscore prefix is the row's own convention, cf. `_root`) cannot
+    // collide with a payload key.
+    if let Some(who) = emitter {
+        obj.insert(EMITTER_KEY.to_string(), json_to_dyn(&serde_json::Value::String(who.to_string())));
+    }
     // The map payload IS the merge (okm's `put` says so by the payload's type):
     // the names are dynamic (the event's own shape) and the row half is whatever
     // the map declares — one commit either way.
@@ -614,6 +622,11 @@ pub fn append(
 /// construction (ADR-0039 §1). The singleton INSTANCE's own key is the
 /// `InstanceKey::Singleton` VARIANT (aura_booth, ADR-0042) — not a string.
 pub const SINGLETON_KEY_ID: u32 = 0;
+
+/// The row's reserved key for WHO SPOKE (the emitting booth's type). The underscore prefix is the
+/// row's own convention (`_root` marks a non-object top level), so a payload key cannot collide
+/// with it — and a row written before this fact existed simply has no such key.
+pub const EMITTER_KEY: &str = "_emitter";
 
 /// The subscriber's cursor (0 = nothing consumed). The subscriber is the
 /// booth TYPE (ADR-0038 §2): one dictionary id, no participant name.
@@ -676,7 +689,7 @@ pub fn backlog(
     event: &str,
     part: &InstanceKey,
     after_seq: u64,
-) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
+) -> anyhow::Result<Vec<(u64, serde_json::Value, Option<String>)>> {
     let event_id = resolve_event_id(store, event)?;
     let instance_key_id = instance_key_id(store, part)?;
     let t = Collection::<MqStore, MqDataKey, MqData>::new(store.clone());
@@ -691,10 +704,18 @@ pub fn backlog(
             // Reconstruct from the dynamic segment (name-keyed).
             // The DYNAMIC half is its own door now (`slot1_map`): the row is a
             // typed struct, and a document's name-keyed segment is a `Dict`.
-            let v = match t.slot1_map(&key)? {
+            let layout = t.slot1_map(&key)?;
+            let emitter = layout
+                .as_ref()
+                .and_then(|obj| obj.get(EMITTER_KEY))
+                .and_then(|dv| dyn_to_json(dv).as_str().map(str::to_string));
+            let v = match layout {
                 Some(obj) if !obj.contains_key("_root") => {
                     let mut m = serde_json::Map::new();
                     for (k, dv) in &obj {
+                        if k == EMITTER_KEY {
+                            continue;
+                        }
                         m.insert(k.clone(), dyn_to_json(dv));
                     }
                     serde_json::Value::Object(m)
@@ -708,7 +729,7 @@ pub fn backlog(
                 // it was written as an empty object, and that is what it reads as.
                 None => serde_json::Value::Object(serde_json::Map::new()),
             };
-            out.push((key.seq, v));
+            out.push((key.seq, v, emitter));
         }
     }
     Ok(out)

@@ -254,7 +254,7 @@ impl Realm {
                                     }
                                 }
                             };
-                            for (seq, payload) in batch {
+                            for (seq, payload, origin) in batch {
                                 // The body is called at the declared entry when the declaration
                                 // bound one; otherwise the event name IS the entry.
                                 let job = aura_booth::QueuedJob {
@@ -266,6 +266,7 @@ impl Realm {
                                     &consumer_id,
                                     job,
                                     concrete,
+                                    origin,
                                 )
                                 .await;
                                 let realm = consumer_realm.lock().await;
@@ -306,6 +307,7 @@ impl Realm {
         id: &InstanceId,
         job: aura_booth::QueuedJob,
         event: &str,
+        origin: Option<String>,
     ) {
         let entry = job.handler.clone();
         let args = job.args.clone();
@@ -334,7 +336,7 @@ impl Realm {
             i.last_activity = std::time::Instant::now();
         }
         drop(realm);
-        Self::run_job(self_arc.clone(), id, job).await;
+        Self::run_job_from(self_arc.clone(), id, job, origin).await;
         // NOBODY PARKS ON A DELIVERY'S REPLY (§4) — except here: a body that could not be CALLED
         // (an entry the code does not define, a carrier fault) is a fact the operator must be
         // able to see. It is recorded in the dead ring with BOTH names, and said in the log,
@@ -365,6 +367,17 @@ impl Realm {
     }
 
     pub(crate) async fn run_job(self_arc: SharedRealm, id: &InstanceId, job: Job) {
+        Self::run_job_from(self_arc, id, job, None).await
+    }
+
+    /// The same, with WHO SPOKE: a queued delivery carries the emitter the venue recorded on the
+    /// row, and the body reads it as `ctx.origin`.
+    async fn run_job_from(
+        self_arc: SharedRealm,
+        id: &InstanceId,
+        job: Job,
+        origin: Option<String>,
+    ) {
         let mut realm = self_arc.lock().await;
         if let Some(i) = realm
             .instances
@@ -416,7 +429,8 @@ impl Realm {
             owner,
             &realm.resources,
             &realm.stops,
-        );
+        )
+        .with_origin(origin);
         let executors = realm.executors.clone();
         let effectors = realm.effectors.clone();
         let effectors_base_url = realm.code_base_url.clone();
@@ -1034,7 +1048,7 @@ impl Realm {
             handler: "__on_timer".into(),
             args: serde_json::json!({ "tag": tag }),
         };
-        Self::run_job_queued(realm, &target, job, "__on_timer").await;
+        Self::run_job_queued(realm, &target, job, "__on_timer", None).await;
     }
 
     /// The cold-tier submission arm (ADR-0036): like every dispatch job,

@@ -22,15 +22,13 @@ fn mq_roundtrip() {
         &vs,
         "add_to_cart",
         &named("alice"),
-        &serde_json::json!({"item": "book"}),
-    )
+        &serde_json::json!({"item": "book"}), None)
     .unwrap();
     let seq2 = mq::append(
         &vs,
         "add_to_cart",
         &named("alice"),
-        &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}}),
-    )
+        &serde_json::json!({"item": "pen", "meta": {"source": "web", "tags": [1, 2]}}), None)
     .unwrap();
     // The sort key is the per-slice SEQUENCE (MqData's HighWater(seq) issues it): a
     // counter, monotonic, never reset — deliberately not a clock.
@@ -48,7 +46,7 @@ fn mq_roundtrip() {
     let bl = mq::backlog(&vs, "add_to_cart", &named("alice"), seq1).unwrap();
     assert_eq!(bl.len(), 1);
     // Nested object + array survive the dynamic segment losslessly.
-    let (_, v2) = &bl[0];
+    let (_, v2, _) = &bl[0];
     assert_eq!(v2["meta"]["source"], "web");
     assert_eq!(v2["meta"]["tags"][1], 2);
     // A non-object payload (unreachable via the emit chain) maps to an
@@ -58,8 +56,7 @@ fn mq_roundtrip() {
         &vs,
         "add_to_cart",
         &named("alice"),
-        &serde_json::json!([7, 8]),
-    )
+        &serde_json::json!([7, 8]), None)
     .unwrap();
     let bl = mq::backlog(&vs, "add_to_cart", &named("alice"), seq2).unwrap();
     assert_eq!(bl[0].1, serde_json::json!({}));
@@ -313,16 +310,16 @@ fn depth_counts_live_and_skip_to_head_skips_the_backlog() {
         "unseen event: depth 0"
     );
 
-    let s1 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 1})).unwrap();
-    let s2 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 2})).unwrap();
-    let s3 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 3})).unwrap();
+    let s1 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 1}), None).unwrap();
+    let s2 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 2}), None).unwrap();
+    let s3 = mq::append(&vs, "tick", &named("u1"), &serde_json::json!({"n": 3}), None).unwrap();
     assert_eq!(
         mq::depth(&vs, "tick", &named("u1")).unwrap(),
         3,
         "three appends fold +1 each"
     );
     // Depth is per (event, partition): another partition keeps its own count.
-    mq::append(&vs, "tick", &named("u2"), &serde_json::json!({"n": 9})).unwrap();
+    mq::append(&vs, "tick", &named("u2"), &serde_json::json!({"n": 9}), None).unwrap();
     assert_eq!(
         mq::depth(&vs, "tick", &named("u2")).unwrap(),
         1,

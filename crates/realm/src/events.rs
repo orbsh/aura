@@ -22,7 +22,7 @@ use aura_booth::{InstanceId, InstanceKey as BoothKey, RouteResolution};
 impl Realm {
     pub async fn emit(
         self_arc: &SharedRealm,
-        _emitter: Option<&str>,
+        emitter: Option<&str>,
         event: &str,
         data: serde_json::Value,
     ) -> anyhow::Result<()> {
@@ -30,7 +30,8 @@ impl Realm {
             let mut realm = self_arc.lock().await;
             // ADR-0012: no emits whitelist — the receiver set is a runtime
             // fact; an emit with no subscribers lands in the dead ring.
-            // `emitter` stays in the signature for audit/recording.
+            // `emitter` rides the queued row (mq's `_emitter` key) so a subscriber can tell who
+            // spoke: the venue routed the event, so who sent it is the venue's own knowledge.
             let matched = realm.router.matches(event);
             if matched.is_empty() {
                 realm.dead_events.push(event, data, DeadReason::NoRoute);
@@ -168,7 +169,7 @@ impl Realm {
             // loss.
             let event_name = event.to_string();
             let store = realm.mq.clone();
-            if let Err(e) = mq::append(&store, &event_name, &part, &data) {
+            if let Err(e) = mq::append(&store, &event_name, &part, &data, emitter) {
                 eprintln!("mq append failed for {event_name}/{part:?}: {e}");
                 realm
                     .dead_events

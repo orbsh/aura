@@ -1,5 +1,11 @@
 //! A deadline ends the CALL and tells the NODE (ADR-0047 stage two, extended to timeouts).
 //!
+//! What is measured is silence, not wall time: the node reports `Frame::Progress` while a transfer
+//! runs (effector 8efa811), so a call that is quiet for the whole grace really did move nothing.
+//! The healthy-transfer half of that pair — that a running child DOES report — is locked where the
+//! observations are (effector `a_running_child_reports_that_it_is_alive`); a test here cannot make a
+//! node lie about progress it did not have.
+//!
 //! Why this is a test and not a comment: the plane used to abandon the result and nothing else. The
 //! node kept executing — and for `ctx.resource` that means it kept moving bytes that nobody would
 //! ever read, which is the ordinary case as soon as a repository is big enough to blow a deadline.
@@ -152,7 +158,9 @@ async fn a_deadline_tells_the_node_to_stop() {
         "the caller stopped at its deadline, not at the script's end: {elapsed:?}"
     );
     let text = err.to_string();
-    assert!(text.contains("timed out"), "{text}");
+    // The deadline now measures SILENCE, not wall time (ADR-0047 as extended): the sentence says
+    // what the plane observed, so an operator reading a log knows whether the work was slow or still.
+    assert!(text.contains("without progress"), "{text}");
 
     // The node was TOLD, and this is the observable half: the caller's wait never touches
     // `pending_remote` — only the dispatch's own deadline arm clears it, and that arm raises the

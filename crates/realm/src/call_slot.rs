@@ -92,13 +92,28 @@ impl Realm {
             };
             (kind, stream, handler, args, target)
         };
-        let deadline = {
+        // THE WAIT HAS A TIMER ONLY WHERE NOTHING CAN REPORT PROGRESS (ADR-0047 as extended).
+        //
+        // Remote: the spec's number is a SILENCE budget, and the party that can observe silence is
+        // the dispatch — it sees the node's `Frame::Progress` and the clock together. A second,
+        // wall-clock timer here would abandon the result while the node is still working, which is
+        // the defect the dispatch's arm exists to remove.
+        //
+        // In-process: there is no such report. The body runs on the caller's own thread and says
+        // nothing until it answers, so silence is indistinguishable from work — and the honest
+        // reading of an unobservable call is the old one: the deadline is wall time.
+        let (grace, remote) = {
             let realm = self_arc.lock().await;
-            realm
+            let grace = realm
                 .call_specs
                 .get(&target.booth_type)
                 .and_then(|s| s.timeout)
-                .unwrap_or(Duration::from_secs(30))
+                .unwrap_or(Duration::from_secs(30));
+            let remote = matches!(
+                realm.types.get(&target.booth_type).map(|t| &t.body),
+                Some(aura_booth::Body::Remote { .. })
+            );
+            (grace, remote)
         };
         {
             let mut realm = self_arc.lock().await;
@@ -134,7 +149,7 @@ impl Realm {
         });
         Ok(CallSlot::Hot {
             rx: reply_rx,
-            deadline: Some((tokio::time::Instant::now() + deadline, deadline)),
+            deadline: (!remote).then(|| (tokio::time::Instant::now() + grace, grace)),
         })
     }
 
@@ -165,7 +180,13 @@ impl Realm {
                 .unwrap_or_else(|| CallSpec::hot(Duration::from_secs(30)));
             match spec.tier {
                 Tier::Hot => {
-                    let deadline = spec.timeout.map(|t| (tokio::time::Instant::now() + t, t));
+                    // Measured by the dispatch for a remote body (silence) and here for a local one
+                    // (wall time) — the same split, and the same reason, as the submit path above.
+                    let grace = spec.timeout.unwrap_or(Duration::from_secs(30));
+                    let remote = matches!(
+                        realm.types.get(&target.booth_type).map(|t| &t.body),
+                        Some(aura_booth::Body::Remote { .. })
+                    );
                     // One code path (§4): mint + register like every
                     // Start. A terminal first reply (the invoke shape —
                     // the common case here) unwinds the registration in
@@ -233,7 +254,7 @@ impl Realm {
                     });
                     return Ok(CallSlot::Hot {
                         rx: value_rx,
-                        deadline,
+                        deadline: (!remote).then(|| (tokio::time::Instant::now() + grace, grace)),
                     });
                 }
                 Tier::Cold => {

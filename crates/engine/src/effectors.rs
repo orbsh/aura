@@ -126,6 +126,18 @@ async fn handle_connection(
     while let Some(msg) = stream.next().await {
         let Message::Text(text) = msg? else { continue };
         match serde_json::from_str::<Frame>(&text)? {
+            // THE NODE IS STILL MOVING (effector `Frame::Progress`). Nothing is answered and
+            // nothing is resolved: the only consumer is the deadline, which reads silence, and this
+            // frame is the one thing that turns silence into evidence. An unknown `call_id` is a
+            // call the caller already gave up on — the report is dropped, like a late answer.
+            Frame::Progress { call_id } => {
+                let realm = realm.lock().await;
+                if let Some(pending) = realm.pending_remote.get(&call_id) {
+                    pending
+                        .activity
+                        .store(aura_realm::mq::now_ms(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             Frame::Result(result) => {
                 let mut r = realm.lock().await;
                 if let Some(pending) = r.pending_remote.remove(&result.call_id) {

@@ -444,6 +444,10 @@ impl Realm {
         // The same call's handle as effector sees it. It rides the CALL (the carrier
         // signature takes it), because an unbounded booth serves many calls at once.
         let control = interrupt.control();
+        // When the node last said this call was still moving. One handle shared with the reader
+        // loop (which stamps it on `Frame::Progress`) and with the deadline below (which reads it);
+        // the plane cannot observe a running child, so this is the node's testimony, not a guess.
+        let activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(epoch_ms()));
         let mut result = match body {
             aura_booth::Body::Remote {
                 node_alias,
@@ -493,6 +497,7 @@ impl Realm {
                         reply: tx,
                         instance: id.clone(),
                         owner: owner.clone(),
+                        activity: activity.clone(),
                     },
                 );
                 // Residency identity = this booth INSTANCE (type/key), not the handler:
@@ -565,17 +570,18 @@ impl Realm {
                             // result while the node keeps transferring is the leak this arm closes.
                             // The frame is the same one an operator's stop sends — one vocabulary
                             // for "stop what you are doing", whoever decided it.
-                            () = stop_at(call_timeout) => {
+                            () = idle_for(call_timeout, activity.clone()) => {
                                 let _ = conn.sender.send(effector_protocol::Frame::Interrupt {
                                     call_id: call_id.clone(),
                                 });
                                 self_arc.lock().await.pending_remote.remove(&call_id);
                                 Err(anyhow::anyhow!(
-                                    "call timed out after {}; the node was told to stop, so the \
-                                     transfer it was running stops with it",
+                                    "call went {} without progress and the node was told to stop; \
+                                     a transfer says it is alive (`Frame::Progress`), so this is a \
+                                     call that moved nothing, not one that took long",
                                     call_timeout
                                         .map(|t| format!("{}s", t.as_secs()))
-                                        .unwrap_or_else(|| "the deadline".into())
+                                        .unwrap_or_else(|| "past its deadline".into())
                                 ))
                             }
                         }
@@ -1227,14 +1233,35 @@ pub(crate) fn stream_op(job: &Job) -> effector_runtime::carrier::executor::Strea
     }
 }
 
-/// Completes when the call's deadline passes, or never when its type declared none.
+/// Completes when the call has moved NOTHING for `grace`, or never when its type declared none.
 ///
-/// A function so the `select!` arm that uses it reads as one statement: "the deadline raised" is a
-/// third outcome beside "the node answered" and "somebody asked us to stop", and all three end the
-/// same way — the node is told, the pending entry goes, the caller gets an error.
-async fn stop_at(timeout: Option<std::time::Duration>) {
-    match timeout {
-        Some(t) => tokio::time::sleep(t).await,
-        None => std::future::pending::<()>().await,
+/// The distinction is the whole point. A wall-clock deadline answers "how long may a call last",
+/// which is the wrong question for work whose length is the data's: a 1.5 GB clone is healthy at
+/// minute three, and killing it is not enforcement, it is damage. What the plane can actually
+/// judge is silence — and a transfer is silent in every way except one: the node says it is still
+/// moving (\`Frame::Progress\`, effector 8efa811). So this measures the gap between testimonies.
+///
+/// The loop sleeps a full grace before each look, so a call that reports and then hangs still dies
+/// on the grace after its last report; the cost is that detection is never early, which is the safe
+/// direction.
+async fn idle_for(grace: Option<std::time::Duration>, activity: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    let Some(grace) = grace else {
+        return std::future::pending::<()>().await;
+    };
+    let grace_ms = grace.as_millis() as u64;
+    loop {
+        tokio::time::sleep(grace).await;
+        let seen = activity.load(std::sync::atomic::Ordering::Relaxed);
+        if epoch_ms().saturating_sub(seen) >= grace_ms {
+            return;
+        }
     }
+}
+
+/// Milliseconds since the epoch — the unit both sides stamp and compare.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
 }

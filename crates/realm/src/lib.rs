@@ -245,6 +245,10 @@ fn parse_duration_suffix(s: &str) -> Option<Duration> {
 pub struct RemotePending {
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     pub instance: InstanceId,
+    /// When the node last said the call was still moving (epoch ms). The dispatch's deadline reads
+    /// this instead of the clock: a healthy transfer is silent in every way EXCEPT this frame, so
+    /// wall time would call it dead (effector \`Frame::Progress\`).
+    pub activity: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// The account the dispatching instance runs for, recorded when the call went out. The plane
     /// answers "whose resources may this node touch" from here — one field, stamped once.
     pub owner: Option<String>,

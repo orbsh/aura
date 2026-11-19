@@ -707,6 +707,8 @@ impl Realm {
                     Some(effector_runtime::carrier::HostBridge {
                         functions: fns,
                         storage,
+                        // 字节载荷的汇点：没有就退回 `$cbor` 映射（carrier 的默认行为）。
+                        emit_bytes: None,
                     })
                 };
                 let instance_key = format!("{}/{}", id.booth_type, id.key);
@@ -948,6 +950,7 @@ impl Realm {
         Some(effector_runtime::carrier::HostBridge {
             functions: fns,
             storage,
+            emit_bytes: None,
         })
     }
 

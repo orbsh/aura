@@ -814,6 +814,17 @@ fn remote_step(node_alias: &str) -> BoothDecl {
     )
 }
 
+/// The same envelope with a machine id instead of labels (ADR-0054: an address, not a word).
+fn pinned(id: &str, ops: Vec<Value>, machine: &str) -> Job {
+    serde_json::from_value(json!({
+        "id": id,
+        "booth": "gravity/turn-1",
+        "placement": { "kind": "machine", "machine": machine },
+        "source": { "kind": "ops", "ops": ops }
+    }))
+    .expect("the job is a valid envelope")
+}
+
 fn placed(id: &str, ops: Vec<Value>, labels: &[&str]) -> Job {
     serde_json::from_value(json!({
         "id": id,
@@ -877,6 +888,98 @@ async fn a_job_reaches_only_the_nodes_its_placement_names() {
         out.nodes,
         vec!["home-box".to_string()],
         "the outcome records what the job could see, not what it asked for"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_id_addresses_the_box_whatever_its_alias_is_now() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    // `place()` names the machine `box-<alias>`; the point of addressing by id is that the
+    // caller never had to know the alias — only the hardware.
+    place(&engine, "home-box", &["site:home"]);
+    place(&engine, "office-box", &["site:office"]);
+    let decls = vec![remote_step("office-box")];
+    let job = pinned(
+        "job-machine",
+        vec![op("step/a", json!({}), json!({}), failed_policy())],
+        "box-home-box",
+    );
+
+    let out = dispatch(&engine, &job, &decls).await.unwrap();
+
+    // office-box is on another machine, so the call is refused by the filter — which is how
+    // this test knows the reach was built from the id and not from the alias.
+    let why = why(&out, 0);
+    assert!(
+        why.contains("outside this job's placement"),
+        "the machine's reach must exclude the other box, got: {why}"
+    );
+    assert_eq!(
+        out.nodes,
+        vec!["home-box".to_string()],
+        "one machine, one reachable alias"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_no_node_is_on_is_refused_and_names_the_ids_that_are_here() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    place(&engine, "home-box", &["site:home"]);
+    let decls = vec![remote_step("home-box")];
+    let job = pinned(
+        "job-no-machine",
+        vec![op("step/a", json!({}), json!({}), failed_policy())],
+        "box-that-left",
+    );
+
+    let err = dispatch(&engine, &job, &decls)
+        .await
+        .expect_err("an id nobody answers is a job that named the wrong box");
+    let refusal = err
+        .downcast_ref::<DispatchError>()
+        .expect("the refusal keeps its type through anyhow");
+    match refusal {
+        DispatchError::NoSuchMachine { machine, nodes } => {
+            assert_eq!(machine, "box-that-left");
+            assert_eq!(
+                nodes,
+                &vec!["home-box=box-home-box".to_string()],
+                "the listing is alias=machine: a caller that asked by id needs the ids"
+            );
+        }
+        other => panic!("expected NoSuchMachine, got {other}"),
+    }
+    assert_eq!(
+        engine.realm_set.live().await.unwrap(),
+        vec!["main".to_string()],
+        "refused before the realm was created"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_machine_id_addresses_nothing_and_is_not_widened() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    place(&engine, "home-box", &["site:home"]);
+    let decls = vec![remote_step("home-box")];
+    let job = pinned(
+        "job-empty-machine",
+        vec![op("step/a", json!({}), json!({}), failed_policy())],
+        "",
+    );
+
+    let err = dispatch(&engine, &job, &decls)
+        .await
+        .expect_err("an empty id is a missing address, not `Any`");
+    let refusal = err
+        .downcast_ref::<DispatchError>()
+        .expect("the refusal keeps its type through anyhow");
+    assert!(
+        matches!(refusal, DispatchError::NoSuchMachine { machine, .. } if machine.is_empty()),
+        "got {refusal}"
+    );
+    assert!(
+        format!("{refusal}").contains("EMPTY machine id"),
+        "the refusal has to say that empty is not a default: {refusal}"
     );
 }
 

@@ -113,14 +113,46 @@ impl NodePool {
 
     /// The alias currently serving `machine`, if any. One box, one live connection: a second
     /// dial under another name is the same machine and a caller may want to know.
-    pub fn by_machine(&self, machine: &str) -> Option<String> {
+    /// Every alias running on `machine` — the id is an ADDRESS (ADR-0054), so a job that
+    /// names one reaches all of its processes. Two nodes of one box are the same hardware and
+    /// different doors; picking one here would be this function deciding which.
+    ///
+    /// An empty id addresses nothing: the nodes that cannot say who they are do not become one
+    /// node, and "the unidentified ones" is not a place a job can ask for.
+    pub fn aliases_of_machine(&self, machine: &str) -> Vec<String> {
         if machine.is_empty() {
-            return None;
+            return Vec::new();
         }
-        self.read()
+        let mut out: Vec<String> = self
+            .read()
             .values()
-            .find(|n| n.machine == machine)
+            .filter(|n| n.machine == machine)
             .map(|n| n.alias.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// `alias=machine` for every node, sorted — what a refusal lists when it could not match a
+    /// machine id: the caller needs the ids that ARE here, not the aliases it could not use.
+    pub fn aliases_with_machine(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .read()
+            .values()
+            .map(|n| {
+                format!(
+                    "{}={}",
+                    n.alias,
+                    if n.machine.is_empty() {
+                        "(unidentified)"
+                    } else {
+                        &n.machine
+                    }
+                )
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Remove the node behind `alias`, but only if `channel` is still the connection
@@ -281,7 +313,12 @@ mod tests {
         let mut same = record("b", &[]);
         same.machine = "box-a".into();
         assert_eq!(pool.insert(same).same_machine, vec!["a".to_string()]);
-        assert_eq!(pool.by_machine("box-a").as_deref(), Some("a"));
+        // Two names, one box: the id reaches BOTH doors (ADR-0054 — an id addresses the
+        // hardware, not one process), and `same_machine` above is what says they are one box.
+        assert_eq!(
+            pool.aliases_of_machine("box-a"),
+            vec!["a".to_string(), "b".to_string()]
+        );
         // An unidentified box is not every other unidentified box.
         let mut one = record("x", &[]);
         one.machine = String::new();
@@ -289,7 +326,7 @@ mod tests {
         two.machine = String::new();
         pool.insert(one);
         assert!(pool.insert(two).same_machine.is_empty());
-        assert_eq!(pool.by_machine(""), None);
+        assert!(pool.aliases_of_machine("").is_empty(), "an empty id addresses nothing");
     }
 
     #[test]

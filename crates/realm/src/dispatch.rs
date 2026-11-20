@@ -416,6 +416,10 @@ pub enum DispatchError {
     /// before a realm exists: a placement that matches nothing is a job whose own words
     /// cannot be satisfied, and running it would mean choosing machines it did not name.
     Nowhere { labels: Vec<String>, nodes: Vec<String> },
+    /// The job named a machine id no node is on (`Placement::Machine`, ADR-0054). Same refusal
+    /// as `Nowhere` and for the same reason, but the listing is `alias=machine`: a caller that
+    /// asked by id needs the ids, not the names it did not ask for.
+    NoSuchMachine { machine: String, nodes: Vec<String> },
     /// The job's declarations did not arrive in a form this door reads: absent, duplicated,
     /// under a name it does not know, in a media it does not decode, over the size cap, or
     /// undecodable. One variant carrying the reason, because the caller cannot act differently
@@ -467,6 +471,18 @@ impl std::fmt::Display for DispatchError {
                 f,
                 "the job asks for a place no node is in: labels {labels:?} match none of the \
                  venue's nodes {nodes:?} (ADR-0053: a placement is a filter, not a hint)"
+            ),
+            Self::NoSuchMachine { machine, nodes } if machine.is_empty() => write!(
+                f,
+                "the job asks for an EMPTY machine id, which addresses nothing — an id is \
+                 hardware, not a default, and it is never widened to `Any` (ADR-0054; \
+                 alias=machine here: {nodes:?})"
+            ),
+            Self::NoSuchMachine { machine, nodes } => write!(
+                f,
+                "the job asks for machine `{machine}`, which no node in the venue is on \
+                 (alias=machine here: {nodes:?}) — a machine id addresses hardware, so an id \
+                 nobody answers is a job that named the wrong box (ADR-0054)"
             ),
             Self::Attachment { why } => write!(
                 f,
@@ -630,6 +646,22 @@ impl<'a> Dispatch<'a> {
         let reach = match &job.placement {
             Placement::Any => crate::pool::Reach::All,
             Placement::Labels { labels } if labels.is_empty() => crate::pool::Reach::All,
+            // A machine id is an ADDRESS, not a request (ADR-0054): the caller has already
+            // resolved "my laptop" to a box, and every process of that box is reachable. An
+            // empty id addresses nothing — refusing it by name is the honest answer, because the
+            // alternative (treat it as `Any`) would run the work on machines the job did not
+            // name.
+            Placement::Machine { machine } => {
+                let matched = pool.aliases_of_machine(machine);
+                if matched.is_empty() {
+                    return Err(DispatchError::NoSuchMachine {
+                        machine: machine.clone(),
+                        nodes: pool.aliases_with_machine(),
+                    }
+                    .into());
+                }
+                crate::pool::Reach::Only(matched.into_iter().collect())
+            }
             Placement::Labels { labels } => {
                 let matched = pool.matching(labels);
                 if matched.is_empty() {

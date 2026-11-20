@@ -53,4 +53,4 @@ The question, then: what is a node — a realm's property or the venue's? And gi
 
 ## Related records
 
-aura ADR-0051 (dispatch creates the realm; boundary (d) is the inheritance this fills in), ADR-0015 §7 (alias replacement is reported, never silent), ADR-0027 (code by reference), ADR-0048/0049 (resources are venue state), effector ADR-0005 (the envelope's `Placement`, and why the job carries it), effector ADR-0006 (the node states the box; labels are the admitting party's).
+aura ADR-0051 (dispatch creates the realm; boundary (d) is the inheritance this fills in), ADR-0015 §7 (alias replacement is reported, never silent), ADR-0027 (code by reference), ADR-0048/0049 (resources are venue state), effector ADR-0005 (the envelope's `Placement`, and why the job carries it), effector ADR-0006 (the node states the box; labels are the admitting party's), ADR-0054 (a machine id is an address, and it is what addressing uses once a name has been resolved).

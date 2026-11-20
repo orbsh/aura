@@ -53,16 +53,19 @@ async fn handle_connection(
     // token against (the registry is prism's, ADR-0015 §3), which is why the disclosure above
     // says the network is the boundary here. No challenge, no signature: a proof carried inside
     // a frame is a credential inside every log that carries frames (effector ADR-0003).
-    let (node_alias, _carriers) = match stream.next().await {
+    let (node_alias, carriers, class, machine) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
             Frame::Register {
                 node_alias,
                 carriers,
                 // The class is a deployment fact this unplanned gateway does not act on: it has no
-                // routing table to refuse with. Bound explicitly so a future field cannot be
-                // dropped here by accident.
-                class: _,
-            } => (node_alias, carriers),
+                // routing table to refuse with. Recorded in the pool all the same, because
+                // selection (ADR-0053) is a question about the node, not about this gateway.
+                class,
+                // Which box this is (effector ADR-0006): self-reported, and it authorizes
+                // nothing — the alias names the connection, the machine names the hardware.
+                machine,
+            } => (node_alias, carriers, class, machine),
             other => anyhow::bail!("expected Register, got {other:?}"),
         },
         other => anyhow::bail!("bad register frame: {other:?}"),
@@ -78,8 +81,29 @@ async fn handle_connection(
         peer,
     };
     {
-        let mut r = realm.lock().await;
-        if let Some(old) = r.effectors.insert(node_alias.clone(), entry.clone()) {
+        // The pool, not the realm: a node is reachable from every realm the venue
+        // creates, and a job's realm is created after this line (ADR-0053). The
+        // handle is read out from under the lock and used after it.
+        let pool = {
+            let r = realm.lock().await;
+            r.pool.clone()
+        };
+        let record = aura_realm::pool::NodeRecord {
+            alias: node_alias.clone(),
+            conn: entry.clone(),
+            carriers: carriers.clone(),
+            class,
+            machine: machine.clone(),
+            // Nowhere. Labels are the ADMITTING party's word, never the node's own
+            // (effector ADR-0005 §2b): a node that could name its labels could name
+            // someone else's. This gateway checks no grant — it has no registry to read
+            // — so it is in no position to place a node, and every node it admits is
+            // unplaced: reachable by jobs that ask for no place, by none that does.
+            // Prism, which mints labels from a grant at admission, fills this in.
+            labels: vec![],
+        };
+        let admitted = pool.insert(record);
+        if let Some(old) = &admitted.displaced {
             // Alias replacement (in `open` posture a restarted container
             // must be able to reclaim its name from a stale registration).
             // Allowed — but never silent (ADR-0015 §7 replacement
@@ -87,10 +111,21 @@ async fn handle_connection(
             // an operator can always see where their calls actually go.
             eprintln!(
                 "effector gateway: alias '{node_alias}' REPLACED — old peer {} displaced by new peer {peer:?}",
-                old.peer
+                old.conn.peer
             );
             // The old writer channel dies when its sender is dropped by
             // the map overwrite; its reader task exits on send failure.
+        }
+        // One box, two names. Nothing here decides that the two connections are one node:
+        // it says what it sees, and an operator reading it knows which machine restarted or
+        // which serial two nodes are both claiming (effector ADR-0006).
+        if !admitted.same_machine.is_empty() {
+            eprintln!(
+                "effector gateway: machine '{}' is also connected as {} — the same box under \
+                 another alias, or a serial two nodes both claim",
+                machine,
+                admitted.same_machine.join(", ")
+            );
         }
     }
     // Presence must flip when this connection's task ENDS — by any path,
@@ -222,13 +257,13 @@ impl Drop for PresenceGuard {
         let alias = std::mem::take(&mut self.alias);
         let channel = self.channel.clone();
         tokio::spawn(async move {
-            let mut r = realm.lock().await;
-            if r.effectors
-                .get(&alias)
-                .is_some_and(|conn| conn.sender.same_channel(&channel))
-            {
-                r.effectors.remove(&alias);
-            }
+            // Identity-checked inside the pool: a reconnect that took the alias over
+            // keeps its name, and this guard's channel no longer matches it.
+            let pool = {
+                let r = realm.lock().await;
+                r.pool.clone()
+            };
+            pool.remove(&alias, &channel);
         });
     }
 }

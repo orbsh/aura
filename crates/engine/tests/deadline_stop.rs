@@ -116,6 +116,7 @@ async fn a_deadline_tells_the_node_to_stop() {
         capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
+            machine: Some("box-a".into()),
         },
         lease: Default::default(),
     };
@@ -124,12 +125,7 @@ async fn a_deadline_tells_the_node_to_stop() {
     let effector = tokio::spawn(effector_runtime::remote::run(config));
 
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if engine.realm_set.pool().contains("test-node")
         {
             break;
         }
@@ -173,12 +169,7 @@ async fn a_deadline_tells_the_node_to_stop() {
     );
     // The node is still connected: stopping a call is not disconnecting a node.
     assert!(
-        engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node"),
+        engine.realm_set.pool().contains("test-node"),
         "the node stays registered after its call was stopped"
     );
 

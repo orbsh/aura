@@ -25,6 +25,7 @@ pub mod frame_path;
 pub mod instance;
 pub mod meta;
 pub mod mq;
+pub mod pool;
 pub mod realm_id;
 pub mod realm_set;
 pub mod registry;
@@ -86,11 +87,14 @@ pub struct Realm {
     /// the realm — executors die with the realm (test isolation) and hot
     /// type replacement can evict selectively.
     pub executors: effector_runtime::carrier::executor::Executors,
-    /// Live effector outbound connections by node alias (Phase 3). The
-    /// writer half routes realm calls; the peer address exists so a
-    /// takeover names both ends (ADR-0015 §7 replacement discipline —
-    /// silent alias replacement is the behaviour being removed).
-    pub effectors: HashMap<String, ActuatorConn>,
+    /// The venue's connected nodes (ADR-0053). ONE pool per engine, shared by every
+    /// realm it creates — a realm minted for a job inherits it the way it inherits the
+    /// code base URL, because a per-realm map would be a realm where `Body::Remote`
+    /// cannot find the node that owns the executor it was dispatched to.
+    pub pool: Arc<pool::NodePool>,
+    /// Which of those nodes THIS realm may reach: the venue's own realms see all of
+    /// them, a job's realm sees the nodes its `Placement` names.
+    pub reach: pool::Reach,
     /// Code reference prefix for remote delivery (ADR-0027): a remote
     /// call carries `CodeRef { url: base + hex(sha256), sha256 }`.
     /// None = remote types are undeliverable in this realm (the dispatch
@@ -342,13 +346,17 @@ async fn a_mount_inherits_the_account_of_the_turn_it_acts_for() {
         let mut r = realm.lock().await;
         r.code_base_url = Some("http://plane.invalid/code".into());
         r.register_type(remote_type("mount", "node-1"));
-        r.effectors.insert(
-            "node-1".into(),
-            crate::ActuatorConn {
+        r.pool.insert(crate::pool::NodeRecord {
+            alias: "node-1".into(),
+            conn: crate::ActuatorConn {
                 sender: tx,
                 peer: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
             },
-        );
+            carriers: vec!["steel".into()],
+            class: effector_protocol::NodeClass::Host,
+            machine: "box-1".into(),
+            labels: vec![],
+        });
     }
 
     // The turn: its key is the device, its account came from the envelope at the entrance.

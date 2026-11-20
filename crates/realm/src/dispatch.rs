@@ -17,10 +17,12 @@
 //! - **A second ns rule.** Registration allocates `BOOTH_NS_BASE + id` from the
 //!   realm's OWN dictionary row, exactly as it does in fjall (ADR-0050 §6).
 //!   A temporary realm's rows land in its own memory engine and die with it.
-//! - **Node selection.** `Placement` rides the job and is recorded in the
-//!   outcome; resolving `Placement::Labels` needs a node pool, which does not
-//!   exist yet. Deferred, and said out loud rather than silently ignored
-//!   (ADR-0051 §Status).
+//! - **Placement (ADR-0053).** The job's `Placement` is resolved against the
+//!   VENUE's node pool before the realm exists: `Any` sees every node,
+//!   `Labels { .. }` narrows the realm's `Reach` to the nodes carrying them, and
+//!   a set that matches nothing is refused (`DispatchError::Nowhere`) rather than
+//!   run somewhere the job did not name. What the job could see is recorded in
+//!   `JobOutcome::nodes`.
 //!
 //! ## The four boundaries, and what enforces each
 //!
@@ -29,7 +31,7 @@
 //! | (a) cannot write the parent's store | STRUCTURAL — `Realm::with_mq` refuses a non-memory store for an `Ephemeral` id and `MqStore::for_realm` refuses to bind a slice of the engine's keyspace to one. A booth holds its realm's store, and that store IS the realm's own memory engine. |
 //! | (b) cannot publish MQ to the parent | STRUCTURAL — every queue table, cursor and route row is written through `Realm::mq`, the realm's own engine. What crosses is a FRAME, addressed and directed (below), never the job's own event: the parent's queue for the emitted name stays at depth 0 and its state namespaces stay byte-identical. |
 //! | (c) cannot open a child realm | STRUCTURAL + NAMED REFUSAL — no booth holds a `RealmSet`, so nesting is not expressible (ADR-0050 §7); the door that would express it, `Realm::create_child_realm`, answers `BoundaryRefusal::ChildRealm` instead of minting. |
-//! | (d) inherits the parent's view | CONFIGURATION — the realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the job's `Placement` is carried through. Type visibility is deliberately NOT inherited (ADR-0051 §Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type). Label-driven node selection is deferred with the node pool. |
+//! | (d) inherits the parent's view | CONFIGURATION — the realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the job's `Placement` is carried through. Type visibility is deliberately NOT inherited (ADR-0051 §Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type). The pool itself is the VENUE's and every realm borrows it (ADR-0053), because a realm minted a microsecond ago inherits nothing and could otherwise reach no node at all. |
 //!
 //! ## The frames that cross, and where they land
 //!
@@ -338,9 +340,13 @@ pub struct JobOutcome {
     /// The temporary realm the job ran in. It is gone by the time this value is
     /// returned — `destroyed` says so rather than leaving the caller to guess.
     pub realm: RealmId,
-    /// Placement the job asked for. RECORDED, NOT ACTED ON: node selection needs
-    /// a node pool, which does not exist yet (ADR-0051 §Status).
+    /// Placement the job asked for, and — because it is a FILTER (ADR-0053) — which
+    /// nodes it could actually reach while it ran. The second half is what makes the
+    /// first checkable after the fact.
     pub placement: Placement,
+    /// The nodes this job could reach, sorted. Its realm dies with it; this is the
+    /// record of what they were.
+    pub nodes: Vec<String>,
     pub ops: Vec<OpOutcome>,
     /// True when the realm was destroyed. Always true on a returned outcome —
     /// a failed destroy is an error, not a field a caller has to check.
@@ -406,6 +412,10 @@ pub enum DispatchError {
     },
     /// One of ADR-0051's four boundaries.
     Boundary(BoundaryRefusal),
+    /// The job asked for a place no node is in (`Placement::Labels`, ADR-0053). Refused
+    /// before a realm exists: a placement that matches nothing is a job whose own words
+    /// cannot be satisfied, and running it would mean choosing machines it did not name.
+    Nowhere { labels: Vec<String>, nodes: Vec<String> },
     /// The job's declarations did not arrive in a form this door reads: absent, duplicated,
     /// under a name it does not know, in a media it does not decode, over the size cap, or
     /// undecodable. One variant carrying the reason, because the caller cannot act differently
@@ -453,6 +463,11 @@ impl std::fmt::Display for DispatchError {
                 "registering booth type `{name}` into the job's realm failed: {source:#}"
             ),
             Self::Boundary(refusal) => write!(f, "{refusal}"),
+            Self::Nowhere { labels, nodes } => write!(
+                f,
+                "the job asks for a place no node is in: labels {labels:?} match none of the \
+                 venue's nodes {nodes:?} (ADR-0053: a placement is a filter, not a hint)"
+            ),
             Self::Attachment { why } => write!(
                 f,
                 "the job's declarations did not arrive in a usable form: {why}"
@@ -608,7 +623,34 @@ impl<'a> Dispatch<'a> {
     ///    return an error.
     pub async fn run(&self, job: &Job, decls: &[BoothDecl]) -> anyhow::Result<JobOutcome> {
         let steps = preflight(job, decls)?;
+        // Placement is resolved BEFORE the realm exists, because it decides what the
+        // realm may see (ADR-0053): a filter that matches no node is a refusal, not an
+        // empty view — a job running on nothing fails later and for the wrong reason.
+        let pool = self.set.pool();
+        let reach = match &job.placement {
+            Placement::Any => crate::pool::Reach::All,
+            Placement::Labels { labels } if labels.is_empty() => crate::pool::Reach::All,
+            Placement::Labels { labels } => {
+                let matched = pool.matching(labels);
+                if matched.is_empty() {
+                    return Err(DispatchError::Nowhere {
+                        labels: labels.clone(),
+                        nodes: pool.aliases().into_iter().collect(),
+                    }
+                    .into());
+                }
+                crate::pool::Reach::Only(matched)
+            }
+        };
         let eph = self.set.create_ephemeral().await?;
+        // The job's realm sees exactly the nodes the placement named. Set before
+        // registration, like the frame channel: a declaration registered into a realm
+        // that could not reach its node would be a mount that cannot mount.
+        {
+            let handle = eph.realm();
+            let mut realm = handle.lock().await;
+            realm.reach = reach.clone();
+        }
 
         // The one channel out (ADR-0051 §4), installed between mint and
         // registration: a declaration registered into a realm that cannot report
@@ -664,6 +706,7 @@ impl<'a> Dispatch<'a> {
                 job: job.id.clone(),
                 booth: job.booth.clone(),
                 realm: eph.id,
+                nodes: reach.listing(&pool),
                 placement: job.placement.clone(),
                 ops,
                 destroyed: true,

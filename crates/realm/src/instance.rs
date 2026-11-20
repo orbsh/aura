@@ -109,7 +109,8 @@ impl Realm {
             cursor_ttl: DEFAULT_CURSOR_TTL,
             router: event::EventRouter::default(),
             executors: effector_runtime::carrier::executor::Executors::new(),
-            effectors: HashMap::new(),
+            pool: crate::pool::NodePool::new(),
+            reach: crate::pool::Reach::All,
             code_base_url: None,
             pending_remote: HashMap::new(),
             streams: HashMap::new(),
@@ -496,7 +497,8 @@ impl Realm {
         )
         .with_origin(origin);
         let executors = realm.executors.clone();
-        let effectors = realm.effectors.clone();
+        let pool = realm.pool.clone();
+        let reach = realm.reach.clone();
         let effectors_base_url = realm.code_base_url.clone();
         let realm_timers = realm.timers.clone();
         let realm_stops = realm.stops.clone();
@@ -539,12 +541,23 @@ impl Realm {
                 // await the correlated reply. The effector's resident
                 // executors own the VM; no ctx bridge crosses the wire yet
                 // (host functions over WS arrive with the frame path).
-                let Some(conn) = effectors.get(&node_alias) else {
+                let Some(node) = pool.get(&node_alias) else {
                     let _ = job.reply.send(Err(anyhow::anyhow!(
                         "effector '{node_alias}' not connected"
                     )));
                     return;
                 };
+                // Placement is a filter, not a hint (ADR-0053): a job may only call the
+                // machines it asked for, and a call that names another one is refused in
+                // words rather than quietly served by a node the job did not name.
+                if !reach.allows(&node_alias) {
+                    let _ = job.reply.send(Err(anyhow::anyhow!(
+                        "node '{node_alias}' is outside this job's placement — it may reach [{}]",
+                        reach.listing(&pool).join(", ")
+                    )));
+                    return;
+                }
+                let conn = node.conn.clone();
                 // Code travels by reference (ADR-0027): the bytes were
                 // stored under their hash at registration; the frame
                 // carries the address the effector fetches and verifies.

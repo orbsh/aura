@@ -768,3 +768,140 @@ async fn a_job_with_no_channel_out_cannot_emit_at_all() {
         "the refusal says why: {err:#}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Placement (ADR-0053): a filter on the pool, resolved before the realm exists.
+// ---------------------------------------------------------------------------
+
+/// A node in the venue's pool, named and placed, with a connection nobody answers on.
+/// Calls sent to it fail at the channel — which is how a test can tell "the realm
+/// found the node" from "the realm never saw it", without a websocket in the way.
+fn place(engine: &Engine, alias: &str, labels: &[&str]) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    drop(rx);
+    engine.realm_set.pool().insert(aura_realm::pool::NodeRecord {
+        alias: alias.to_string(),
+        conn: aura_realm::ActuatorConn {
+            sender: tx,
+            peer: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+        },
+        carriers: vec!["steel".into()],
+        class: effector_protocol::NodeClass::Host,
+        machine: format!("box-{alias}"),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+    });
+}
+
+/// The failure text of one op, whichever way it failed.
+fn why(out: &JobOutcome, at: usize) -> String {
+    match &outcome(out, at).result {
+        OpResult::Done { value } => format!("answered: {value}"),
+        OpResult::Skipped { error } | OpResult::Failed { error } => error.clone(),
+        OpResult::NotRun { reason } => reason.clone(),
+    }
+}
+
+fn remote_step(node_alias: &str) -> BoothDecl {
+    BoothDecl::new(
+        "step",
+        Body::Remote {
+            encoding: aura_booth::Encoding::Json,
+            node_alias: node_alias.into(),
+            language: "steel".into(),
+            source: "fn run() {}".into(),
+            requires: None,
+        },
+    )
+}
+
+fn placed(id: &str, ops: Vec<Value>, labels: &[&str]) -> Job {
+    serde_json::from_value(json!({
+        "id": id,
+        "booth": "gravity/turn-1",
+        "placement": { "kind": "labels", "labels": labels },
+        "source": { "kind": "ops", "ops": ops }
+    }))
+    .expect("the job is a valid envelope")
+}
+
+#[tokio::test]
+async fn a_placement_no_node_is_in_is_refused_before_a_realm_exists() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    place(&engine, "office-box", &["site:office"]);
+    let decls = vec![BoothDecl::new("step", worker(Arc::new(Mutex::new(Vec::new()))))];
+    let job = placed(
+        "job-nowhere",
+        vec![op("step/a", json!({ "step": "one" }), json!({}), failed_policy())],
+        &["site:home"],
+    );
+
+    let err = dispatch(&engine, &job, &decls)
+        .await
+        .expect_err("a place with no nodes cannot be honoured");
+    let refusal = err
+        .downcast_ref::<DispatchError>()
+        .expect("the refusal keeps its type through anyhow");
+    assert!(
+        matches!(refusal, DispatchError::Nowhere { labels, .. } if labels == &["site:home".to_string()]),
+        "asked for site:home, venue has office-box: {refusal}"
+    );
+    assert_eq!(
+        engine.realm_set.live().await.unwrap(),
+        vec!["main".to_string()],
+        "refused before the realm was created — nothing to clean up"
+    );
+}
+
+#[tokio::test]
+async fn a_job_reaches_only_the_nodes_its_placement_names() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    place(&engine, "home-box", &["site:home"]);
+    place(&engine, "office-box", &["site:office"]);
+    let decls = vec![remote_step("office-box")];
+    let job = placed(
+        "job-filter",
+        vec![op("step/a", json!({}), json!({}), failed_policy())],
+        &["site:home"],
+    );
+
+    let out = dispatch(&engine, &job, &decls).await.unwrap();
+
+    // The op found the node (a lookup that failed would say "not connected") and was
+    // refused by the filter, in words, before anything was sent to the machine.
+    let why = why(&out, 0);
+    assert!(
+        why.contains("outside this job's placement"),
+        "the placement must refuse the node by name, got: {why}"
+    );
+    assert_eq!(
+        out.nodes,
+        vec!["home-box".to_string()],
+        "the outcome records what the job could see, not what it asked for"
+    );
+}
+
+#[tokio::test]
+async fn a_job_that_asks_for_no_place_reaches_every_node() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    place(&engine, "home-box", &["site:home"]);
+    place(&engine, "office-box", &["site:office"]);
+    let decls = vec![remote_step("office-box")];
+    // No `placement` in the envelope at all: the default is `Any`.
+    let job = job(
+        "job-any",
+        vec![op("step/a", json!({}), json!({}), failed_policy())],
+    );
+
+    let out = dispatch(&engine, &job, &decls).await.unwrap();
+
+    let why = why(&out, 0);
+    assert!(
+        !why.contains("outside this job's placement") && !why.contains("not connected"),
+        "an unplaced job reaches every node, and fails later for a later reason: {why}"
+    );
+    assert_eq!(
+        out.nodes,
+        vec!["home-box".to_string(), "office-box".to_string()],
+        "every connected node"
+    );
+}

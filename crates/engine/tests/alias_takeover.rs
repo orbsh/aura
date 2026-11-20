@@ -31,6 +31,7 @@ fn dial(port: u16, _tag: &str) -> tokio::task::JoinHandle<()> {
                 node_alias,
                 carriers: vec!["steel".into()],
                 class: effector_protocol::NodeClass::Host,
+                machine: "box-takeover".into(),
             })
             .unwrap(),
         ))
@@ -55,31 +56,23 @@ async fn alias_takeover_routes_to_the_new_peer() {
 
     let first = dial(port, "first");
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("shared")
-        {
+        if engine.realm_set.pool().contains("shared") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let first_peer = engine.realm.try_lock().unwrap().effectors["shared"].peer;
+    let first_peer = engine.realm_set.pool().get("shared").expect("registered").conn.peer;
 
     let second = dial(port, "second");
     // Wait for the takeover: the stored peer address must change.
     let mut replaced = false;
     for _ in 0..50 {
-        let r = engine.realm.try_lock().unwrap();
-        if let Some(conn) = r.effectors.get("shared") {
-            if conn.peer != first_peer {
+        if let Some(node) = engine.realm_set.pool().get("shared") {
+            if node.conn.peer != first_peer {
                 replaced = true;
                 break;
             }
         }
-        drop(r);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
@@ -92,12 +85,7 @@ async fn alias_takeover_routes_to_the_new_peer() {
     first.abort();
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
-        engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("shared"),
+        engine.realm_set.pool().contains("shared"),
         "the displaced connection's guard must not remove the new registration"
     );
     second.abort();

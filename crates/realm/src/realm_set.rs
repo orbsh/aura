@@ -173,6 +173,8 @@ pub struct RealmSet {
     /// The cursor retention promise carried into every lazily created
     /// realm (ADR-0039 §2; one EngineConfig value, no per-realm choice).
     cursor_ttl: std::time::Duration,
+    /// The venue's nodes (ADR-0053): one pool for every realm this set creates.
+    pool: std::sync::Arc<crate::pool::NodePool>,
 }
 
 /// One live realm: its name (for `NamedRealm`), its prefix-bound store and
@@ -197,11 +199,30 @@ impl RealmSet {
             root: mq,
             code_base_url,
             cursor_ttl: crate::DEFAULT_CURSOR_TTL,
+            pool: crate::pool::NodePool::new(),
         }
     }
 
     /// Carry the engine-wide cursor retention promise (ADR-0039 §2) into
     /// every realm created from this set.
+    /// The venue's node pool (ADR-0053). Callers that ADMIT a node write here, not into
+    /// a realm: realms are views of the pool, not owners of their own copy.
+    /// Every realm this set hands out borrows the venue's pool (ADR-0053), in ONE place
+    /// because both creation paths must do it: a realm that opened without the pool would
+    /// be a realm that cannot reach any node, and that failure would surface far from here
+    /// — as "effector not connected" in a job that was dispatched a microsecond ago.
+    async fn adopt(&self, realm: crate::SharedRealm) -> crate::SharedRealm {
+        {
+            let mut r = realm.lock().await;
+            r.pool = self.pool.clone();
+        }
+        realm
+    }
+
+    pub fn pool(&self) -> std::sync::Arc<crate::pool::NodePool> {
+        self.pool.clone()
+    }
+
     pub fn with_cursor_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.cursor_ttl = ttl;
         self
@@ -249,6 +270,7 @@ impl RealmSet {
                 .with_cursor_ttl(self.cursor_ttl)
                 .shared_async()
                 .await;
+            let realm = self.adopt(realm).await;
             live.insert(
                 id,
                 Live {
@@ -302,6 +324,7 @@ impl RealmSet {
             .with_cursor_ttl(self.cursor_ttl)
             .shared_async()
             .await;
+        let realm = self.adopt(realm).await;
         self.live.lock().await.insert(
             id,
             Live {

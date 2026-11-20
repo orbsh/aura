@@ -79,7 +79,7 @@ One-way is structural, not a rule: a job's realm receives frames only from its o
 - **(a) a booth cannot write the parent's store — STRUCTURAL.** `Realm::with_mq` refuses a non-memory store for an `Ephemeral` id, and `MqStore::for_realm` refuses to bind a slice of the engine's keyspace to one; both refusals name the reason. A production parent is fjall, so the parent's engine cannot be handed to a job's realm at all. (A memory venue's root handle is indistinguishable from a fresh in-memory engine, which is why the only ephemeral constructor is on the set: `create_ephemeral` mints its own store.)
 - **(b) it cannot publish MQ to the parent — STRUCTURAL.** Every queue, cursor and route row is written through `Realm::mq`, the realm's own engine; there is no cross-realm emit to express. Proven rather than asserted: a job that writes through a plan AND emits leaves the parent's STATE namespaces byte-identical, leaves the parent's queue for the emitted event at depth 0, and adds exactly one row to the parent's queue plane — the frame, under `job.frame`, addressed to the dispatcher.
 - **(c) it cannot open a child realm — STRUCTURAL, WITH A NAMED REFUSAL.** No booth holds a `RealmSet`, so nesting is not expressible (§2, ADR-0050 §7). The door that would express it, `Realm::create_child_realm`, answers `BoundaryRefusal::ChildRealm` instead of minting — a named refusal, and an `Infallible` success type, so no caller can be holding a "successful" child realm.
-- **(d) it inherits the parent's view — CONFIGURATION.** The realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the job's `Placement` is recorded in the outcome. Type view is deliberately NOT inherited (§Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type). Label-driven node selection is deferred with the node pool.
+- **(d) it inherits the parent's view — CONFIGURATION.** The realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the venue's node pool — with the job's `Placement` narrowed to a `Reach` (ADR-0053). Type view is deliberately NOT inherited (§Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type).
 
 ### Where the envelope could not say it
 
@@ -89,7 +89,7 @@ The declarations ride the envelope: `Job::attachments` carries one opaque payloa
 
 Named so this record cannot be read as a promise larger than it is:
 
-- **`Placement::Labels` node selection** — no node pool exists. The label set is carried and recorded; nothing selects on it.
+- **Selection BETWEEN nodes for one call** — `Placement` is a filter over the pool (ADR-0053), not a chooser: a declaration names its node, so picking the least-loaded or nearest one for a call needs a late-bound declaration, which is a different change.
 - **Nested jobs** — §6 says a job's nested jobs run in the same realm. Nothing dispatches one from inside an op yet; the single isolation level is enforced by boundary (c).
 - **gravity / k10r integration** — reading a skill graph out of k10r and dispatching it. §Consequences describes that end state; step 2a is the realm half only.
 - **Shared-scope jobs** — refused by name rather than mis-carried; they need a door to a realm that outlives the job, which is a different decision.

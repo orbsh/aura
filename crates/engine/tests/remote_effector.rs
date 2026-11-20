@@ -84,12 +84,7 @@ async fn remote_effector_roundtrip() {
 
     // Wait for registration, then invoke through the wire.
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if engine.realm_set.pool().contains("test-node")
         {
             break;
         }
@@ -128,23 +123,13 @@ async fn remote_effector_roundtrip() {
     // EOF → the gateway removes the alias.
     effector.abort();
     for _ in 0..50 {
-        if !engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if !engine.realm_set.pool().contains("test-node")
         {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let gone = !engine
-        .realm
-        .try_lock()
-        .unwrap()
-        .effectors
-        .contains_key("test-node");
+    let gone = !engine.realm_set.pool().contains("test-node");
     assert!(gone, "dropped connection unregisters the node alias");
     let err = engine
         .invoke(
@@ -200,6 +185,7 @@ fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
         capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
+            machine: Some("box-a".into()),
         },
         lease: Default::default(),
     }
@@ -266,12 +252,7 @@ async fn remote_code_travels_as_reference() {
     }
 
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if engine.realm_set.pool().contains("test-node")
         {
             break;
         }
@@ -345,12 +326,7 @@ def tokens(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if engine.realm_set.pool().contains("test-node")
         {
             break;
         }
@@ -471,12 +447,7 @@ def consume(args):
         .unwrap();
 
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("test-node")
+        if engine.realm_set.pool().contains("test-node")
         {
             break;
         }

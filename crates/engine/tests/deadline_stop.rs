@@ -116,7 +116,6 @@ async fn a_deadline_tells_the_node_to_stop() {
         capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
-            ..Default::default()
         },
         lease: Default::default(),
     };

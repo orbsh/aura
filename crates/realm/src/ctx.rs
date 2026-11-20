@@ -25,6 +25,11 @@ async fn aura_realm_call(
 }
 
 impl Realm {
+    // Eight arguments, and grouping the tail into a struct would move eight doc
+    // comments into a bag named after nothing: each of these is a DIFFERENT part of
+    // the realm (store plan, schema copy, owner, registry, stops) and the call sites
+    // read better spelled out. The comments below are the contract.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn ctx_for(
         self_arc: SharedRealm,
         store_engine: mq::MqStore,

@@ -295,7 +295,7 @@ impl TimerDriver {
                             &self.timers,
                             key.clone(),
                             &target.booth_type,
-                            &target.key.render().to_string(),
+                            target.key.render(),
                             tag,
                         ) {
                             eprintln!("aura: durable timer row not written ({id:?}): {error}");

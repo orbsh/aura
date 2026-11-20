@@ -233,6 +233,12 @@ impl RealmSet {
                 RealmId::Persisted(id)
             }
         };
+        // `map_entry` is the usual advice here, and it is not available: the body
+        // below AWAITS (it builds the realm and its driver), and an entry cannot be
+        // held across an await point. The check-then-insert is therefore the shape,
+        // and the map is behind this function's own mutex, so nothing can insert
+        // between the two.
+        #[allow(clippy::map_entry)]
         if !live.contains_key(&id) {
             // State + mq both ride the realm-prefixed okm engine (ADR-0018
             // step 2): the prefix bound at construction is the isolation

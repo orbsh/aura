@@ -200,7 +200,6 @@ fn effector_config_shim(port: u16) -> effector_config::EffectorConfig {
         capabilities: effector_config::CapabilitySurface {
             node_alias: "test-node".into(),
             carriers: vec!["steel".into()],
-            ..Default::default()
         },
         lease: Default::default(),
     }

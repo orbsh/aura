@@ -29,7 +29,7 @@ pub struct TimerEntryKey {
 
 /// Who is woken, and with what tag. The instance is stored RENDERED (booth type
 /// + key) because a row must not depend on an in-process id; a singleton
-/// renders as the empty string (ADR-0042), which is how it comes back.
+///   renders as the empty string (ADR-0042), which is how it comes back.
 #[derive(DocumentEncode, Clone, PartialEq, Eq, Debug)]
 #[ok_ref(TimerEntryKey)]
 #[ok_index(by_due { fields(due_ms) })]

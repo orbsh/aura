@@ -119,7 +119,7 @@ async fn a_booth_registered_in_a_temporary_realm_answers() {
     let ns = eph.realm().lock().await.plan_of("echo").unwrap().ns;
     assert_eq!(
         ns,
-        u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 1,
+        (aura_realm::meta::BOOTH_NS_BASE as u16) + 1,
         "a temporary realm allocates like a persisted one, from its own dictionary"
     );
 
@@ -176,7 +176,7 @@ async fn two_temporary_realms_count_their_namespaces_independently() {
         .await
         .register_type_with(echo("second"), Some(storage_schema()));
     let plan = a.realm().lock().await.plan_of("second").unwrap().ns;
-    assert_eq!(plan, u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 2);
+    assert_eq!(plan, (aura_realm::meta::BOOTH_NS_BASE as u16) + 2);
     assert!(
         b.realm().lock().await.plan_of("second").is_none(),
         "a type registered in a is not a type in b"
@@ -293,7 +293,7 @@ fn a_full_temporary_lifecycle_leaves_the_keyspace_byte_identical() {
             .plan_of("writer")
             .cloned()
             .expect("the declared collections became a plan");
-        assert_eq!(plan.ns, u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 1);
+        assert_eq!(plan.ns, (aura_realm::meta::BOOTH_NS_BASE as u16) + 1);
         store_exec::execute(
             &eph.store(),
             &plan,

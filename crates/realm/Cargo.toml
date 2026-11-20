@@ -16,7 +16,6 @@ sha2 = "0.10"
 fjall = { version = "3.1.10", optional = true }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
-aura-config = { path = "../config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A job's declarations arrive as an attachment; CBOR is the wire's own codec

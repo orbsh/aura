@@ -323,11 +323,10 @@ impl BoothDef {
 /// The type's storage ns (ADR-0026): registry resolve (no allocation —
 /// unregistered types have no ns; the caller registers first).
 ///
-/// This is the PERSISTED realm's answer, read from the `BoothName` rows its
-/// registration wrote. A temporary realm never asks: it has no rows, so its ns
-/// comes from `type_ns::TypeNs`, the counter that lives as long as it does
-/// (ADR-0050 §6). `Realm::register_type_with` is the seam where the two are
-/// chosen between.
+/// One answer for BOTH kinds of realm (ADR-0050 §6): the ns is a column of the
+/// `BoothName` row that registration wrote. A temporary realm's rows sit in its
+/// own memory engine instead of fjall, so the same call allocates `BOOTH_NS_BASE
+/// + id` and forgets it when the realm dies — no second registry, no second rule.
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
@@ -373,8 +372,13 @@ pub fn ns_and_schema_of(
     meta: &MqStore,
     name: &str,
 ) -> anyhow::Result<(u32, Option<serde_json::Value>)> {
-    let ns = ns_of(meta, name)?;
+    // REGISTRATION resolve, so the dictionary row is assigned on first sight —
+    // the same call a persisted realm has always made here (`resolve_booth_id`
+    // is "assign on first sight: the registry pattern"). Read-only lookups use
+    // `ns_of` instead; this one is allowed to write, because it is reached from
+    // the one path that registers a type.
     let booth_id = resolve_booth_id(meta, name)?;
+    let ns = BOOTH_NS_BASE + booth_id;
     let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
     // The schema lives in the document's DYNAMIC half (`slot1_map`), not in a
     // typed field: the row's declared set is fixed and the segment is name-keyed.

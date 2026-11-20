@@ -73,7 +73,7 @@ async fn call(
 }
 
 #[tokio::test]
-async fn a_booth_registered_in_a_temporary_realm_answers_and_persists_nothing() {
+async fn a_booth_registered_in_a_temporary_realm_answers_and_stays_inside_it() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     let main = engine
         .realm_set
@@ -98,31 +98,32 @@ async fn a_booth_registered_in_a_temporary_realm_answers_and_persists_nothing() 
         serde_json::json!({ "n": 7 })
     );
 
-    // The registration wrote NOTHING — not a type dictionary row (ns 30), not a
-    // definition with its interface_schema (ns 31), not a code blob (ns 32) —
-    // not even into the temporary realm's own store, which would have been the
-    // easy place to leave them.
-    assert!(
-        meta::load_all(&eph.store()).unwrap().is_empty(),
-        "a temporary realm's registration persisted a booth definition"
+    // The registration wrote the SAME rows a persisted realm's does — a type
+    // dictionary row (ns 30), a definition with its interface_schema (ns 31) —
+    // but into the temporary realm's OWN store, which is dropped with it. The
+    // rule is one rule; the engine is what differs (ADR-0050 §6).
+    assert_eq!(
+        meta::load_all(&eph.store()).unwrap().len(),
+        1,
+        "the script type has a definition row in the realm's own store; the Rust \
+         body has none because `persist::from_type` answers None for a compile-time handler"
     );
     assert_eq!(
-        meta::booth_name_of(&eph.store(), 1).unwrap(),
-        None,
-        "a temporary realm's registration persisted a type dictionary row"
-    );
-    let sha = meta::code_hash(
-        "(define (interface_schema a) (hash \"storage\" (hash \"collections\" (hash))))",
+        meta::booth_name_of(&eph.store(), 1).unwrap().as_deref(),
+        Some("echo"),
+        "the first type registered here owns id 1, exactly as it would in fjall"
     );
     assert_eq!(
-        meta::get_blob(&eph.store(), &sha).unwrap(),
-        None,
-        "a temporary realm's registration persisted a code blob"
+        meta::booth_name_of(&eph.store(), 2).unwrap().as_deref(),
+        Some("declared")
     );
 
     // … and the PERSISTENT realm never heard of either type: nothing crossed
     // the realm boundary in either direction.
-    assert!(meta::load_all(&main.store()).unwrap().is_empty());
+    assert!(
+        meta::load_all(&main.store()).unwrap().is_empty(),
+        "a temporary realm's registration reached the parent store"
+    );
     assert!(meta::ns_of(&main.store(), "echo").is_err());
     assert!(meta::ns_of(&main.store(), "declared").is_err());
     assert_eq!(engine.realm_set.id_of("echo").await.unwrap(), None);

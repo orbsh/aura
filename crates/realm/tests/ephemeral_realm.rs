@@ -101,7 +101,10 @@ fn dump(store: &MqStore) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 #[tokio::test]
 async fn a_booth_registered_in_a_temporary_realm_answers() {
-    let set = RealmSet::with_mq(MqStore::mem());
+    // The parent's store is held by the test too, so "the parent never sees
+    // these rows" is a comparison rather than a claim.
+    let parent = MqStore::mem();
+    let set = RealmSet::with_mq(parent.clone());
     let eph = set.create_ephemeral().await.unwrap();
     assert!(matches!(eph.id, RealmId::Ephemeral(_)));
 
@@ -110,12 +113,14 @@ async fn a_booth_registered_in_a_temporary_realm_answers() {
         .await
         .register_type_with(echo("echo"), Some(storage_schema()));
 
-    // The ns came from the realm's own counter, at the top of the band.
+    // The ns follows the SAME rule as a persisted realm (BOOTH_NS_BASE + id): the
+    // id comes from the realm's own dictionary row, which lives in its own store,
+    // so the first type registered here is 1 and the ns is 101.
     let ns = eph.realm().lock().await.plan_of("echo").unwrap().ns;
     assert_eq!(
         ns,
-        aura_realm::type_ns::NS_BAND_TOP,
-        "a temporary realm's first type takes the top of its band"
+        u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 1,
+        "a temporary realm allocates like a persisted one, from its own dictionary"
     );
 
     // … and the booth answers, through the same call path every realm uses.
@@ -124,12 +129,21 @@ async fn a_booth_registered_in_a_temporary_realm_answers() {
         serde_json::json!({ "n": 7 })
     );
 
-    // Registration wrote no rows: no type dictionary (ns 30), no definition
-    // and no interface_schema (ns 31) — not even into the realm's own memory.
+    // Registration wrote the SAME rows a persisted realm writes — the type
+    // dictionary (ns 30) and the definition with its schema copy (ns 31) — but
+    // into the temporary realm's own engine. The parent store never sees them,
+    // which is the only difference that survives: the engine, not the rule.
+    assert!(
+        !eph.store().root().scan_suffix(&[0, 30u8]).unwrap().is_empty(),
+        "the realm's own store is missing the type dictionary row it just assigned"
+    );
+    // A definition row (ns 31) is the ENGINE's write (`register_into`), not this
+    // door's; `engine/tests/ephemeral.rs` asserts that half. What matters here is
+    // that nothing of either kind reaches the parent store.
     for ns in [30u8, 31u8] {
         assert!(
-            eph.store().root().scan_suffix(&[0, ns]).unwrap().is_empty(),
-            "registration persisted rows in ns {ns}"
+            parent.root().scan_suffix(&[0, ns]).unwrap().is_empty(),
+            "a temporary realm's rows reached the parent store (ns {ns})"
         );
     }
 }
@@ -148,10 +162,10 @@ async fn two_temporary_realms_count_their_namespaces_independently() {
             .register_type_with(echo("same"), Some(storage_schema()));
     }
     // The same type NAME and the same NUMBER in two realms is not a collision:
-    // each realm's counter starts at the top of its band and each realm's keys
-    // live in its own engine, so the two never meet. (The isolation itself —
-    // neither realm can reach the other's type or instance — is asserted
-    // through the engine's registration door in `engine/tests/ephemeral.rs`.)
+    // each realm's dictionary starts at id 1 and each realm's keys live in its own
+    // engine, so the two never meet. (The isolation itself — neither realm can
+    // reach the other's type or instance — is asserted through the engine's
+    // registration door in `engine/tests/ephemeral.rs`.)
     assert_eq!(
         a.realm().lock().await.plan_of("same").unwrap().ns,
         b.realm().lock().await.plan_of("same").unwrap().ns
@@ -162,7 +176,7 @@ async fn two_temporary_realms_count_their_namespaces_independently() {
         .await
         .register_type_with(echo("second"), Some(storage_schema()));
     let plan = a.realm().lock().await.plan_of("second").unwrap().ns;
-    assert_eq!(plan, aura_realm::type_ns::NS_BAND_TOP - 1);
+    assert_eq!(plan, u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 2);
     assert!(
         b.realm().lock().await.plan_of("second").is_none(),
         "a type registered in a is not a type in b"
@@ -279,7 +293,7 @@ fn a_full_temporary_lifecycle_leaves_the_keyspace_byte_identical() {
             .plan_of("writer")
             .cloned()
             .expect("the declared collections became a plan");
-        assert_eq!(plan.ns, aura_realm::type_ns::NS_BAND_TOP);
+        assert_eq!(plan.ns, u16::from(aura_realm::meta::BOOTH_NS_BASE as u16) + 1);
         store_exec::execute(
             &eph.store(),
             &plan,

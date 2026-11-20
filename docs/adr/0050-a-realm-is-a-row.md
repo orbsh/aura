@@ -38,7 +38,7 @@ The variant is explicit, not inferred from width. Width is a property of the var
 
 5. **Creating is memory-only unless persistence is asked for.** `create` defaults to `Ephemeral`; a caller that wants durability says so. The default is the one that leaves nothing behind, which is the right bias for a call made at runtime. prism creates exactly one persisted realm at boot (`main`) and opens it by name.
 
-6. **A temporary realm is fully isolated, including its type table.** Its registry is not written to `interface_schema`, its storage namespaces come from an in-memory allocator rather than the persisted `BoothName` rows, and its mq store is an in-memory stand-in. Types registered there are visible only inside it.
+6. **A temporary realm is fully isolated, and its type table follows the SAME rule in a different engine.** Registration writes the same rows either way — `BoothName` for the ns, `BoothDef` for the definition and its `interface_schema`, `EventRoute` for subscriptions — and only the store differs: fjall for a persisted realm, the realm's own memory for a temporary one. So a type's ns is `BOOTH_NS_BASE + id` in both, allocated once and never reclaimed, and there is one dictionary rather than two. Types registered there are visible only inside it, and the rows die with the realm because the whole store does.
 
 7. **Realms do not nest.** A temporary realm cannot create another realm. Jobs may nest (effector ADR-0005) — that is a fact about work, not about isolation — but the isolation axis is one level deep: many realms, no parents.
 
@@ -61,7 +61,7 @@ would itself need to be correct about every table ever written.
 
 - **Ids are never reused.** A destroyed realm's id is retired even though its rows are deleted; recycling one would make a new realm inherit an old realm's data, which reads as a bug in isolation and is not one — it is the id doing exactly what it was told.
 - **A raw key dump is no longer self-describing.** Reading storage directly now requires the `realms` table to render `1` as `main`. That is the cost of a short prefix, paid once in the tooling and never again per key.
-- **Destroy has to mean something.** With a row and a prefix, `destroy` is: drop the live Realm (instances, executors, streams, in-flight calls), delete the row, and delete the prefix range. An ephemeral realm's destroy is only the first step, because it wrote nothing.
+- **Destroy has to mean something.** With a row and a prefix, `destroy` is: drop the live Realm (instances, executors, streams, in-flight calls), delete the row, and delete the prefix range. An ephemeral realm's destroy is only the first step: its rows live in its own memory engine, so dropping the Realm drops them.
 - **`live()` becomes a query, not a map listing.** The persistent half of the answer comes from the table; the ephemeral half from memory.
 - **The two-tier reading disappears from the code.** There is no "system realm plus named realms" — there is the realm set, and `main` is in it.
 

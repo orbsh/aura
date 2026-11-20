@@ -33,7 +33,6 @@ pub mod resources;
 pub mod store_exec;
 pub mod timer;
 pub mod timer_entry;
-pub mod type_ns;
 pub mod value;
 
 use aura_booth::call::{CallId, CallSpec, PendingEntry, Waited};
@@ -127,7 +126,6 @@ pub struct Realm {
     /// counterpart of what `meta::ns_of` reads for a persisted one. `None` for
     /// the persisted kind, whose ns is a column that outlives the process.
     /// `Some` is also this realm's kind test — see `is_ephemeral`.
-    ephemeral_ns: Option<crate::type_ns::TypeNs>,
     /// Unmatched events (bounded ring, diagnostic output).
     pub dead_events: event::DeadEvents,
     /// Unified scheduling surface (ADR-0016 revised): delivery + reclaim

@@ -293,45 +293,38 @@ impl Engine {
             // seeds the ctx store plan + `ctx.interface_schema` read.
             introspected = Some(schema);
         }
-        // Phase 4.5b + ADR-0025 Plan A: persist the definition as a
-        // data-plane row (booth_defs beside mq/state) — definitions
-        // outlive the process, one okm instance for everything.
+        // Phase 4.5b + ADR-0025 Plan A: persist the definition as a data-plane row
+        // (booth_defs beside mq/state) — definitions outlive the process, one okm
+        // instance for everything.
         //
-        // Unless the realm is TEMPORARY (ADR-0050 §6): it outlives nothing, so
-        // the row, the schema copy inside it and the blob beneath it would be
-        // bytes written only to be discarded with the realm. The schema is not
-        // lost, though — it rides to `register_type_with` below, which is where
-        // a temporary realm's plan resolves it from.
-        let persistent = !realm.lock().await.is_ephemeral();
-        if persistent {
-            if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
-                def.schema = introspected.clone();
-                let r = realm.lock().await;
-                aura_realm::meta::persist(&r.mq, &def)?;
-            }
+        // Both realm kinds take this path (ADR-0050 §6). What decides whether a row
+        // outlives the process is the STORE, not a branch here: a persisted realm's
+        // store is fjall, a temporary realm's is its own memory engine, and the row
+        // is written the same way into either. One rule, two engines.
+        if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
+            def.schema = introspected.clone();
+            let r = realm.lock().await;
+            aura_realm::meta::persist(&r.mq, &def)?;
         }
         // Content addressing covers remote types too (ADR-0027): the
         // dispatch arm references `sha256(source)`, and the serving
         // source reads CodeBlob — so the bytes must enter the blob store
         // at upload. Remote definitions are not persisted (4.5b
-        // scope: script booths); this write is the blob's only home for
-        // them, deliberately without a definition row. A temporary realm
-        // serves no remote code across a boundary, so it writes no blob
-        // either (ADR-0051 §4: nothing crosses out of it but frames).
-        if persistent {
-            if let aura_booth::Body::Remote { ref source, .. } = booth.body {
-                let r = realm.lock().await;
-                aura_realm::meta::put_blob(
-                    &r.mq,
-                    aura_realm::meta::code_hash(source),
-                    source.as_bytes(),
-                )?;
-            }
+        // scope: remote types are script booths with no definition row); this write is
+        // the blob's only home for them. Same for both realm kinds — a temporary
+        // realm's blob goes into its own store and dies with it, so nothing crosses
+        // the boundary (ADR-0051 §4) without needing a special case here.
+        if let aura_booth::Body::Remote { ref source, .. } = booth.body {
+            let r = realm.lock().await;
+            aura_realm::meta::put_blob(
+                &r.mq,
+                aura_realm::meta::code_hash(source),
+                source.as_bytes(),
+            )?;
         }
-        // ONE call for both kinds: the realm decides where its ns and schema
-        // come from (rows for a persisted one, its own memory for a temporary
-        // one). The introspected copy is handed over so the temporary side has
-        // something to plan from.
+        // ONE call for both kinds: the realm resolves its ns and schema from its own
+        // rows (ADR-0050 §6). The introspected copy rides along as a fallback for a
+        // type whose row carries no schema.
         realm
             .lock()
             .await

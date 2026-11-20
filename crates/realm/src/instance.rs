@@ -93,7 +93,6 @@ impl Realm {
             types: HashMap::new(),
             instances: HashMap::new(),
             queue_capacity: 64,
-            ephemeral_ns: id.persisted().is_none().then(crate::type_ns::TypeNs::new),
             mq: mq_store.clone(),
             stops: crate::stop::Stops::default(),
             idle_ttl: Duration::from_secs(30),
@@ -123,11 +122,11 @@ impl Realm {
         })
     }
 
-    /// Is this realm the TEMPORARY kind? (ADR-0050 §5: it persists nothing, so
-    /// every path that would write a row — a definition, its schema, a type
-    /// dictionary entry — asks this first and takes the memory route instead.)
+    /// Is this realm the TEMPORARY kind? The kind IS the id (ADR-0050 §5) — there
+    /// is no second flag to keep in step. Registration writes the same rows either
+    /// way; for a temporary realm they land in a store that dies with it.
     pub fn is_ephemeral(&self) -> bool {
-        self.ephemeral_ns.is_some()
+        self.id.persisted().is_none()
     }
 
     pub(crate) async fn instance(

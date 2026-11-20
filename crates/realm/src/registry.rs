@@ -14,21 +14,14 @@ impl Realm {
 
     /// Registration with the upload's introspected schema IN HAND.
     ///
-    /// This is where a storage plan resolves (ADR-0026), and the two realm
-    /// kinds answer that differently — which is the whole seam (ADR-0050 §6):
-    ///
-    /// - a PERSISTED realm asks its own rows (`meta::ns_and_schema_of`): the
-    ///   `BoothName` row carries the ns, the `BoothDef` row carries the
-    ///   interface_schema copy, and both outlive the process. `schema` is
-    ///   ignored, because the row is the copy that matters.
-    /// - a TEMPORARY realm asks ITSELF: the ns comes from the in-memory counter
-    ///   (`type_ns::TypeNs`), the schema from the caller's copy, and neither is
-    ///   written anywhere. The realm dies and the allocation dies with it.
-    ///
-    /// Nothing else in this function distinguishes them: the type table, the
-    /// router and the instance/executor reclamation are the same code, and the
-    /// isolation that follows is per-realm by construction.
-    pub fn register_type_with(&mut self, booth: BoothType, schema: Option<serde_json::Value>) {
+    /// This is where a storage plan resolves (ADR-0026), and BOTH realm kinds
+    /// answer it the same way (ADR-0050 §6): ask this realm's own rows —
+    /// `meta::ns_and_schema_of` — where a `BoothName` row carries the ns and a
+    /// `BoothDef` row carries the interface_schema copy. A persisted realm's
+    /// rows live in fjall and outlive the process; a temporary realm's rows live
+    /// in its own memory engine and die with it. That is the only difference, and
+    /// it is a difference of engine, not of rule.
+    pub fn register_type_with(&mut self, booth: BoothType, caller_schema: Option<serde_json::Value>) {
         self.call_specs
             .entry(booth.name.clone())
             .or_insert_with(|| CallSpec::hot(Duration::from_secs(30)));
@@ -38,19 +31,23 @@ impl Realm {
         // (surface absence is the correct form for "declared no storage" —
         // never a panic).
         let name = booth.name.clone();
-        let resolved = match self.ephemeral_ns.as_mut() {
-            Some(ns_registry) => ns_registry
-                .resolve(&name)
-                .map(|ns| (u32::from(ns), schema.clone())),
-            None => crate::meta::ns_and_schema_of(&self.mq, &name),
-        };
-        let (ns, schema) = match resolved {
+        // ONE rule for both kinds of realm (ADR-0050 §6): the ns comes from the
+        // dictionary row that lives in THIS realm's own store — fjall for a
+        // persisted realm, its own memory for a temporary one — so a temporary
+        // realm allocates exactly like a persisted one (BOOTH_NS_BASE + id,
+        // monotonic, never reclaimed) and forgets the whole dictionary when it
+        // dies. The engine is the only difference between them.
+        let (ns, schema) = match crate::meta::ns_and_schema_of(&self.mq, &name) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("storage plan resolve failed for `{name}`: {e}");
                 (0, None)
             }
         };
+        // A caller holding a schema can seed the plan when the realm's own row
+        // has no copy (a Rust body registered without an upload), but the row
+        // wins when it exists: it is the copy that survived the last write.
+        let schema = schema.or(caller_schema);
         self.persisted_schemas.insert(name.clone(), schema.clone());
         self.store_plans.remove(&name);
         if let Some(schema) = schema {
@@ -72,16 +69,13 @@ impl Realm {
         // realm, the EventRoute table (mq): subscription facts survive restart
         // and are readable by ops without introspecting scripts.
         //
-        // A temporary realm keeps the router half only (ADR-0050 §6): its rows
-        // would die with it, so writing them would be state that exists only to
-        // be discarded — and "registration inside one writes nothing" is a
-        // property this branch keeps by name.
-        let persistent = self.ephemeral_ns.is_none();
+        // Both halves, for both kinds of realm: the rows go to this realm's own
+        // store, so a temporary realm's routes die with it exactly as its type
+        // dictionary does. Writing them is not "state that exists only to be
+        // discarded" — it is the same code path, against a memory engine.
         self.router.drop_booth(&booth.name);
-        if persistent {
-            if let Err(e) = mq::routes_drop_booth(&self.mq, &booth.name) {
-                eprintln!("route drop failed for {}: {e}", booth.name);
-            }
+        if let Err(e) = mq::routes_drop_booth(&self.mq, &booth.name) {
+            eprintln!("route drop failed for {}: {e}", booth.name);
         }
         // Hot replacement reaches execution too: executors hold
         // the PREVIOUS source, so instances of this type are reclaimed —
@@ -140,19 +134,20 @@ impl Realm {
             if decl.auth {
                 self.router.gated(&decl.event, &booth.name);
             }
-            if persistent {
-                if let Err(e) = mq::route_put(
-                    &self.mq,
-                    &decl.event,
-                    &booth.name,
-                    &decl.resolution,
-                    decl.wildcard,
-                ) {
-                    eprintln!(
-                        "route persist failed for {}/{}: {e}",
-                        decl.event, booth.name
-                    );
-                }
+            // Written for both kinds of realm, into this realm's own store — a
+            // temporary realm's route rows die with it, exactly as its type
+            // dictionary does (ADR-0050 §6: one rule, two engines).
+            if let Err(e) = mq::route_put(
+                &self.mq,
+                &decl.event,
+                &booth.name,
+                &decl.resolution,
+                decl.wildcard,
+            ) {
+                eprintln!(
+                    "route persist failed for {}/{}: {e}",
+                    decl.event, booth.name
+                );
             }
         }
         self.types.insert(booth.name.clone(), booth);

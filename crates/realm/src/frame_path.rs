@@ -26,14 +26,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathStep {
     pub job: String,
-    pub op: u32,
+    /// Which op spoke. `None` means the JOB spoke — its start, or its end — and the
+    /// difference matters: a reader counting op frames should not count the job's own
+    /// bookends as work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<u32>,
 }
 
 impl PathStep {
-    pub fn new(job: impl Into<String>, op: u32) -> Self {
+    pub fn at(job: impl Into<String>, op: u32) -> Self {
         Self {
             job: job.into(),
-            op,
+            op: Some(op),
+        }
+    }
+
+    /// The job as a whole, no op.
+    pub fn whole(job: impl Into<String>) -> Self {
+        Self {
+            job: job.into(),
+            op: None,
         }
     }
 }
@@ -47,7 +59,12 @@ pub struct FramePath(Vec<PathStep>);
 impl FramePath {
     /// The path a job's frames start from: the job, at the op about to run.
     pub fn root(job: impl Into<String>, op: u32) -> Self {
-        Self(vec![PathStep::new(job, op)])
+        Self(vec![PathStep::at(job, op)])
+    }
+
+    /// The path of a frame the JOB itself posts — its end. Same chain, no op step.
+    pub fn whole(job: impl Into<String>) -> Self {
+        Self(vec![PathStep::whole(job)])
     }
 
     /// The same chain, addressing another op of the SAME job. Ops run in order,
@@ -57,8 +74,8 @@ impl FramePath {
     pub fn at_op(&self, op: u32) -> Self {
         let mut steps = self.0.clone();
         match steps.last_mut() {
-            Some(last) => last.op = op,
-            None => return Self(vec![PathStep::new(String::new(), op)]),
+            Some(last) => last.op = Some(op),
+            None => return Self(vec![PathStep::at(String::new(), op)]),
         }
         Self(steps)
     }
@@ -69,7 +86,7 @@ impl FramePath {
     #[must_use]
     pub fn nested(&self, job: impl Into<String>, op: u32) -> Self {
         let mut steps = self.0.clone();
-        steps.push(PathStep::new(job, op));
+        steps.push(PathStep::at(job, op));
         Self(steps)
     }
 
@@ -109,6 +126,32 @@ pub struct FramesOut {
     pub path: FramePath,
 }
 
+/// What a frame says.
+///
+/// One queue, and one field that says which shape the rest is. A job's frames are
+/// its whole observable life — the events its ops emit AND what became of each op —
+/// so a reader that had to infer the kind from which fields happen to be present
+/// would be reading a second protocol, in prose.
+pub mod kind {
+    /// The op called `ctx.emit`. Carries `event` and `data`, exactly what the op
+    /// handed the venue.
+    pub const EMIT: &str = "emit";
+    /// The op answered. Carries `value`.
+    pub const OP_DONE: &str = "op.done";
+    /// The op failed and its policy said to carry on. Carries `error` and `attempts`.
+    pub const OP_SKIPPED: &str = "op.skipped";
+    /// The op failed for the last time: the job stops here. Carries `error` and `attempts`.
+    pub const OP_FAILED: &str = "op.failed";
+    /// The op never ran, because an earlier one stopped the job. Carries `reason`.
+    pub const OP_NOT_RUN: &str = "op.not_run";
+    /// The job is over and its realm is gone. Carries `destroyed` and `ops`.
+    ///
+    /// Last by construction: a reader that has it needs no timeout to know the job
+    /// ended, and a reader that never gets one knows something went wrong that the
+    /// frames could not report.
+    pub const JOB_END: &str = "job.end";
+}
+
 /// The queue a job's frames land in, on the PARENT realm's plane.
 ///
 /// One reserved name, not a family: a dispatcher declares one route (or reads
@@ -125,14 +168,14 @@ mod tests {
     #[test]
     fn a_nested_job_appends_and_an_op_step_rewrites_in_place() {
         let outer = FramePath::root("job-a", 1);
-        assert_eq!(outer.as_slice(), &[PathStep::new("job-a", 1)]);
+        assert_eq!(outer.as_slice(), &[PathStep::at("job-a", 1)]);
 
         // Ops run in order, one at a time: the same chain, the next op.
         let later = outer.at_op(3);
-        assert_eq!(later.as_slice(), &[PathStep::new("job-a", 3)]);
+        assert_eq!(later.as_slice(), &[PathStep::at("job-a", 3)]);
         assert_eq!(
             outer.as_slice(),
-            &[PathStep::new("job-a", 1)],
+            &[PathStep::at("job-a", 1)],
             "updating a path does not mutate the one it was made from"
         );
 
@@ -140,7 +183,7 @@ mod tests {
         let inner = later.nested("job-b", 0);
         assert_eq!(
             inner.as_slice(),
-            &[PathStep::new("job-a", 3), PathStep::new("job-b", 0)]
+            &[PathStep::at("job-a", 3), PathStep::at("job-b", 0)]
         );
         assert_eq!(
             inner.to_value(),

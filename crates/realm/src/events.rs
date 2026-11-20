@@ -20,6 +20,43 @@ use crate::store_exec;
 use aura_booth::{InstanceId, InstanceKey as BoothKey, RouteResolution};
 
 impl Realm {
+    /// A job's frames, in the order it produced them, resumable by sequence number.
+    ///
+    /// The frames ARE the stream (ADR-0052). One queue already exists, its rows are
+    /// already ordered and already addressable, and a "result stream" that buffered
+    /// the same rows a second time would be the same data with a second lifecycle to
+    /// get wrong — including the question of what happens to it when the job's realm
+    /// dies, which is the question this answers: the rows live in the PARENT, so a
+    /// reader can still read them after the realm that produced them is gone.
+    ///
+    /// Reading needs the address, not just the job: frames are delivered into the
+    /// dispatching booth's queue, so a reader that knows the job id alone would have
+    /// to search every booth's queue to find it. Whoever dispatched the job filled in
+    /// `Job::booth`, so it has both.
+    pub fn job_frames(
+        store: &mq::MqStore,
+        dispatcher: &str,
+        job: &str,
+        after_seq: u64,
+    ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
+        let (_, key) = dispatcher.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!("frame address `{dispatcher}` is not `type/key`")
+        })?;
+        let part = if key.is_empty() {
+            InstanceKey::Singleton
+        } else {
+            InstanceKey::Named(key.to_string())
+        };
+        let rows = mq::backlog(store, crate::frame_path::JOB_FRAME_EVENT, &part, after_seq)?;
+        Ok(rows
+            .into_iter()
+            // The partition is the BOOTH, so it may hold several jobs' frames; the
+            // path tells them apart, and a reader asking about one job gets one job.
+            .filter(|(_, payload, _)| payload["path"][0]["job"] == job)
+            .map(|(seq, payload, _)| (seq, payload))
+            .collect())
+    }
+
     /// Emit into this realm's own plan, and — if this realm is a job's — out to
     /// the booth that dispatched it.
     ///
@@ -49,7 +86,12 @@ impl Realm {
         let out = { self_arc.lock().await.frames_out.clone() };
         match out {
             Some(out) => {
-                Self::deliver_frame(&out.parent, &out.dispatcher, &out.path, event, data).await?;
+                let frame = serde_json::json!({
+                    "kind": crate::frame_path::kind::EMIT,
+                    "event": event,
+                    "data": data,
+                });
+                Self::deliver_frame(&out.parent, &out.dispatcher, &out.path, frame).await?;
             }
             // A persistent realm has no dispatcher, and its emits are its own
             // business — that is not this case. A TEMPORARY realm has one thing to
@@ -83,8 +125,7 @@ impl Realm {
         parent: &SharedRealm,
         dispatcher: &str,
         path: &crate::frame_path::FramePath,
-        event: &str,
-        data: serde_json::Value,
+        mut payload: serde_json::Value,
     ) -> anyhow::Result<()> {
         let (booth_type, key) = dispatcher.split_once('/').ok_or_else(|| {
             anyhow::anyhow!(
@@ -101,11 +142,13 @@ impl Realm {
             BoothKey::Named(key) => InstanceKey::Named(key.clone()),
         };
 
-        let frame = serde_json::json!({
-            "path": path.to_value(),
-            "event": event,
-            "data": data,
-        });
+        // The path is added here, not by the caller: every frame has one, and a
+        // payload builder that forgot it would produce a frame from nowhere.
+        let Some(fields) = payload.as_object_mut() else {
+            anyhow::bail!("a job frame is a JSON object carrying `kind` (ADR-0052)");
+        };
+        fields.insert("path".to_string(), path.to_value());
+        let frame = payload;
 
         let store = {
             // Activation first, the same way a routed emit does it: an inactive

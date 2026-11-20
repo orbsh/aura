@@ -43,7 +43,14 @@
 //! booth's queue (`job.frame`, partition = its key) on the parent realm, so the
 //! parent needs no route row and an offline dispatcher gets a backlog rather
 //! than a lost frame. Each frame carries its path — `[{job, op}]` — with the op
-//! step rewritten before each call, because ops run one at a time.
+//! step rewritten before each call, because ops run one at a time; `job.end`
+//! carries `[{job}]` and is posted after the destroy.
+//!
+//! The channel carries the job's whole observable life (`emit`, `op.done`,
+//! `op.skipped`, `op.failed`, `op.not_run`, `job.end`), which is why a dispatch
+//! is usable from another process: `Engine::job_frames(dispatcher, job, after)`
+//! is the pull face, and the rows live in the PARENT, so they outlive the realm
+//! that produced them (ADR-0052).
 //!
 //! ## Where the declarations come from
 //!
@@ -623,8 +630,35 @@ impl<'a> Dispatch<'a> {
             });
         }
 
+        // The channel is captured before the realm goes away: `job.end` is posted
+        // after the destroy, because "the job is over" and "nothing of it is left"
+        // are the same sentence to a reader, and the realm being gone is the second
+        // half of it.
+        let sink = {
+            let handle = eph.realm();
+            let realm = handle.lock().await;
+            realm.frames_out.clone()
+        };
         let inside = self.run_inside(&eph, decls, &steps).await;
         let destroyed = self.set.destroy(eph.id).await;
+
+        if let Some(out) = &sink {
+            let ops = match &inside {
+                Ok(ops) => ops.len(),
+                // A job that failed before its op list ran still ends, and says so:
+                // a reader waiting for `job.end` must not hang on a registration
+                // failure it will never be told about otherwise.
+                Err(_) => 0,
+            };
+            let end = serde_json::json!({
+                "kind": crate::frame_path::kind::JOB_END,
+                "destroyed": destroyed.is_ok(),
+                "ops": ops,
+            });
+            let path = crate::frame_path::FramePath::whole(job.id.clone());
+            crate::Realm::deliver_frame(&out.parent, &out.dispatcher, &path, end).await?;
+        }
+
         match (inside, destroyed) {
             (Ok(ops), Ok(())) => Ok(JobOutcome {
                 job: job.id.clone(),
@@ -639,8 +673,8 @@ impl<'a> Dispatch<'a> {
                  still live and its rows are still in memory",
                 job.id, eph.id
             ))),
-            (Err(e), Ok(())) => Err(e.into()),
-            (Err(e), Err(d)) => Err(anyhow::Error::new(e).context(format!(
+            (Err(e), Ok(())) => Err(e),
+            (Err(e), Err(d)) => Err(e.context(format!(
                 "and the job's realm {} could not be destroyed either: {d:#}",
                 eph.id
             ))),
@@ -654,7 +688,7 @@ impl<'a> Dispatch<'a> {
         eph: &NamedRealm,
         decls: &[BoothDecl],
         steps: &[Step<'_>],
-    ) -> Result<Vec<OpOutcome>, DispatchError> {
+    ) -> anyhow::Result<Vec<OpOutcome>> {
         for decl in decls {
             self.registrar
                 .register(&eph.realm(), decl)
@@ -664,6 +698,8 @@ impl<'a> Dispatch<'a> {
                     source,
                 })?;
         }
+        // `anyhow` keeps the type, so a caller that wants `DispatchError` back
+        // downcasts instead of the error growing a second spelling on the way up.
         self.run_ops(eph, steps).await
     }
 
@@ -677,18 +713,28 @@ impl<'a> Dispatch<'a> {
         &self,
         eph: &NamedRealm,
         steps: &[Step<'_>],
-    ) -> Result<Vec<OpOutcome>, DispatchError> {
+    ) -> anyhow::Result<Vec<OpOutcome>> {
         let mut out = Vec::with_capacity(steps.len());
         let mut stopped: Option<String> = None;
         for step in steps {
+            Self::address_op(eph, step.index as u32).await;
             if let Some(reason) = &stopped {
+                let result = OpResult::NotRun {
+                    reason: reason.clone(),
+                };
+                Self::post(
+                    eph,
+                    serde_json::json!({
+                        "kind": crate::frame_path::kind::OP_NOT_RUN,
+                        "reason": reason,
+                    }),
+                )
+                .await?;
                 out.push(OpOutcome {
                     op: step.index,
                     policy: step.op.on_error,
                     attempts: 0,
-                    result: OpResult::NotRun {
-                        reason: reason.clone(),
-                    },
+                    result,
                 });
                 continue;
             }
@@ -723,6 +769,30 @@ impl<'a> Dispatch<'a> {
                     step.index, step.op.on_error
                 ));
             }
+            // The op's outcome, as a frame (ADR-0052). The synchronous caller also
+            // gets it in `JobOutcome`; the frame is there so a dispatcher reading
+            // over a wire sees each op land instead of waiting for the end.
+            let frame = match &result {
+                OpResult::Done { value } => serde_json::json!({
+                    "kind": crate::frame_path::kind::OP_DONE,
+                    "value": value,
+                }),
+                OpResult::Skipped { error } => serde_json::json!({
+                    "kind": crate::frame_path::kind::OP_SKIPPED,
+                    "error": error,
+                    "attempts": attempts,
+                }),
+                OpResult::Failed { error } => serde_json::json!({
+                    "kind": crate::frame_path::kind::OP_FAILED,
+                    "error": error,
+                    "attempts": attempts,
+                }),
+                OpResult::NotRun { reason } => serde_json::json!({
+                    "kind": crate::frame_path::kind::OP_NOT_RUN,
+                    "reason": reason,
+                }),
+            };
+            Self::post(eph, frame).await?;
             out.push(OpOutcome {
                 op: step.index,
                 policy: step.op.on_error,
@@ -736,6 +806,38 @@ impl<'a> Dispatch<'a> {
     /// One call, against the job's own realm. `Realm::call` is the same call
     /// path every surface uses — the realm resolves the type from ITS registry,
     /// so a declaration is reachable the moment it is registered.
+    /// Point the outbound path at the op about to be described. Ops run one at a
+    /// time, so the last step is rewritten rather than grown.
+    async fn address_op(eph: &NamedRealm, op: u32) {
+        let handle = eph.realm();
+        let mut realm = handle.lock().await;
+        if let Some(out) = realm.frames_out.as_mut() {
+            out.path = out.path.at_op(op);
+        }
+    }
+
+    /// Post one frame to the booth that dispatched this job.
+    ///
+    /// A realm a job runs in always has the channel (dispatch installs it before
+    /// registration), so its absence here is a bug in this crate rather than a
+    /// condition to absorb — and a job whose frames vanish would look to the
+    /// dispatcher exactly like a job that had nothing to say.
+    async fn post(eph: &NamedRealm, payload: serde_json::Value) -> anyhow::Result<()> {
+        let out = {
+            let handle = eph.realm();
+            let realm = handle.lock().await;
+            realm.frames_out.clone()
+        };
+        let Some(out) = out else {
+            anyhow::bail!(
+                "this job's realm has no outbound channel, so `{}` would never reach the \
+                 dispatcher (ADR-0051 §4)",
+                payload["kind"]
+            );
+        };
+        crate::Realm::deliver_frame(&out.parent, &out.dispatcher, &out.path, payload).await
+    }
+
     async fn call_once(
         &self,
         eph: &NamedRealm,
@@ -743,10 +845,6 @@ impl<'a> Dispatch<'a> {
     ) -> anyhow::Result<serde_json::Value> {
         // Ops run one at a time, so the outbound path's last step is rewritten
         // rather than grown: a frame that leaves during op N says N.
-        let handle = eph.realm();
-        if let Some(out) = handle.lock().await.frames_out.as_mut() {
-            out.path = out.path.at_op(step.index as u32);
-        }
         let slot = Realm::call(
             &eph.realm(),
             None,

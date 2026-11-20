@@ -621,7 +621,7 @@ fn reporter() -> Body {
 }
 
 #[tokio::test]
-async fn a_frame_a_job_emits_reaches_the_booth_that_dispatched_it() {
+async fn a_job_reports_what_happened_as_frames_the_dispatcher_can_read() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     let decls = vec![BoothDecl::new("step", reporter())];
     // `Job::booth` is the dispatcher's address — `gravity/turn-1` in this fixture.
@@ -638,22 +638,119 @@ async fn a_frame_a_job_emits_reaches_the_booth_that_dispatched_it() {
     let out = dispatch(&engine, &job, &decls).await.unwrap();
     assert!(out.succeeded(), "the op answered: {:?}", out.ops);
 
-    // The frame landed in the DISPATCHER's queue on the parent realm: directed,
-    // not routed, so the parent needed no route row to receive it.
-    let main = engine.realm_set.open("main").await.unwrap();
-    let store = main.store();
-    let part = aura_realm::mq::InstanceKey::Named("turn-1".to_string());
-    let frames = aura_realm::mq::backlog(&store, "job.frame", &part, 0).unwrap();
-    assert_eq!(frames.len(), 1, "one emit, one frame: {frames:?}");
+    // The job's whole observable life, in order, read back through the pull face:
+    // what the op emitted, what became of the op, and that the job is over.
+    let frames = engine
+        .job_frames("gravity/turn-1", "job-frames", 0)
+        .await
+        .expect("the dispatcher's frames");
+    let kinds: Vec<&str> = frames
+        .iter()
+        .map(|(_, f)| f["kind"].as_str().unwrap_or("?"))
+        .collect();
+    assert_eq!(kinds, ["emit", "op.done", "job.end"], "frames: {frames:?}");
 
-    let frame = &frames[0].1;
+    // The op's own emit, untouched: the path names the job and the op that spoke.
     assert_eq!(
-        frame["path"],
-        json!([{ "job": "job-frames", "op": 0 }]),
-        "the frame names the job AND the op that spoke"
+        frames[0].1["path"],
+        json!([{ "job": "job-frames", "op": 0 }])
     );
-    assert_eq!(frame["event"], "progress");
-    assert_eq!(frame["data"]["at"], "one", "the payload is the op's own");
+    assert_eq!(frames[0].1["event"], "progress");
+    assert_eq!(frames[0].1["data"]["at"], "one", "the payload is the op's own");
+
+    // The op's answer, so a reader over a wire does not have to wait for the end.
+    assert_eq!(frames[1].1["value"]["done"], true);
+    assert_eq!(frames[1].1["path"], json!([{ "job": "job-frames", "op": 0 }]));
+
+    // The end: the job spoke, not an op, and the realm is gone by the time it says so.
+    assert_eq!(frames[2].1["path"], json!([{ "job": "job-frames" }]));
+    assert_eq!(frames[2].1["destroyed"], true);
+    assert_eq!(frames[2].1["ops"], 1);
+    assert_eq!(
+        engine.realm_set.live().await.unwrap(),
+        vec!["main".to_string()],
+        "the frames outlive the realm that produced them"
+    );
+
+    // A reader resumes where it stopped: the sequence number is the cursor.
+    let last = frames.last().expect("at least one frame").0;
+    assert!(
+        engine
+            .job_frames("gravity/turn-1", "job-frames", last)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing new after the last frame read"
+    );
+}
+
+#[tokio::test]
+async fn every_op_is_reported_and_one_job_does_not_read_as_another() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let decls = vec![BoothDecl::new("step", worker(log))];
+    // Op 0 answers, op 1 fails under `skip` (so the job carries on), op 2 answers.
+    let many = job(
+        "job-many",
+        vec![
+            op("step/a", json!({ "step": "one" }), json!({}), failed_policy()),
+            op(
+                "step/b",
+                json!({ "step": "two", "fail": true }),
+                json!({}),
+                json!({ "kind": "skip" }),
+            ),
+            op("step/c", json!({ "step": "three" }), json!({}), failed_policy()),
+        ],
+    );
+    let other = job(
+        "job-other",
+        vec![op(
+            "step/a",
+            json!({ "step": "aside" }),
+            json!({}),
+            failed_policy(),
+        )],
+    );
+
+    dispatch(&engine, &many, &decls).await.unwrap();
+    dispatch(&engine, &other, &decls).await.unwrap();
+
+    let frames = engine
+        .job_frames("gravity/turn-1", "job-many", 0)
+        .await
+        .unwrap();
+    let kinds: Vec<(&str, Option<u64>)> = frames
+        .iter()
+        .map(|(_, f)| {
+            (
+                f["kind"].as_str().unwrap_or("?"),
+                f["path"][0]["op"].as_u64(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("op.done", Some(0)),
+            ("op.skipped", Some(1)),
+            ("op.done", Some(2)),
+            ("job.end", None),
+        ],
+        "every op reports, in order, and the end names no op: {frames:?}"
+    );
+    assert_eq!(frames[1].1["attempts"], 1, "a skipped op ran once");
+
+    // The other job's frames share the queue (one partition per booth) and are not
+    // mixed into this one's — the path is the discriminator.
+    let other_frames = engine
+        .job_frames("gravity/turn-1", "job-other", 0)
+        .await
+        .unwrap();
+    assert_eq!(other_frames.len(), 2, "{other_frames:?}");
+    assert!(other_frames
+        .iter()
+        .all(|(_, f)| f["path"][0]["job"] == "job-other"));
 }
 
 #[tokio::test]

@@ -68,7 +68,9 @@ The rule is **both, always**: an event the job's ops emit is delivered by the jo
 
 Delivery is **directed, not routed**: the frame is appended to the dispatching booth's queue on the parent realm (`job.frame`, partition = the booth's key), because a dispatcher is not a subscriber to an event — it is the recipient of a message about a job it submitted. Two consequences follow: the parent needs no route row to receive frames, and a dispatcher that is not live gets a backlog instead of a lost frame.
 
-Every frame carries its **path** — `[{job, op}]`, the chain for a nested job, with the op step rewritten before each call because ops run one at a time. The address is `Job::booth`, filled by the dispatcher itself, so a job cannot rename its audience.
+Every frame carries its **path** — `[{job, op}]`, the chain for a nested job, with the op step rewritten before each call because ops run one at a time; a frame the JOB itself posts (its end) carries `[{job}]`, no op. The address is `Job::booth`, filled by the dispatcher itself, so a job cannot rename its audience.
+
+The channel carries the job's whole observable life, not only what its ops emit: `emit`, `op.done`, `op.skipped`, `op.failed`, `op.not_run`, `job.end`, discriminated by a `kind` field, and read back through a cursor (`Engine::job_frames`). ADR-0052 is that decision and its reasoning — one queue, no second buffer.
 
 One-way is structural, not a rule: a job's realm receives frames only from its own `@on` routes, and only the realm writes those queues. There is no inbound door because none was built.
 
@@ -97,7 +99,8 @@ Named so this record cannot be read as a promise larger than it is:
 Run by the workspace suite (`cargo test --workspace`); named because each one is a claim this record makes:
 
 - `crates/engine/tests/dispatch_job.rs` — `a_job_runs_its_ops_in_order_and_needs_store_is_granted_when_declared` (order is the dependency, and `needs.store` is really granted), `skip_records_the_failure_and_carries_on`, `fail_stops_the_job_and_its_successors_are_reported_not_run`, `retry_two_runs_the_step_three_times_and_no_more`, `never_runs_exactly_once_even_when_a_later_step_fails`, `a_failing_never_step_is_one_attempt_and_is_not_retried`, `a_job_naming_a_type_it_did_not_declare_fails_by_name_before_any_op_runs`, `needs_store_is_refused_before_any_op_runs_when_the_type_declared_no_storage`, `a_plan_job_and_a_shared_scope_job_are_refused_by_name`. Every one of these runs through the engine's registration door, so the production path is what is exercised.
-- `crates/realm/tests/dispatch_realm.rs` — `a_job_leaves_the_parent_keyspace_byte_identical` (a real fjall keyspace swept before and after a job that registers a declaration with storage, writes through its plan and emits an event: identical keys AND values, the realm gone from `live()`, the parent's registry and queue untouched), `a_booths_realm_cannot_be_bound_to_the_parent_store` (both boundary-(a) refusals, by name), `a_realm_cannot_open_a_child_realm` (boundary (c), by name).
+- `crates/engine/tests/dispatch_job.rs` — `a_frame_a_job_emits_reaches_the_booth_that_dispatched_it` (a frame an op emits lands in the dispatcher's queue with its path, its event name and its payload), `a_job_with_no_channel_out_cannot_emit_at_all` (a temporary realm with no channel refuses the emit by name).
+- `crates/realm/tests/dispatch_realm.rs` — `a_job_leaves_the_parent_keyspace_byte_identical` (a real fjall keyspace swept before and after a job that registers a declaration with storage, writes through its plan and emits an event: the parent's STATE namespaces identical in keys and values, its queue plane gaining exactly one row — the frame — the emitted name still at depth 0, the realm gone from `live()`), `a_booths_realm_cannot_be_bound_to_the_parent_store` (both boundary-(a) refusals, by name), `a_realm_cannot_open_a_child_realm` (boundary (c), by name).
 
 ## Still open
 

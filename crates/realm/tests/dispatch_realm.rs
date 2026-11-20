@@ -236,13 +236,23 @@ fn a_job_leaves_the_parent_keyspace_byte_identical() {
             0,
         )
         .expect("the parent's frame queue");
-        assert_eq!(frames.len(), 1, "one emit, one frame: {frames:?}");
+        // What the job said, and nothing else: its own emit, what became of the op,
+        // and that the job is over (ADR-0052). Three rows, all addressed to the
+        // dispatcher, all naming the job they came from.
+        let kinds: Vec<&str> = frames
+            .iter()
+            .map(|(_, f, _)| f["kind"].as_str().unwrap_or("?"))
+            .collect();
+        assert_eq!(kinds, ["emit", "op.done", "job.end"], "{frames:?}");
         assert_eq!(
             frames[0].1["path"],
             json!([{ "job": "job-keyspace", "op": 0 }]),
             "the frame carries the path of the job and op that spoke"
         );
         assert_eq!(frames[0].1["event"], "job:test");
+        assert!(frames
+            .iter()
+            .all(|(_, f, _)| f["path"][0]["job"] == "job-keyspace"));
         // The set's memory half is back to exactly what it was.
         assert_eq!(set.live().await.expect("live"), live_before);
     });

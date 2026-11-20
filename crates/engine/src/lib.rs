@@ -447,6 +447,22 @@ impl Engine {
     /// through `register_into_with`, the same door a registered booth takes, so a
     /// temporary realm's types are written by the ONE path into the realm's own
     /// store (ADR-0050 §6).
+    /// A job's frames so far, resumable: pass the last sequence number you consumed.
+    ///
+    /// This is the pull face of ADR-0052 — a dispatcher that is reading over a wire
+    /// asks for what happened instead of being called back. `dispatcher` is the
+    /// address the job was submitted to (`Job::booth`), because that is the queue the
+    /// frames went into.
+    pub async fn job_frames(
+        &self,
+        dispatcher: &str,
+        job: &str,
+        after_seq: u64,
+    ) -> anyhow::Result<Vec<(u64, serde_json::Value)>> {
+        let parent = self.realm_set.open(aura_realm::realm_set::MAIN_REALM).await?;
+        aura_realm::Realm::job_frames(&parent.store(), dispatcher, job, after_seq)
+    }
+
     /// Dispatch a job that ARRIVED: its declarations come out of the envelope's attachment
     /// (ADR-0051 §Attachments), so this is the one door — a remote submission and an in-process
     /// one take the same path, and there is no second way to hand a job a set of definitions.

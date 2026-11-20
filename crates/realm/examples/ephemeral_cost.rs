@@ -1,4 +1,4 @@
-//! What a temporary realm costs, measured rather than argued: the engine is a fresh `MemStore`
+//! What a temporary realm costs, measured rather than argued: the engine is a fresh `EphemeralStore`
 //! (an empty `BTreeMap` behind an `Arc<Mutex<..>>`), so creation is supposed to be near-free and
 //! destroy is supposed to return every byte. This exercises both claims and prints numbers.
 //!
@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use aura_realm::mq::MqStore;
 use aura_realm::realm_set::RealmSet;
-use okm_core::engine::mem_store::MemStore;
+use okm_core::engine::ephemeral::EphemeralStore;
 use okm_core::engine::storage::VirtualStorage;
 
 fn rss_kb() -> u64 {
@@ -28,11 +28,11 @@ fn main() {
     let n = 200_000;
     let t = Instant::now();
     for _ in 0..n {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         std::hint::black_box(&store);
     }
     println!(
-        "MemStore::new + drop           {:>8.1} ns/op   ({n} ops)",
+        "EphemeralStore::new + drop           {:>8.1} ns/op   ({n} ops)",
         t.elapsed().as_nanos() as f64 / n as f64
     );
 
@@ -41,7 +41,7 @@ fn main() {
     let keys = 200;
     let t = Instant::now();
     for r in 0..realms {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         for k in 0..keys {
             let key = format!("{r:08}-{k:08}-{}", "k".repeat(40)).into_bytes();
             let value = vec![b'v'; 128];

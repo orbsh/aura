@@ -226,13 +226,13 @@ pub enum MqEngine {
     /// okm's fjall adapter (production): its own keyspace on the engine's
     /// fjall database.
     Fjall(okm_core::FjallStore),
-    /// okm's in-memory engine (MemStore): a cloned handle shares the
+    /// okm's non-persistent engine (EphemeralStore): a cloned handle shares the
     /// keyspace. No aura-side stand-in — the store belongs to okm, and
     /// this arm deliberately does NOT take okm-async's TestStore: that
     /// would pull slatedb into every production binary (okm's engine
     /// matrix is a test-side concern, not a runtime dependency of the
     /// placeholder engine).
-    Mem(okm_core::engine::mem_store::MemStore),
+    Mem(okm_core::engine::ephemeral::EphemeralStore),
 }
 
 impl okm_core::storage::VirtualStorage for MqEngine {
@@ -310,7 +310,7 @@ impl MqStore {
     }
     /// okm's in-memory engine (tests and `Engine::Memory`, no aura-side double).
     pub fn mem() -> Self {
-        Self::with_engine(MqEngine::Mem(okm_core::engine::mem_store::MemStore::new()))
+        Self::with_engine(MqEngine::Mem(okm_core::engine::ephemeral::EphemeralStore::new()))
     }
     fn with_engine(engine: MqEngine) -> Self {
         Self {

@@ -19,6 +19,12 @@
 //!   its row is gone (ADR-0050 §Consequences).
 //! - every realm's own tables — `[u32 BE id][ns 2B][slot]…`, so one realm's
 //!   whole slice is the contiguous key range under its four id bytes.
+//! - TEMPORARY realms are the same kind of thing with two differences
+//!   (ADR-0050 §5/§6): their identity is a uuidv7 instead of a table number, and
+//!   their store is an in-memory engine of their own instead of a slice of this
+//!   keyspace. They hold no row, take no number from the watermark, and are
+//!   forgotten by `destroy` without a byte being touched — `create_ephemeral`
+//!   and `destroy` are where that asymmetry lives, and it is the only one.
 //!
 //! Why ns 256 for the root table. Every declared ns is 20–39 plus the booth
 //! block above `BOOTH_NS_BASE` (100 + type id), and a booth's ns is only ever
@@ -257,20 +263,66 @@ impl RealmSet {
         })
     }
 
-    /// The id a name resolves to (`None` = never opened). Memory first, the
-    /// table second (ADR-0050 §3's lookup order) — for a persisted realm the
-    /// two agree, because the memory entry was built from that row.
+    /// Create a TEMPORARY realm (ADR-0050 §5/§6, ADR-0051).
+    ///
+    /// Three things, all of them cheap and none of them a write:
+    ///
+    /// - the identity is a uuidv7 minted in-process (`RealmId::ephemeral_now`),
+    ///   so two temporary realms cannot collide without touching a counter the
+    ///   persistent half owns;
+    /// - the store is `MqStore::mem()` — an in-memory engine of its OWN, not a
+    ///   slice of this set's keyspace. `Realm::with_mq` refuses anything else,
+    ///   which is what makes "it wrote nothing" a property instead of a promise;
+    /// - the name is recorded so `live()` and a log line can say which realm a
+    ///   frame came from, and it is an address to nobody: `id_of` answers from
+    ///   the `realms` table, which this realm is not in.
+    ///
+    /// The `realms` table is untouched — no row, and the id watermark does not
+    /// step — so the next persisted realm's id is exactly what it would have
+    /// been had this call never happened, and `destroy` has nothing to undo.
+    ///
+    /// A temporary realm cannot create one of these (ADR-0050 §7): the door is
+    /// on the SET, and nothing inside a realm holds a set — nesting is not
+    /// expressible, which is why it does not need a check.
+    pub async fn create_ephemeral(&self) -> anyhow::Result<NamedRealm> {
+        let id = RealmId::ephemeral_now();
+        // The id's own rendering, tag included ("ephemeral:0197…"): a name that
+        // says which kind of realm it labels, so a dump of `live()` cannot read
+        // a temporary realm as a durable one.
+        let name = id.to_string();
+        let store = crate::mq::MqStore::mem();
+        let realm = crate::Realm::with_mq(id, store.clone())?
+            .with_code_base_url(self.code_base_url.clone())
+            .with_cursor_ttl(self.cursor_ttl)
+            .shared_async()
+            .await;
+        self.live.lock().await.insert(
+            id,
+            Live {
+                name: name.clone(),
+                store: store.clone(),
+                realm: realm.clone(),
+            },
+        );
+        Ok(NamedRealm {
+            id,
+            name,
+            store,
+            realm,
+        })
+    }
+
+    /// The id a name resolves to (`None` = never opened).
+    ///
+    /// A PERSISTED realm's home is the table, so the table is the answer — and
+    /// the live map would be the same answer, because every live persisted
+    /// entry was built from its row. A TEMPORARY realm has no row AND no
+    /// address: the name it recorded is a label for the logs (ADR-0050 §5), so
+    /// this never answers one, which is what makes `open` of that name mint a
+    /// persisted realm instead of handing back a realm that cannot survive the
+    /// call. `name_of` (id → name) is the direction that does reach one, and
+    /// only while it lives.
     pub async fn id_of(&self, name: &str) -> anyhow::Result<Option<RealmId>> {
-        if let Some(id) = self
-            .live
-            .lock()
-            .await
-            .iter()
-            .find(|(_, live)| live.name == name)
-            .map(|(id, _)| *id)
-        {
-            return Ok(Some(id));
-        }
         Ok(id_of_name(&self.root, name)?.map(RealmId::Persisted))
     }
 
@@ -291,8 +343,10 @@ impl RealmSet {
 
     /// Realm names known to this engine (observation). The persistent half is
     /// a QUERY over the `realms` table — a realm that exists but is not live
-    /// in memory still has a name — plus whatever is in memory (the ephemeral
-    /// kind's only home).
+    /// in memory still has a name — plus whatever is in memory, which is the
+    /// ephemeral kind's only home: a temporary realm is listed WHILE IT LIVES
+    /// and gone from here the moment it is destroyed, because nothing else ever
+    /// knew its name.
     pub async fn live(&self) -> anyhow::Result<Vec<String>> {
         let mut names: Vec<String> = Vec::new();
         let t = table(&self.root);
@@ -315,6 +369,12 @@ impl RealmSet {
     /// instances, executors, streams, in-flight calls die with the handle —
     /// then, for the persisted kind, delete its row and its whole prefix
     /// range.
+    ///
+    /// For a TEMPORARY realm the drop IS the whole of it: it wrote nothing, so
+    /// there is no row to delete and no prefix range to purge (ADR-0050 §6,
+    /// ADR-0051 §5 — the property the register/run/delete sequence could not
+    /// promise). Its name leaves `live()` with the entry, because the entry was
+    /// the only thing that ever held it.
     ///
     /// The id is retired, not recycled: the watermark that issued it still
     /// stands, so the next realm gets a new number and cannot inherit this
@@ -362,7 +422,10 @@ impl RealmSet {
 /// isolation pattern as okm's prefix-bound hosts (ADR-0010).
 #[derive(Clone)]
 pub struct NamedRealm {
-    /// The name this handle was opened under.
+    /// The name this handle was opened under — or, for a temporary realm, the
+    /// label it recorded at creation (`create_ephemeral`). A label is not an
+    /// address: `RealmSet::open` of it mints a persisted realm, because a
+    /// temporary realm has no row to be found by.
     pub name: String,
     /// The identity — what its keys are prefixed with, and what `destroy`
     /// names it by.
@@ -468,15 +531,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_ephemeral_realm_says_it_is_not_implemented_instead_of_writing() {
+    async fn an_ephemeral_id_cannot_be_bound_to_the_engines_keyspace() {
+        // A temporary realm's store is an engine of its own (ADR-0050 §5/§6);
+        // asking this engine for a slice of ITS keyspace under an ephemeral id
+        // is refused by name, because there is no prefix to bind — the failure
+        // is the isolation, not a missing feature.
         let root = MqStore::mem();
         let err = match crate::mq::MqStore::for_realm(&root, RealmId::Ephemeral(7)) {
-            Ok(_) => panic!("an ephemeral realm must not get a storage handle"),
+            Ok(_) => panic!("an ephemeral realm must not get a slice of the engine's keyspace"),
             Err(e) => e,
         };
         assert!(
-            err.to_string().contains("not implemented"),
+            err.to_string().contains("in-memory engine of its own"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn creating_a_temporary_realm_writes_no_row_and_does_not_step_the_watermark() {
+        let root = MqStore::mem();
+        let set = RealmSet::with_mq(root.clone());
+        let main = set.open(MAIN_REALM).await.unwrap();
+        let before: Vec<Vec<u8>> = root
+            .root()
+            .scan_range(&[], None)
+            .map(|item| item.map(|(k, _)| k))
+            .collect::<okm_core::Result<Vec<_>>>()
+            .unwrap();
+
+        let eph = set.create_ephemeral().await.unwrap();
+        assert!(matches!(eph.id, RealmId::Ephemeral(_)));
+        assert!(
+            eph.store().is_memory() && eph.store().prefix().is_empty(),
+            "a temporary realm's store is memory with no prefix"
+        );
+
+        // Byte-for-byte the same keyspace: no `realms` row, no watermark step.
+        let after: Vec<Vec<u8>> = root
+            .root()
+            .scan_range(&[], None)
+            .map(|item| item.map(|(k, _)| k))
+            .collect::<okm_core::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(before, after, "creating a temporary realm wrote something");
+        // …so the next persisted realm still gets the number it would have had.
+        assert_eq!(main.id, RealmId::Persisted(1));
+        assert_eq!(
+            set.open("next").await.unwrap().id,
+            RealmId::Persisted(2),
+            "a temporary realm is not in the id sequence"
         );
     }
 }

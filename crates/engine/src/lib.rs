@@ -176,17 +176,26 @@ impl Engine {
     /// the engine: introspection is a pure function the host calls,
     /// direction is host ← script.
     pub async fn register(&self, booth: BoothType) -> anyhow::Result<()> {
-        self.register_inner(booth, &self.realm).await
+        self.register_into(&self.realm, booth).await
     }
 
     /// Shared registration body: introspection + definition persistence +
     /// type registration, against the caller's realm handle (the engine's
-    /// own realm, or a named one). register_in rides the same path so a
-    /// named-realm type gets the same ctx.store plan (ADR-0026 §3).
-    async fn register_inner(
+    /// own realm, a named one, or a temporary one). `register` / `register_in`
+    /// ride the same path so every kind of realm gets the same ctx.store plan
+    /// (ADR-0026 §3).
+    ///
+    /// A TEMPORARY realm takes this path with its persistence steps SKIPPED
+    /// (ADR-0050 §6, ADR-0051 §4): the definition row, the interface_schema
+    /// copy it carries, the type dictionary entry and the code blob are all
+    /// writes that would die with the realm. Skipping them by name here is what
+    /// keeps "nothing in a temporary realm is persisted" true for the ONE code
+    /// path every registration goes through, rather than for each write it
+    /// happens to issue.
+    pub async fn register_into(
         &self,
-        mut booth: BoothType,
         realm: &aura_realm::SharedRealm,
+        mut booth: BoothType,
     ) -> anyhow::Result<()> {
         // Phase 4.5c: derive delivery routes from the introspected schema —
         // `receives` (event → key field) seeds the router per @on
@@ -287,26 +296,46 @@ impl Engine {
         // Phase 4.5b + ADR-0025 Plan A: persist the definition as a
         // data-plane row (booth_defs beside mq/state) — definitions
         // outlive the process, one okm instance for everything.
-        if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
-            def.schema = introspected.clone();
-            let r = realm.lock().await;
-            aura_realm::meta::persist(&r.mq, &def)?;
+        //
+        // Unless the realm is TEMPORARY (ADR-0050 §6): it outlives nothing, so
+        // the row, the schema copy inside it and the blob beneath it would be
+        // bytes written only to be discarded with the realm. The schema is not
+        // lost, though — it rides to `register_type_with` below, which is where
+        // a temporary realm's plan resolves it from.
+        let persistent = !realm.lock().await.is_ephemeral();
+        if persistent {
+            if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
+                def.schema = introspected.clone();
+                let r = realm.lock().await;
+                aura_realm::meta::persist(&r.mq, &def)?;
+            }
         }
         // Content addressing covers remote types too (ADR-0027): the
         // dispatch arm references `sha256(source)`, and the serving
         // source reads CodeBlob — so the bytes must enter the blob store
         // at upload. Remote definitions are not persisted (4.5b
         // scope: script booths); this write is the blob's only home for
-        // them, deliberately without a definition row.
-        if let aura_booth::Body::Remote { ref source, .. } = booth.body {
-            let r = realm.lock().await;
-            aura_realm::meta::put_blob(
-                &r.mq,
-                aura_realm::meta::code_hash(source),
-                source.as_bytes(),
-            )?;
+        // them, deliberately without a definition row. A temporary realm
+        // serves no remote code across a boundary, so it writes no blob
+        // either (ADR-0051 §4: nothing crosses out of it but frames).
+        if persistent {
+            if let aura_booth::Body::Remote { ref source, .. } = booth.body {
+                let r = realm.lock().await;
+                aura_realm::meta::put_blob(
+                    &r.mq,
+                    aura_realm::meta::code_hash(source),
+                    source.as_bytes(),
+                )?;
+            }
         }
-        realm.lock().await.register_type(booth);
+        // ONE call for both kinds: the realm decides where its ns and schema
+        // come from (rows for a persisted one, its own memory for a temporary
+        // one). The introspected copy is handed over so the temporary side has
+        // something to plan from.
+        realm
+            .lock()
+            .await
+            .register_type_with(booth, introspected);
         Ok(())
     }
 
@@ -360,7 +389,7 @@ impl Engine {
         // Same introspection + persistence path as register() (ADR-0026 §3:
         // the ctx.store plan resolves from the persisted interface_schema —
         // a named-realm type without it has no ctx.store surface).
-        self.register_inner(booth, &ns.realm()).await
+        self.register_into(&ns.realm(), booth).await
     }
 
     /// Realm-scoped call (explicit realm name — an application decision,

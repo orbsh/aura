@@ -45,32 +45,55 @@ impl Realm {
         arc
     }
 
-    /// A realm over a store that is ALREADY prefix-bound to `id` (ADR-0050 §2:
-    /// the id is the identity, `[u32 BE id]` is the prefix). The two are
-    /// checked against each other: a store that is not bound to the id it is
-    /// handed would be a realm whose keys live somewhere else, and there is
-    /// no unprefixed realm left to fall back to.
+    /// A realm over a store that is ALREADY bound to `id` (ADR-0050 §2: the id
+    /// is the identity, `[u32 BE id]` is the prefix).
     ///
-    /// Production realms come from `RealmSet::open`; a test that wants one
-    /// binds a fresh in-memory engine the same way (`MqStore::for_realm`).
+    /// The two are checked against each other, and the check differs by kind:
+    ///
+    /// - a PERSISTED realm's store must be prefix-bound to its id — a store
+    ///   that is not would be a realm whose keys live somewhere else, and there
+    ///   is no unprefixed realm left to fall back to.
+    /// - a TEMPORARY realm (`Ephemeral`) owns no slice of any persistent
+    ///   keyspace: its store must be an in-memory engine with no prefix at all
+    ///   (ADR-0050 §5/§6). Refusing anything else HERE is what makes "nothing
+    ///   in a temporary realm is persisted" a property of the realm rather than
+    ///   a promise kept by every write path below it.
+    ///
+    /// Production realms come from `RealmSet::open` and
+    /// `RealmSet::create_ephemeral`.
     pub fn with_mq(id: crate::RealmId, mq_store: mq::MqStore) -> anyhow::Result<Self> {
-        let Some(prefix) = id.storage_prefix() else {
-            anyhow::bail!(
-                "realm {id}: ephemeral realms are not implemented yet (ADR-0050 §5/§6, step 1b)"
-            );
-        };
-        if !mq_store.prefix().starts_with(&prefix) {
-            anyhow::bail!(
-                "realm {id}: this store is not prefix-bound to it (prefix {:02x?}) — \
-                 a realm's keys must live under its own id",
-                mq_store.prefix()
-            );
+        match id.storage_prefix() {
+            Some(prefix) => {
+                if !mq_store.prefix().starts_with(&prefix) {
+                    anyhow::bail!(
+                        "realm {id}: this store is not prefix-bound to it (prefix {:02x?}) — \
+                         a realm's keys must live under its own id",
+                        mq_store.prefix()
+                    );
+                }
+            }
+            None => {
+                if !mq_store.is_memory() {
+                    anyhow::bail!(
+                        "realm {id}: a temporary realm's store is memory and only memory \
+                         (ADR-0050 §6) — this handle addresses a persistent engine"
+                    );
+                }
+                if !mq_store.prefix().is_empty() {
+                    anyhow::bail!(
+                        "realm {id}: a temporary realm binds no prefix (prefix {:02x?}) — its \
+                         store is an engine of its own, not a slice of another realm's",
+                        mq_store.prefix()
+                    );
+                }
+            }
         }
         Ok(Self {
             id,
             types: HashMap::new(),
             instances: HashMap::new(),
             queue_capacity: 64,
+            ephemeral_ns: id.persisted().is_none().then(crate::type_ns::TypeNs::new),
             mq: mq_store.clone(),
             stops: crate::stop::Stops::default(),
             idle_ttl: Duration::from_secs(30),
@@ -89,14 +112,22 @@ impl Realm {
             dead_events: event::DeadEvents::default(),
             // The registry's schemas are compile-time constants, so a failure here is a bug in
             // this crate, not a condition to report — the same shape `json_response` uses for its
-            // own infallible encode.
-            #[allow(clippy::expect_used)]
+            // own infallible encode. (`unwrap_in_result` joins `expect_used` in the allow: this
+            // fn returns a `Result`, but THIS value is not a fallible step in it.)
+            #[allow(clippy::expect_used, clippy::unwrap_in_result)]
             resources: crate::resources::Registry::new(mq_store.clone())
                 .expect("the resource registry's own schemas are fixed at compile time"),
             // Placeholder; the real handle lands right after the realm
             // is wrapped in its Arc (the driver needs the SharedRealm).
             timers: timer::TimerHandle::detached(),
         })
+    }
+
+    /// Is this realm the TEMPORARY kind? (ADR-0050 §5: it persists nothing, so
+    /// every path that would write a row — a definition, its schema, a type
+    /// dictionary entry — asks this first and takes the memory route instead.)
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral_ns.is_some()
     }
 
     pub(crate) async fn instance(

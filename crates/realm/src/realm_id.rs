@@ -8,10 +8,11 @@
 //! table, then in the persistent one" is decidable only if the tag says which
 //! table to look in.
 //!
-//! Only the `Persisted` arm is implemented (step 1a). `Ephemeral` exists so
-//! the type is settled and so a caller that reaches for it gets a stated
-//! refusal (`MqStore::for_realm`) instead of a realm that silently writes
-//! somewhere. Ephemeral realms arrive in step 1b (ADR-0050 §5/§6, ADR-0051).
+//! Only two arms, and both are implemented. `Persisted` is allocated from the
+//! `realms` table and prefixes its keys with `[u32 BE id]`; `Ephemeral` is a
+//! uuidv7 minted in-process, backed by an in-memory store, and never written
+//! anywhere (ADR-0050 §5/§6, ADR-0051). The distinction is the TAG, not the
+//! width — see the type's own doc.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,15 +29,25 @@ pub enum RealmId {
     /// rows).
     Persisted(u32),
     /// A uuidv7 minted in-process; never reaches storage, so it has no
-    /// prefix and no row. NOT IMPLEMENTED YET (step 1b).
+    /// prefix and no row. Its realm's store is an in-memory engine of its own
+    /// (`MqStore::mem`), and it ceases to exist with the realm.
     Ephemeral(u128),
 }
 
 impl RealmId {
+    /// Mint a temporary realm's identity: a version-7 uuid from the generator
+    /// this workspace already carries (okm's `Uuid7` — no second uuid
+    /// dependency). v7 rather than v4 because byte order is time order, so a
+    /// dump or a log sorted by id is also sorted by age (ADR-0050 §1).
+    pub fn ephemeral_now() -> Self {
+        Self::Ephemeral(u128::from_be_bytes(*okm_core::Uuid7::now().as_bytes()))
+    }
+
     /// The storage prefix of this id — `[u32 BE id]` for a persisted realm
     /// (ADR-0050 §2). `None` for the ephemeral kind: it writes nothing, so
-    /// there is no prefix for it to be, and a caller that needs one is
-    /// asking for a realm kind this step does not build.
+    /// there is no prefix for it to be, and a caller that needs one is asking
+    /// to bind a slice of the engine's keyspace to a realm that owns none
+    /// (`MqStore::for_realm` says so by name).
     pub fn storage_prefix(self) -> Option<[u8; 4]> {
         match self {
             Self::Persisted(id) => Some(id.to_be_bytes()),
@@ -110,5 +121,17 @@ mod tests {
         assert_eq!(RealmId::Persisted(1).storage_prefix(), Some([0, 0, 0, 1]));
         assert_eq!(RealmId::Persisted(258).storage_prefix(), Some([0, 0, 1, 2]));
         assert_eq!(RealmId::Ephemeral(1).storage_prefix(), None);
+    }
+
+    #[test]
+    fn a_minted_ephemeral_id_is_a_fresh_v7() {
+        let (a, b) = match (RealmId::ephemeral_now(), RealmId::ephemeral_now()) {
+            (RealmId::Ephemeral(a), RealmId::Ephemeral(b)) => (a, b),
+            _ => panic!("the mint is the ephemeral kind"),
+        };
+        assert_ne!(a, b, "two temporary realms never share an identity");
+        let bytes = a.to_be_bytes();
+        assert_eq!(bytes[6] >> 4, 7, "version nibble says uuidv7");
+        assert_eq!(bytes[8] >> 6, 0b10, "RFC 9562 variant");
     }
 }

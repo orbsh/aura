@@ -322,6 +322,12 @@ impl BoothDef {
 
 /// The type's storage ns (ADR-0026): registry resolve (no allocation —
 /// unregistered types have no ns; the caller registers first).
+///
+/// This is the PERSISTED realm's answer, read from the `BoothName` rows its
+/// registration wrote. A temporary realm never asks: it has no rows, so its ns
+/// comes from `type_ns::TypeNs`, the counter that lives as long as it does
+/// (ADR-0050 §6). `Realm::register_type_with` is the seam where the two are
+/// chosen between.
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {

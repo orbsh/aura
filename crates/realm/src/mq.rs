@@ -331,6 +331,14 @@ impl MqStore {
     pub fn prefix(&self) -> &[u8] {
         &self.prefix
     }
+    /// Is this handle backed by the in-memory engine? A temporary realm's
+    /// invariant (ADR-0050 §6 — nothing in it is persisted) is checked against
+    /// this at construction: with memory as the WHOLE store, "wrote nothing"
+    /// is a property of the handle rather than a promise about every write
+    /// path downstream.
+    pub fn is_memory(&self) -> bool {
+        matches!(self.inner, MqEngine::Mem(_))
+    }
     /// A TYPE-NS-raw handle (ADR-0026 §4 wasm storage): prefix = the type's
     /// 2-byte ns, AFTER the realm prefix. This is the wasm full-power path's
     /// engine plane — the guest's in-module `Collection` emits RAW engine
@@ -361,14 +369,17 @@ impl MqStore {
     /// rename, and free of an encoding that has to be parsed to be read).
     ///
     /// An EPHEMERAL realm has no prefix to bind: it never writes, so asking
-    /// for a store for one is asking for step 1b, and this answers with that
-    /// instead of handing back an unqualified handle that would write into
-    /// the root keyspace.
+    /// for a slice of THIS keyspace for one is a request to store a realm's
+    /// state where it does not belong. A temporary realm's store is its own
+    /// in-memory engine (`MqStore::mem`, ADR-0050 §5/§6) — and this says so by
+    /// name instead of handing back an unqualified handle that would write
+    /// into the root keyspace.
     pub fn for_realm(inner: &Self, id: crate::realm_id::RealmId) -> anyhow::Result<Self> {
         let segment = id.storage_prefix().ok_or_else(|| {
             anyhow::anyhow!(
-                "realm {id}: ephemeral realms are not implemented yet (ADR-0050 §5/§6, step 1b) \
-                 — an ephemeral realm never reaches storage, so it has no store to bind"
+                "realm {id}: a temporary realm is not a slice of the engine's keyspace — its \
+                 store is an in-memory engine of its own (ADR-0050 §5/§6, `MqStore::mem`), so \
+                 there is no prefix here to bind"
             )
         })?;
         let mut p = segment.to_vec();

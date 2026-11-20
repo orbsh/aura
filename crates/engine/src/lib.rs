@@ -8,8 +8,10 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Engine {
-    /// The system/default realm (back-compat: single-node tests, CLI
-    /// echo). Multi-realm surfaces use `realm_set` instead.
+    /// The `main` realm (ADR-0050 §4): the realm the engine's own surfaces
+    /// work against — CLI echo, single-node tests, the boot reload. It is an
+    /// ordinary member of `realm_set` (id 1 on a fresh store), not an
+    /// unprefixed default; multi-realm surfaces resolve others by name.
     pub realm: SharedRealm,
     /// The realm set (Phase 3.6 mechanism, ADR-0028 naming; binding
     /// dimension demoted to an application decision per PLAN 4.10):
@@ -26,28 +28,33 @@ impl Engine {
     pub async fn start(config: &aura_config::EngineConfig) -> anyhow::Result<Self> {
         let mq = Self::open_planes(&config.engine, config.data_dir.clone(), &config.node_id)?;
         let cursor_ttl = Duration::from_secs(config.cursor_ttl_secs);
-        let realm: SharedRealm = Realm::with_mq(mq.clone())
-            .with_code_base_url(config.code_base_url.clone())
-            .with_cursor_ttl(cursor_ttl)
-            .shared_async()
-            .await;
-        Realm::spawn_evictor(&realm);
         // Realms share the SAME okm engine (one fjall keyspace); each
         // realm derives a prefix-bound handle at construction —
         // state documents AND mq tables ride it (ADR-0018 steps 1+2).
         let realm_set = Arc::new(
             aura_realm::realm_set::RealmSet::with_mq_and_code_base(
-                mq.clone(),
+                mq,
                 config.code_base_url.clone(),
             )
             .with_cursor_ttl(cursor_ttl),
         );
+        // ADR-0050 §4: there is no unprefixed realm. `main` is an ordinary
+        // persisted realm in the set — opened by name, prefixed by id like
+        // every other one — and IT is the handle the engine's own surfaces
+        // (register/emit/call, the boot reload) work against. Nothing here
+        // writes a key that belongs to no realm.
+        let main = realm_set.open(aura_realm::realm_set::MAIN_REALM).await?;
+        let realm: SharedRealm = main.realm();
+        let main_store = main.store();
+        Realm::spawn_evictor(&realm);
         // Boot reload (Phase 4.5b): persisted script booths re-register from
         // the meta store — definitions outlive the process.
         let engine = Self { realm, realm_set };
         // Boot reload (ADR-0025 Plan A): definitions live in the DATA
-        // plane's okm instance (booth_defs beside mq/state).
-        for def in aura_realm::meta::load_all(&mq)? {
+        // plane's okm instance (booth_defs beside mq/state) — which is
+        // `main`'s own slice of the keyspace (ADR-0050): the plan's rows are
+        // read from the realm prefix they were written under.
+        for def in aura_realm::meta::load_all(&main_store)? {
             engine.register(def.to_type()).await?;
         }
         Ok(engine)
@@ -348,12 +355,12 @@ impl Engine {
     /// mechanism; what dimension the realm binds (user, project, nothing)
     /// is the application's choice. No credential derivation exists
     /// anywhere on this path.
-    pub async fn register_in(&self, realm: &str, booth: BoothType) {
-        let ns = self.realm_set.realm_of(realm).await;
+    pub async fn register_in(&self, realm: &str, booth: BoothType) -> anyhow::Result<()> {
+        let ns = self.realm_set.open(realm).await?;
         // Same introspection + persistence path as register() (ADR-0026 §3:
         // the ctx.store plan resolves from the persisted interface_schema —
         // a named-realm type without it has no ctx.store surface).
-        let _ = self.register_inner(booth, &ns.realm()).await;
+        self.register_inner(booth, &ns.realm()).await
     }
 
     /// Realm-scoped call (explicit realm name — an application decision,
@@ -367,7 +374,7 @@ impl Engine {
         handler: &str,
         args: serde_json::Value,
     ) -> anyhow::Result<aura_booth::call::Waited> {
-        let ns = self.realm_set.realm_of(realm).await;
+        let ns = self.realm_set.open(realm).await?;
         Realm::call(&ns.realm(), None, target, handler, args)
             .await?
             .wait()
@@ -383,7 +390,7 @@ impl Engine {
         event: &str,
         data: serde_json::Value,
     ) -> anyhow::Result<()> {
-        let ns = self.realm_set.realm_of(realm).await;
+        let ns = self.realm_set.open(realm).await?;
         Realm::emit(&ns.realm(), emitter, event, data).await
     }
 

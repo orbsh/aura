@@ -284,7 +284,9 @@ impl okm_core::storage::SharedVirtualStorage for MqEngine {
     }
 }
 
-/// The mq store: an okm engine handle + an optional realm prefix,
+/// The mq store: an okm engine handle + the realm prefix bound at
+/// construction (empty only for the ROOT handle, which addresses the
+/// fixed-root tables — the `realms` table — and never a realm's data),
 /// itself an okm VirtualStorage (the tables see a clean key space; the
 /// prefix is bound at construction — realm escape is not expressible,
 /// the okm nesting rule / aura Phase 3.6). Values are NATIVE BYTES — the
@@ -298,8 +300,11 @@ pub struct MqStore {
 }
 
 impl MqStore {
-    /// The mq engine, unqualified (system realm). Fjall: the engine's own
-    /// database + keyspace name (okm `FjallStore::open/from_db`).
+    /// The mq engine, unqualified — the ROOT handle. It addresses the
+    /// fixed-root tables (ADR-0050 §3's `realms` row) and nothing else: no
+    /// realm's data is reachable through it, because every realm's keys are
+    /// prefixed. Fjall: the engine's own database + keyspace name (okm
+    /// `FjallStore::open/from_db`).
     pub fn fjall(store: okm_core::FjallStore) -> Self {
         Self::with_engine(MqEngine::Fjall(store))
     }
@@ -313,40 +318,65 @@ impl MqStore {
             inner: engine,
         }
     }
-    /// A realm-qualified handle: every key enters as
-    /// `[prefix][inner key]`; the inner engine stays untouched.
-    /// `PrefixStore`-style 2-byte length discipline for the segment.
-    /// A TYPE-NS-raw handle (ADR-0026 §4 wasm storage): prefix = the
-    /// type's 2-byte ns. This is the wasm full-power path's engine
-    /// plane — the guest's in-module `Collection` emits RAW engine
+    /// The raw engine behind this handle: a key dump, and the one writer that
+    /// must reach OUTSIDE a prefix (`RealmSet::destroy` deleting a realm's
+    /// whole range). Every other path writes through the handle, so this is
+    /// deliberately the narrow surface: an engine, not a store.
+    pub fn root(&self) -> &MqEngine {
+        &self.inner
+    }
+    /// The prefix this handle prepends to every key (empty on the root
+    /// handle) — the identity of the slice, for tooling that has to say
+    /// which realm a dumped row belongs to.
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+    /// A TYPE-NS-raw handle (ADR-0026 §4 wasm storage): prefix = the type's
+    /// 2-byte ns, AFTER the realm prefix. This is the wasm full-power path's
+    /// engine plane — the guest's in-module `Collection` emits RAW engine
     /// calls (okm-wire OpFrames) and the host answers with this handle
     /// (the guest code is the trusted static-mode writer; the
     /// no-bypass-guard ruling covers it).
+    ///
+    /// The realm prefix comes FIRST (ADR-0050 §2): "delete this realm" is a
+    /// range over `[u32 BE id]`, and a key that began with its ns would sit
+    /// outside that range — destroy would silently leave the type's storage
+    /// behind. It also keeps the two number spaces apart: a booth ns lives
+    /// inside a realm prefix, so at the root only the root band can appear.
     ///
     /// Handles are CHEAP CLONES sharing the one engine (okm ADR-0026:
     /// `VirtualStorage` writes take `&self` — no outer Mutex, no
     /// per-handle lock boundary; aura ADR-0030 records the ruling).
     pub fn ns_raw(inner: &Self, ns: u16) -> Self {
-        let prefix = ns.to_be_bytes().to_vec();
-        let mut p = prefix;
-        p.extend_from_slice(&inner.prefix);
+        let mut p = inner.prefix.clone();
+        p.extend_from_slice(&ns.to_be_bytes());
         Self {
             prefix: p,
             inner: inner.inner.clone(),
         }
     }
-    /// The realm-prefixed handle (ADR-0028: the outer isolation axis is
-    /// a realm, not a "namespace"): `[u16 BE len][realm name]` prepended
-    /// inside the engine handle for every stored key.
-    pub fn for_realm(inner: &Self, name: &str) -> Self {
-        let mut prefix = (name.len() as u16).to_be_bytes().to_vec();
-        prefix.extend_from_slice(name.as_bytes());
-        let mut p = prefix.clone();
+    /// The realm-qualified handle (ADR-0028: the outer isolation axis is a
+    /// realm, not a "namespace"; ADR-0050 §2: the identity is the ID, so the
+    /// segment is `[u32 BE id]` — shorter than a name, stable across a
+    /// rename, and free of an encoding that has to be parsed to be read).
+    ///
+    /// An EPHEMERAL realm has no prefix to bind: it never writes, so asking
+    /// for a store for one is asking for step 1b, and this answers with that
+    /// instead of handing back an unqualified handle that would write into
+    /// the root keyspace.
+    pub fn for_realm(inner: &Self, id: crate::realm_id::RealmId) -> anyhow::Result<Self> {
+        let segment = id.storage_prefix().ok_or_else(|| {
+            anyhow::anyhow!(
+                "realm {id}: ephemeral realms are not implemented yet (ADR-0050 §5/§6, step 1b) \
+                 — an ephemeral realm never reaches storage, so it has no store to bind"
+            )
+        })?;
+        let mut p = segment.to_vec();
         p.extend_from_slice(&inner.prefix);
-        Self {
+        Ok(Self {
             prefix: p,
             inner: inner.inner.clone(),
-        }
+        })
     }
     fn qualified(&self, key: &[u8]) -> Vec<u8> {
         let mut k = self.prefix.clone();

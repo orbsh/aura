@@ -31,8 +31,14 @@ fn dir(name: &str) -> std::path::PathBuf {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_durable_registration_is_a_row_and_a_cancel_takes_it_back() {
     let dir = dir("register");
-    let store = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
-    let realm = Realm::with_mq(store.clone()).shared_async().await;
+    // The realm's slice of the engine (ADR-0050 §2: `[u32 BE id]`), bound
+    // once and shared: the test reads the same rows the realm writes.
+    let root = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
+    let store = MqStore::for_realm(&root, aura_realm::RealmId::Persisted(1)).unwrap();
+    let realm = Realm::with_mq(aura_realm::RealmId::Persisted(1), store.clone())
+        .unwrap()
+        .shared_async()
+        .await;
     let handle = realm.lock().await.timers.clone();
 
     let id = handle.register_durable(target(), "wake-for-compression".into(), Duration::from_secs(600));
@@ -71,7 +77,8 @@ async fn a_durable_registration_is_a_row_and_a_cancel_takes_it_back() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn boot_arms_what_the_table_owes_and_a_due_row_fires_once() {
     let dir = dir("restore");
-    let store = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
+    let root = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
+    let store = MqStore::for_realm(&root, aura_realm::RealmId::Persisted(1)).unwrap();
 
     // A row written by a process that then went away: due 120 ms from now.
     let due = std::time::SystemTime::now()
@@ -84,7 +91,10 @@ async fn boot_arms_what_the_table_owes_and_a_due_row_fires_once() {
         .unwrap();
 
     // Boot: the wheel is built FROM the table, not from memory.
-    let realm = Realm::with_mq(store.clone()).shared_async().await;
+    let realm = Realm::with_mq(aura_realm::RealmId::Persisted(1), store.clone())
+        .unwrap()
+        .shared_async()
+        .await;
     let table = timer_entry::table(store);
 
     let mut fired = false;

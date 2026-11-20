@@ -77,8 +77,8 @@ fn counter() -> BoothType {
 async fn same_type_key_isolated_per_realm() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Same type, same key, two users: independent state.
-    engine.register_in("alice", counter()).await;
-    engine.register_in("bob", counter()).await;
+    engine.register_in("alice", counter()).await.unwrap();
+    engine.register_in("bob", counter()).await.unwrap();
 
     let target = InstanceId {
         booth_type: "counter".into(),
@@ -118,7 +118,7 @@ async fn same_type_key_isolated_per_realm() {
         let engine_ns = engine.realm_set.clone();
         let target = target.clone();
         async move {
-            let realm = engine_ns.realm_of(&ns).await;
+            let realm = engine_ns.open(&ns).await.unwrap();
             let waited = Realm::call(
                 &realm.realm(),
                 None,
@@ -152,11 +152,11 @@ async fn events_do_not_cross_realms() {
     let engine = Engine::start(&Default::default()).await.unwrap();
     // Same event subscription in two realms; the emit goes to one.
     let listener = || BoothType::script("listener", "steel", LISTENER);
-    engine.register_in("alice", listener()).await;
-    engine.register_in("bob", listener()).await;
+    engine.register_in("alice", listener()).await.unwrap();
+    engine.register_in("bob", listener()).await.unwrap();
 
     for ns in ["alice", "bob"] {
-        let ns_realm = engine.realm_set.realm_of(ns).await;
+        let ns_realm = engine.realm_set.open(ns).await.unwrap();
         ns_realm
             .realm()
             .lock()
@@ -189,7 +189,7 @@ async fn events_do_not_cross_realms() {
         let engine_ns = engine.realm_set.clone();
         let target = target.clone();
         async move {
-            let realm = engine_ns.realm_of(&ns).await;
+            let realm = engine_ns.open(&ns).await.unwrap();
             let waited = Realm::call(
                 &realm.realm(),
                 None,
@@ -223,7 +223,7 @@ async fn events_do_not_cross_realms() {
 #[tokio::test]
 async fn type_registered_in_one_realm_is_unknown_in_another() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    engine.register_in("alice", counter()).await;
+    engine.register_in("alice", counter()).await.unwrap();
 
     // Bob's realm has no "counter" type: target resolution fails —
     // this is the isolation expressed as a call error.
@@ -245,10 +245,16 @@ async fn type_registered_in_one_realm_is_unknown_in_another() {
 #[tokio::test]
 async fn realms_are_lazy_and_observable() {
     let engine = Engine::start(&Default::default()).await.unwrap();
-    assert!(engine.realm_set.live().await.is_empty());
-    engine.register_in("alice", counter()).await;
-    let _ = engine.realm_set.realm_of("bob").await;
-    let mut live = engine.realm_set.live().await;
-    live.sort();
-    assert_eq!(live, vec!["alice".to_string(), "bob".to_string()]);
+    // `main` is a realm IN the set (ADR-0050 §4) — the boot opened it, so it
+    // has a row and a name before anyone asks for another realm. There is no
+    // "system realm plus named realms" tier left for `live()` to prove absent.
+    assert_eq!(engine.realm_set.live().await.unwrap(), vec!["main".to_string()]);
+    engine.register_in("alice", counter()).await.unwrap();
+    let _ = engine.realm_set.open("bob").await.unwrap();
+    // The persistent half of the answer is a QUERY over the `realms` table,
+    // not a listing of what is in memory: both named realms have rows.
+    assert_eq!(
+        engine.realm_set.live().await.unwrap(),
+        vec!["alice".to_string(), "bob".to_string(), "main".to_string()]
+    );
 }

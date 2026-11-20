@@ -12,6 +12,7 @@
 //! structure, and a restart rebuilds it from these rows.
 
 use crate::mq::MqStore;
+use okm_core::model::parts;
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 
 /// The event-plane band's timer table (aura ADR-0040).
@@ -83,21 +84,31 @@ pub fn due_by(
     table: &TimerTable,
     now_ms: u64,
 ) -> okm_core::Result<Vec<(TimerEntryKey, Option<TimerEntry>)>> {
-    let hits = table
-        .scan_range::<__OkmIndex_TimerEntry_by_due>(
-            &[],
-            Some(&now_ms.saturating_add(1).to_be_bytes()),
-        )
-        .map(|hit| hit.map(|(_, key, row)| (key, row)))
-        .collect::<okm_core::Result<_>>()?;
-    Ok(decoded(hits))
+    let end = now_ms.saturating_add(1).to_be_bytes();
+    rows(table, Some(&end))
 }
 
 /// The whole table, oldest first — what a boot reads to rebuild the wheel.
 pub fn all(table: &TimerTable) -> okm_core::Result<Vec<(TimerEntryKey, Option<TimerEntry>)>> {
+    rows(table, None)
+}
+
+/// The one read both verbs share: a `by_due` window, answered as `(key, row)`.
+///
+/// The KEY and the ROW are the only parts asked for, and that is load-bearing:
+/// an entry key is `[header][slot][due 8B][id 16B]`, so a key in the same window
+/// that is not one of this index's entries has no field segment at all — and
+/// decoding it as `by_due`'s `u64` slices 8 bytes out of nothing and panics
+/// inside the decoder, before any caller can filter anything. Not asking for the
+/// column keeps that arithmetic out of the path; `decoded` then drops what is
+/// not a full entry key.
+fn rows(
+    table: &TimerTable,
+    end: Option<&[u8]>,
+) -> okm_core::Result<Vec<(TimerEntryKey, Option<TimerEntry>)>> {
     let hits = table
-        .scan_range::<__OkmIndex_TimerEntry_by_due>(&[], None)
-        .map(|hit| hit.map(|(_, key, row)| (key, row)))
+        .scan_range::<__OkmIndex_TimerEntry_by_due>(&[], end)
+        .parts::<(parts::Key, parts::Row)>()
         .collect::<okm_core::Result<_>>()?;
     Ok(decoded(hits))
 }
@@ -105,11 +116,27 @@ pub fn all(table: &TimerTable) -> okm_core::Result<Vec<(TimerEntryKey, Option<Ti
 /// An index scan can answer with a PARTIAL primary key (the probe did not reach
 /// the key's tail); a timer entry is only real when the whole key was taken, so
 /// the partials are dropped rather than guessed at.
+///
+/// A key that is not this table's is dropped the same way, and it can BE in the
+/// window: the ns and the slot are only the first four bytes of an entry key, so
+/// in one realm every higher-ns table — and every row of this table under a
+/// shorter, older key layout — sorts *above* this index's entries. A foreign key
+/// has no row behind it under this table's primary slot (it names another
+/// ns/slot entirely), which is what `row.is_some()` recognises: a hit whose row
+/// is absent is not a timer. That is a skip, not a decode — a partial key is
+/// still reported as what it is (dropped), never turned into a plausible entry.
+///
+/// The `Option` in the answer therefore never survives this filter; it stays in
+/// the signature because it is the scan's own shape (as [`due_by`] documented:
+/// a truncated key cannot fetch a row).
 fn decoded(
-    hits: Vec<(okm_core::model::key::PrefixKey<TimerEntryKey>, Option<TimerEntry>)>,
+    hits: Vec<(
+        okm_core::model::key::PrefixKey<TimerEntryKey>,
+        Option<TimerEntry>,
+    )>,
 ) -> Vec<(TimerEntryKey, Option<TimerEntry>)> {
     hits.into_iter()
-        .filter(|(key, _)| key.taken == TimerEntryKey::KEY_LEN)
+        .filter(|(key, row)| key.taken == TimerEntryKey::KEY_LEN && row.is_some())
         .map(|(key, document)| (key.decoded, document))
         .collect()
 }

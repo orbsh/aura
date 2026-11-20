@@ -42,14 +42,20 @@ The variant is explicit, not inferred from width. Width is a property of the var
 
 7. **Realms do not nest.** A temporary realm cannot create another realm. Jobs may nest (effector ADR-0005) — that is a fact about work, not about isolation — but the isolation axis is one level deep: many realms, no parents.
 
-## The migration (one pass, no compatibility mode)
+## No migration: the store starts empty
 
-The unprefixed keyspace becomes `main`'s:
+There is no data worth carrying. The development store is a disposable artifact of the old layout, so
+the unprefixed keyspace is DELETED rather than rewritten, and the new layout begins on an empty store
+with the `realms` table holding a single row (`1 → main`).
 
-1. Create the `realms` table at its fixed root; insert `1 → ("main", now)`.
-2. Walk every key in the existing keyspace, write it back with `[u32 BE 1]` prepended. fjall has no in-place key rewrite, so this is a copy into a fresh keyspace followed by a swap of the open handles — offline, one shot, with a key count before and after as the check.
-3. Known rows are spot-checked after the swap: the booth-type registry, one type's storage collections, one mq table.
-4. No unprefixed write path remains, so a stale writer cannot re-create the old space: the engine no longer has a handle that writes without an id.
+That choice buys more than the afternoon it saves. A migration would have left two paths to keep in
+step — a reader that understands unprefixed keys and one that does not — and every future change would
+have had to keep both honest. Deleting the old space means the code has exactly one path from the first
+commit that reads an id, and no compatibility mode exists to grow stale.
+
+What it costs is stated rather than hidden: anything in that store is gone. It was a development
+store, nothing references it across a restart that matters, and the alternative was a rewrite tool that
+would itself need to be correct about every table ever written.
 
 ## Consequences
 

@@ -23,6 +23,7 @@ pub mod events;
 pub mod instance;
 pub mod meta;
 pub mod mq;
+pub mod realm_id;
 pub mod realm_set;
 pub mod registry;
 pub mod remote;
@@ -40,6 +41,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use realm_id::RealmId;
+
 /// Shared realm handle: the dispatcher closes over this.
 pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 
@@ -50,6 +53,10 @@ pub type SharedRealm = Arc<tokio::sync::Mutex<Realm>>;
 pub const DEFAULT_CURSOR_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 
 pub struct Realm {
+    /// This realm's identity (ADR-0050 §1): what its keys are prefixed with
+    /// and what a log line or a destroy names it by. Bound at construction,
+    /// like the store prefix it must agree with.
+    pub id: RealmId,
     /// Registered booth types by name.
     types: HashMap<String, BoothType>,
     /// Live instances by (type, key) — the key is the call-model variant
@@ -173,15 +180,6 @@ pub(crate) async fn dispatch_call(
             "cold target cannot return a value to a parked caller (call {}); emit instead",
             id.0
         )),
-    }
-}
-
-impl Default for Realm {
-    fn default() -> Self {
-        // State + mq both ride okm's in-memory engine through the document
-        // model (ADR-0018): there is no JSON state store left to default
-        // to — and none is needed.
-        Self::with_mq(crate::mq::MqStore::mem())
     }
 }
 
@@ -319,7 +317,14 @@ fn remote_type(name: &str, node_alias: &str) -> BoothType {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mount_inherits_the_account_of_the_turn_it_acts_for() {
-    let realm = Realm::with_mq(MqStore::mem()).shared_async().await;
+    // A realm is built over a store bound to its id (ADR-0050): the test
+    // binds a fresh in-memory engine the way `RealmSet::open` does.
+    let root = MqStore::mem();
+    let store = MqStore::for_realm(&root, crate::RealmId::Persisted(1)).unwrap();
+    let realm = Realm::with_mq(crate::RealmId::Persisted(1), store)
+        .unwrap()
+        .shared_async()
+        .await;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     {
         let mut r = realm.lock().await;

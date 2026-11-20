@@ -740,7 +740,17 @@ async fn expired_cursor_forfeits_its_backlog() {
     use aura_realm::mq;
     use std::time::Duration;
 
-    let realm = std::sync::Arc::new(tokio::sync::Mutex::new(Realm::default()));
+    // A realm is bound to its id (ADR-0050 §2): a test binds a fresh
+    // in-memory engine the way `Engine::start` binds `main`.
+    let root = aura_realm::mq::MqStore::mem();
+    let bound = aura_realm::mq::MqStore::for_realm(
+        &root,
+        aura_realm::RealmId::Persisted(1),
+    )
+    .unwrap();
+    let realm = std::sync::Arc::new(tokio::sync::Mutex::new(
+        Realm::with_mq(aura_realm::RealmId::Persisted(1), bound).unwrap(),
+    ));
     let vs = realm.lock().await.mq.clone();
     // Two registered types on one event: the denominator's members.
     mq::route_put(

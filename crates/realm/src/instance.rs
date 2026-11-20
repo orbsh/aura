@@ -45,8 +45,29 @@ impl Realm {
         arc
     }
 
-    pub fn with_mq(mq_store: mq::MqStore) -> Self {
-        Self {
+    /// A realm over a store that is ALREADY prefix-bound to `id` (ADR-0050 §2:
+    /// the id is the identity, `[u32 BE id]` is the prefix). The two are
+    /// checked against each other: a store that is not bound to the id it is
+    /// handed would be a realm whose keys live somewhere else, and there is
+    /// no unprefixed realm left to fall back to.
+    ///
+    /// Production realms come from `RealmSet::open`; a test that wants one
+    /// binds a fresh in-memory engine the same way (`MqStore::for_realm`).
+    pub fn with_mq(id: crate::RealmId, mq_store: mq::MqStore) -> anyhow::Result<Self> {
+        let Some(prefix) = id.storage_prefix() else {
+            anyhow::bail!(
+                "realm {id}: ephemeral realms are not implemented yet (ADR-0050 §5/§6, step 1b)"
+            );
+        };
+        if !mq_store.prefix().starts_with(&prefix) {
+            anyhow::bail!(
+                "realm {id}: this store is not prefix-bound to it (prefix {:02x?}) — \
+                 a realm's keys must live under its own id",
+                mq_store.prefix()
+            );
+        }
+        Ok(Self {
+            id,
             types: HashMap::new(),
             instances: HashMap::new(),
             queue_capacity: 64,
@@ -75,7 +96,7 @@ impl Realm {
             // Placeholder; the real handle lands right after the realm
             // is wrapped in its Arc (the driver needs the SharedRealm).
             timers: timer::TimerHandle::detached(),
-        }
+        })
     }
 
     pub(crate) async fn instance(

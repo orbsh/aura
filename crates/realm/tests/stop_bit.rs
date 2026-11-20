@@ -45,7 +45,13 @@ fn a_stop_is_a_bit_per_instance_and_it_does_not_outlive_its_clear() {
 
 #[tokio::test]
 async fn the_realm_door_sets_exactly_the_activation_it_names() {
-    let realm = Realm::with_mq(MqStore::mem()).shared_async().await;
+    // Bound to an id (ADR-0050 §2), the way `RealmSet::open` binds `main`.
+    let root = MqStore::mem();
+    let store = MqStore::for_realm(&root, aura_realm::RealmId::Persisted(1)).unwrap();
+    let realm = Realm::with_mq(aura_realm::RealmId::Persisted(1), store)
+        .unwrap()
+        .shared_async()
+        .await;
     let a = at("turn", "device-a");
     let b = at("turn", "device-b");
 

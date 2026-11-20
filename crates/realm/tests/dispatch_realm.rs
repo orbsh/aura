@@ -199,20 +199,50 @@ fn a_job_leaves_the_parent_keyspace_byte_identical() {
             "the job published into the parent's event plane"
         );
 
-        // THE SWEEP: byte-identical, keys and values.
+        // THE SWEEP, restated for a world where frames exist. ADR-0051 §4 lets
+        // frames cross, so the parent's QUEUE PLANE may gain exactly the frame it
+        // was addressed — and nothing else, anywhere.
+        //
+        // The plane is excluded by NAMESPACE, not by trusting the frame to look
+        // distinctive: the mq tables are a fixed set of `ok_ns` numbers, so a job
+        // that managed to write state anywhere in the parent is caught here.
         let after = dump(&root);
+        let mq_ns = [20u16, 21, 22, 23, 25]; // mq.rs's `ok_ns` — the queue plane
+        // Key layout: the realm's 4-byte id, then okm's own entry header
+        // (`0xFF, version`) when the row went through a collection, then the
+        // namespace. A raw put (the probe row) has no header.
+        let ns_of = |key: &[u8]| -> Option<u16> {
+            let at = if key.get(4) == Some(&0xFF) { 6 } else { 4 };
+            key.get(at..at + 2)
+                .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        };
+        let state = |rows: Vec<(Vec<u8>, Vec<u8>)>| -> Vec<(Vec<u8>, Vec<u8>)> {
+            rows.into_iter()
+                .filter(|(k, _)| !matches!(ns_of(k), Some(ns) if mq_ns.contains(&ns)))
+                .collect()
+        };
+        let (state_before, state_after) = (state(before.clone()), state(after.clone()));
         assert_eq!(
-            before, after,
-            "a job's lifecycle changed the persistent keyspace"
+            state_before, state_after,
+            "a job changed the parent's STATE, not just its queue plane"
         );
-        // Named, so a failure says which key leaked if one ever does.
-        let before_keys: Vec<&Vec<u8>> = before.iter().map(|(k, _)| k).collect();
-        for (key, _) in &after {
-            assert!(
-                before_keys.contains(&key),
-                "a key the job added: {key:02x?}"
-            );
-        }
+        // Inside the plane, exactly the frame: the name the job emitted never
+        // became an event of the parent's own (asserted above as depth 0), and the
+        // one row added is the frame the dispatcher is addressed with.
+        let frames = aura_realm::mq::backlog(
+            &main.store(),
+            aura_realm::frame_path::JOB_FRAME_EVENT,
+            &aura_realm::mq::InstanceKey::Named("turn-1".to_string()),
+            0,
+        )
+        .expect("the parent's frame queue");
+        assert_eq!(frames.len(), 1, "one emit, one frame: {frames:?}");
+        assert_eq!(
+            frames[0].1["path"],
+            json!([{ "job": "job-keyspace", "op": 0 }]),
+            "the frame carries the path of the job and op that spoke"
+        );
+        assert_eq!(frames[0].1["event"], "job:test");
         // The set's memory half is back to exactly what it was.
         assert_eq!(set.live().await.expect("live"), live_before);
     });

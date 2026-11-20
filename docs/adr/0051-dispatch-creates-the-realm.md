@@ -34,7 +34,7 @@ The declarations arrive with the submission, because they are not expected to ex
 
 3. **A temporary realm inherits its parent's node view and placement policy.** It can address the same nodes under the same labels; it cannot widen that set. Without this, "temporary" would be a way to escape placement rules — a job could ask for a laptop by asking for a realm that sees laptops.
 
-4. **Nothing in a temporary realm is persisted.** Its type registry is not written to `interface_schema`, its storage namespaces come from the in-memory allocator rather than the persisted rows, and its mq store is a stand-in. The only thing that crosses the boundary is the frames the job produces, addressed to the booth that dispatched it.
+4. **Nothing in a temporary realm is persisted.** Its type registry is not written to `interface_schema`, its storage namespaces come from its own namespace band rather than rows that outlive the process, and its mq store is an engine of its own with no durability behind it (okm ADR-0072). The only thing that crosses the boundary is the frames the job produces, addressed to the booth that dispatched it.
 
 5. **Destroy is the last step of the job, not a separate chore.** Instances, resident executors, streams and in-flight calls are dropped with the realm; there is nothing in storage to delete, because nothing was written. A crash mid-job leaves no definition behind — which is the property the register/run/delete sequence could not promise.
 
@@ -58,12 +58,24 @@ The realm side of dispatch is implemented in `crates/realm/src/dispatch.rs` and 
 4. **Run.** The op list in order, each op with its `on_error`: `Fail` records the failure and stops the job, and its successors are reported `NotRun` with the reason (never dropped from a shorter list); `Skip` records it and continues; `Retry { times }` makes at most `times` **additional** attempts (effector ADR-0005: `times: 2` is three runs, not two); `Never` is exactly one attempt and is never re-entered. The outcome lists every op with its policy, its attempt count and its result.
 5. **Destroy.** `RealmSet::destroy` runs on every returning path — success, an op that stopped the job, a registration failure — and a failed destroy is an error rather than a field a caller might not read.
 
-`needs` is enforced as what effector ADR-0005 says it is: the set of ctx **services** an op is granted, refused before the op runs if the realm cannot grant one. `store` is granted exactly when the declaration gave the type storage (its plan is resolved from the same schema registration writes); `timer` is granted (the realm owns a timer plane and the entry dies with it); `emit` and `resource` are refused by name, because the channel out and the venue's grants are not part of this step.
+`needs` is enforced as what effector ADR-0005 says it is: the set of ctx **services** an op is granted. `store` is granted exactly when the declaration gave the type storage (its plan is resolved from the same schema registration writes); `timer` is granted (the realm owns a timer plane and the entry dies with it); `emit` is granted because the channel out exists — dispatch installs it before a declaration is registered, so "granted" is a fact rather than a promise; `resource` is refused by name, because the venue's grants are not part of this step.
+
+### The frames that cross, and where they land
+
+§4 allows one thing through the boundary, and this is it. Dispatch installs an outbound channel on the realm it minted (`Realm::frames_out`) before a declaration is registered; a temporary realm with no channel refuses its own emits rather than dropping them, so "the job emitted nothing" cannot be a silent state.
+
+The rule is **both, always**: an event the job's ops emit is delivered by the job's own router AND posted to the dispatcher. Filtering — "these are internal, those are news" — would need a per-type declaration that does not exist, and getting it wrong hides exactly the frames an operator is looking for. So every frame leaves, and the local plane is unaffected.
+
+Delivery is **directed, not routed**: the frame is appended to the dispatching booth's queue on the parent realm (`job.frame`, partition = the booth's key), because a dispatcher is not a subscriber to an event — it is the recipient of a message about a job it submitted. Two consequences follow: the parent needs no route row to receive frames, and a dispatcher that is not live gets a backlog instead of a lost frame.
+
+Every frame carries its **path** — `[{job, op}]`, the chain for a nested job, with the op step rewritten before each call because ops run one at a time. The address is `Job::booth`, filled by the dispatcher itself, so a job cannot rename its audience.
+
+One-way is structural, not a rule: a job's realm receives frames only from its own `@on` routes, and only the realm writes those queues. There is no inbound door because none was built.
 
 ### The four boundaries, and what enforces each
 
 - **(a) a booth cannot write the parent's store — STRUCTURAL.** `Realm::with_mq` refuses a non-memory store for an `Ephemeral` id, and `MqStore::for_realm` refuses to bind a slice of the engine's keyspace to one; both refusals name the reason. A production parent is fjall, so the parent's engine cannot be handed to a job's realm at all. (A memory venue's root handle is indistinguishable from a fresh in-memory engine, which is why the only ephemeral constructor is on the set: `create_ephemeral` mints its own store.)
-- **(b) it cannot publish MQ to the parent — STRUCTURAL.** Every queue, cursor and route row is written through `Realm::mq`, the realm's own engine; there is no cross-realm emit to express. Proven rather than asserted: a job that writes through a plan AND emits leaves a real fjall keyspace byte-identical and the parent's queue for that event at depth 0.
+- **(b) it cannot publish MQ to the parent — STRUCTURAL.** Every queue, cursor and route row is written through `Realm::mq`, the realm's own engine; there is no cross-realm emit to express. Proven rather than asserted: a job that writes through a plan AND emits leaves the parent's STATE namespaces byte-identical, leaves the parent's queue for the emitted event at depth 0, and adds exactly one row to the parent's queue plane — the frame, under `job.frame`, addressed to the dispatcher.
 - **(c) it cannot open a child realm — STRUCTURAL, WITH A NAMED REFUSAL.** No booth holds a `RealmSet`, so nesting is not expressible (§2, ADR-0050 §7). The door that would express it, `Realm::create_child_realm`, answers `BoundaryRefusal::ChildRealm` instead of minting — a named refusal, and an `Infallible` success type, so no caller can be holding a "successful" child realm.
 - **(d) it inherits the parent's view — CONFIGURATION.** The realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the job's `Placement` is recorded in the outcome. Type view is deliberately NOT inherited (§Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type). Label-driven node selection is deferred with the node pool.
 
@@ -77,7 +89,6 @@ Named so this record cannot be read as a promise larger than it is:
 
 - **`Placement::Labels` node selection** — no node pool exists. The label set is carried and recorded; nothing selects on it.
 - **Nested jobs** — §6 says a job's nested jobs run in the same realm. Nothing dispatches one from inside an op yet; the single isolation level is enforced by boundary (c).
-- **Frame routing by `(job, op)` path** — the one thing §4 lets across the boundary. Because it does not exist, an op asking for `needs.emit` is refused by name rather than silently ungranted.
 - **gravity / k10r integration** — reading a skill graph out of k10r and dispatching it. §Consequences describes that end state; step 2a is the realm half only.
 - **Shared-scope jobs** — refused by name rather than mis-carried; they need a door to a realm that outlives the job, which is a different decision.
 
@@ -91,7 +102,7 @@ Run by the workspace suite (`cargo test --workspace`); named because each one is
 ## Still open
 
 - ~~Whether a declaration set is a `JobSource` variant or a field beside `resources`.~~ Settled as neither: it is an ATTACHMENT — a generic carrying slot on the envelope (`Job::attachments`, name + media + bytes) that effector never interprets. A `JobSource` variant would have made the envelope learn aura's vocabulary (a body, a storage schema); an attachment makes it learn only "something travels with this job", and the meaning stays on the side that filled it. The rule this replaced — declarations as a sidecar argument — survived one day and is gone.
-- Whether a temporary realm's frames should be visible to other jobs in the same dispatch, or only to the booth that dispatched.
+- ~~Whether a temporary realm's frames should be visible to other jobs in the same dispatch, or only to the booth that dispatched.~~ Settled as the second: frames are addressed, not broadcast, and the address is the dispatcher's own name. A job's frames reaching a sibling job would need a channel between two realms, which is boundary (a) with a different name.
 
 ## Related records
 

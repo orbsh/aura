@@ -34,7 +34,7 @@ struct BoothDecl {
 
 3. **临时 realm 继承父的节点视图与选点策略。** 它能在同样的标签下寻址同一批节点；它不能扩大那个集合。没有这一条，"临时"就成了绕开选点规则的通道 —— 一个 job 想要笔记本，只需要要一个"能看见笔记本的 realm"。
 
-4. **临时 realm 里没有任何东西被持久化。** 它的类型注册不写 `interface_schema`，它的存储命名空间来自内存分配器而不是持久行，它的 mq 是替身。跨越边界的只有 job 产出的帧，而且是发给派单那个摊位的。
+4. **临时 realm 里没有任何东西被持久化。** 它的类型注册不写 `interface_schema`，它的存储命名空间来自它自己的命名空间段而不是活过进程的行，它的 mq 是一个背后没有持久性的独立引擎（okm ADR-0072）。跨越边界的只有 job 产出的帧，而且是发给派单那个摊位的。
 
 5. **销毁是 job 的最后一步，不是另一件杂务。** 实例、常驻执行器、流、在飞调用随 realm 一起丢弃；存储里没有东西可删，因为什么都没写。job 中途崩溃不会留下任何定义 —— 这正是"注册/执行/删除"三步给不了的保证。
 
@@ -58,12 +58,24 @@ struct BoothDecl {
 4. **执行。** op 列表按序，每个 op 按自己的 `on_error`：`Fail` 记下失败并停下 job，其后的 op 报成 `NotRun` 并带上原因（不是从更短的列表里消失）；`Skip` 记下失败继续；`Retry { times }` 至多再做 `times` 次**追加**尝试（effector ADR-0005：`times: 2` 是三次运行，不是两次）；`Never` 恰好一次尝试，且永不被重新进入。outcome 逐个 op 列出它的策略、尝试次数与结果。
 5. **销毁。** `RealmSet::destroy` 在每一条返回路径上都跑 —— 成功、某个 op 停下了 job、注册失败 —— 而销毁失败本身是一个 error，不是一个调用方可能不读的字段。
 
-`needs` 按 effector ADR-0005 说的意思执行：它是这个 op 被授予的 ctx **服务**集合，realm 给不出来就在 op 跑之前按名拒绝。`store` 恰在声明给了该类型存储时才授予（计划由注册所写的同一份 schema 解析）；`timer` 授予（realm 有自己的定时平面，条目随它灭亡）；`emit` 与 `resource` 按名拒绝，因为"往外的帧通道"与"场地的授权"不属于这一步。
+`needs` 按 effector ADR-0005 说的意思执行：它是这个 op 被授予的 ctx **服务**集合，realm 给不出来就在 op 跑之前按名拒绝。`store` 恰在声明给了该类型存储时才授予（计划由注册所写的同一份 schema 解析）；`timer` 授予（realm 有自己的定时平面，条目随它灭亡）；`emit` 授予，因为往外的通道已经存在 —— dispatch 在注册任何声明之前就装好它，于是"已授予"是事实而不是承诺；`resource` 按名拒绝，因为场地的授权不属于这一步。
+
+### 穿过去的帧，以及它们落在哪里
+
+§4 只允许一样东西穿过边界，就是它。dispatch 在注册任何声明之前，先给它刚铸出的 realm 装一条出站通道（`Realm::frames_out`）；一条没有通道的临时 realm 会拒绝自己的 emit 而不是把帧丢掉 —— 于是"这个 job 什么都没发"不可能成为一个静默状态。
+
+规则是**两者都做，永远**：job 的 op 发出的事件，既由 job 自己的路由投递，也投给派单者。做过滤 —— "这些是内部的、那些是消息" —— 需要一份逐类型的声明，而它不存在；弄错了恰好会藏起运维正要看的那几帧。所以每一帧都出去，本地平面不受影响。
+
+投递是**定向的，不是路由的**：帧被追加到父 realm 上那个派单摊位的队列里（`job.frame`，分区 = 摊位的 key），因为派单者不是一个事件的订阅者 —— 它收到的是一封关于自己提交的 job 的信。由此两件事成立：父不需要任何路由行来收帧，而一个不在线的派单者拿到的是积压，不是丢失的帧。
+
+每一帧带着自己的**路径** —— `[{job, op}]`，嵌套 job 则是那条链，而 op 步在每次调用前被改写，因为 op 一次只跑一个。地址是 `Job::booth`，由派单者自己填写，所以 job 改不了它的听众。
+
+单向是结构性的，不是一条规则：job 的 realm 只从自己的 `@on` 路由收帧，而那些队列只有 realm 自己写。没有向内的门，因为没造过。
 
 ### 四条边界，以及各自由什么执行
 
 - **(a) 里面的摊位写不了父的存储 —— 结构性的。** `Realm::with_mq` 拒绝把一个非内存存储绑到 `Ephemeral` id 上，`MqStore::for_realm` 拒绝把引擎键空间的一片绑给它；两个拒绝都按名说出原因。生产环境的父是 fjall，所以父的引擎根本递不进一个 job 的 realm。（内存场地的根句柄与一个全新的内存引擎不可区分，这正是临时 realm 的唯一构造器设在 set 上的原因：`create_ephemeral` 自己铸一个存储。）
-- **(b) 它不能向父发布 MQ —— 结构性的。** 每条队列行、游标行与路由行都经 `Realm::mq`，也就是 realm 自己的引擎写下；不存在可以表达的跨 realm emit。这是被证明的而不是被声明的：一个既经计划写入、又 emit 的 job，让真实 fjall 键空间逐字节不变，并让父里那个事件的队列深度为 0。
+- **(b) 它不能向父发布 MQ —— 结构性的。** 每条队列行、游标行与路由行都经 `Realm::mq`，也就是 realm 自己的引擎写下；不存在可以表达的跨 realm emit。这是被证明的而不是被声明的：一个既经计划写入、又 emit 的 job，让父的**状态**命名空间逐字节不变，让父里那个事件的队列深度为 0，而父的队列平面只多出一行 —— 那一帧，在 `job.frame` 下，发给派单者。
 - **(c) 它不能开子 realm —— 结构性的，外加按名拒绝。** 没有任何摊位持有 `RealmSet`，所以嵌套不可表达（§2、ADR-0050 §7）。能表达它的那扇门 `Realm::create_child_realm` 回答 `BoundaryRefusal::ChildRealm` 而不是铸一个 —— 一个按名拒绝，加一个 `Infallible` 的成功类型，于是没有调用方能握着"成功创建的子 realm"。
 - **(d) 它继承父的视图 —— 配置性的。** realm set 把引擎的 code base URL 与游标 TTL 带进它建的每一个 realm，job 的 `Placement` 被记进 outcome。类型视图是刻意**不**继承的（§后果：realm 边界就是命名空间边界，声明会遮蔽同名的父类型）。按标签选节点随节点池一起推迟。
 
@@ -77,7 +89,6 @@ struct BoothDecl {
 
 - **`Placement::Labels` 选节点** —— 没有节点池。标签集合随 job 携带并被记录，没有任何东西据此挑选。
 - **嵌套 job** —— §6 说一个 job 的嵌套 job 落在同一个 realm 里。目前还没有从某个 op 内部派单的路径；单层隔离由边界 (c) 执行。
-- **按 `(job, op)` 路径路由帧** —— §4 允许穿过边界的唯一东西。因为它不存在，要 `needs.emit` 的 op 被按名拒绝，而不是被静默地不授予。
 - **gravity / k10r 集成** —— 从 k10r 读出 skill 图并派单。§后果描述的是那个终局；步骤 2a 只是 realm 这一半。
 - **Shared 作用域的 job** —— 按名拒绝，而不是勉强携带：它们需要一扇通向"比 job 活得久"的 realm 的门，那是另一个决定。
 
@@ -86,12 +97,13 @@ struct BoothDecl {
 由工作区套件跑（`cargo test --workspace`）；逐个点名，因为每一条都是本记录的主张：
 
 - `crates/engine/tests/dispatch_job.rs` —— `a_job_runs_its_ops_in_order_and_needs_store_is_granted_when_declared`（顺序即依赖，且 `needs.store` 真的被授予）、`skip_records_the_failure_and_carries_on`、`fail_stops_the_job_and_its_successors_are_reported_not_run`、`retry_two_runs_the_step_three_times_and_no_more`、`never_runs_exactly_once_even_when_a_later_step_fails`、`a_failing_never_step_is_one_attempt_and_is_not_retried`、`a_job_naming_a_type_it_did_not_declare_fails_by_name_before_any_op_runs`、`needs_store_is_refused_before_any_op_runs_when_the_type_declared_no_storage`、`a_plan_job_and_a_shared_scope_job_are_refused_by_name`。这些全部走引擎的注册门，所以被检验的是生产路径。
+- `crates/engine/tests/dispatch_job.rs` —— `a_frame_a_job_emits_reaches_the_booth_that_dispatched_it`（op 里 `ctx.emit` 的一帧落在派单者队列里，带路径、事件名与载荷）、`a_job_with_no_channel_out_cannot_emit_at_all`（没有通道的临时 realm 按名拒绝 emit）。
 - `crates/realm/tests/dispatch_realm.rs` —— `a_job_leaves_the_parent_keyspace_byte_identical`（真实 fjall 键空间在一个"注册带存储的声明、经计划写入、再 emit"的 job 前后各扫一遍：键**与**值都相同、realm 从 `live()` 消失、父的注册表与队列不受影响）、`a_booths_realm_cannot_be_bound_to_the_parent_store`（边界 (a) 的两个拒绝，按名）、`a_realm_cannot_open_a_child_realm`（边界 (c)，按名）。
 
 ## 仍待定
 
 - ~~一套声明是 `JobSource` 的变体，还是与 `resources` 并列的字段。~~ 两者都不是，结案为附件：信封上一个通用的承载位（`Job::attachments`，名字 + media + 字节），effector 从不解释它。`JobSource` 变体会让信封学会 aura 的词汇（body、storage schema）；附件只让它学会"有东西随这个 job 旅行"，含义留在填它的那一侧。被它取代的那条规则 —— 声明走并排参数 —— 只活了一天，现已删除。
-- 临时 realm 的帧是否对同一次派单里的其它 job 可见，还是只对派单那个摊位可见。
+- ~~临时 realm 的帧是否对同一次派单里的其它 job 可见，还是只对派单那个摊位可见。~~ 结案为后者：帧是定向投递的，不是广播，地址就是派单者自己的名字。一个 job 的帧要抵达兄弟 job，需要两个 realm 之间的一条通道 —— 那不过是换了名字的边界 (a)。
 
 ## 相关记录
 

@@ -12,6 +12,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
 
+/// One subscription's queue, resolved for this pass: the concrete event name,
+/// the partition it lands in, whether the subscription was a WILDCARD (its
+/// expansion is re-derived every pass, so a new concrete event joins by itself),
+/// the names that expansion produced, and the handler that will drain it.
+///
+/// A named alias rather than a five-field tuple spelled out at the site: the
+/// tuple is the shape of the drain loop's table, and it appears in its
+/// construction and its walk.
+type ResolvedQueue = (String, InstanceKey, bool, Vec<String>, Option<String>);
+
 impl Realm {
     /// THE STOP DOOR (ADR-0047 §3): ask an activation to stop at its next boundary.
     ///
@@ -109,6 +119,9 @@ impl Realm {
             store_plans: HashMap::new(),
             persisted_schemas: HashMap::new(),
             dead_events: event::DeadEvents::default(),
+            // A realm is born with no way out. Dispatch is the only thing that installs one, and
+            // it does so on the realm it just minted for a job (ADR-0051 §4).
+            frames_out: None,
             // The registry's schemas are compile-time constants, so a failure here is a bug in
             // this crate, not a condition to report — the same shape `json_response` uses for its
             // own infallible encode. (`unwrap_in_result` joins `expect_used` in the allow: this
@@ -235,7 +248,7 @@ impl Realm {
                 // subscription is one name; a wildcard expands to every
                 // registered event matching its prefix (re-expanded each
                 // pass — new concrete names join automatically).
-                let mut queues: Vec<(String, InstanceKey, bool, Vec<String>, Option<String>)> =
+                let mut queues: Vec<ResolvedQueue> =
                     subs.into_iter()
                         .map(|(event, part, is_wildcard, handler)| {
                             (event, part, is_wildcard, Vec::new(), handler)

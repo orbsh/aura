@@ -20,7 +20,122 @@ use crate::store_exec;
 use aura_booth::{InstanceId, InstanceKey as BoothKey, RouteResolution};
 
 impl Realm {
+    /// Emit into this realm's own plan, and — if this realm is a job's — out to
+    /// the booth that dispatched it.
+    ///
+    /// Both, always, and in that order. ADR-0051 §4 says the frames a job
+    /// produces cross the boundary; it does not say "some of them", and a
+    /// filtered version of that sentence would be a policy nobody declared:
+    /// picking which events are "internal" would need a per-type declaration
+    /// that does not exist, and getting it wrong hides exactly the frames an
+    /// operator is looking for. So the local plane delivers what it can, and the
+    /// same frame goes home with the path that says which job and op spoke.
+    ///
+    /// A local failure is returned AFTER the frame has left: a job whose own
+    /// router choked still reported what happened, which is the more useful half
+    /// of the two.
     pub async fn emit(
+        self_arc: &SharedRealm,
+        emitter: Option<&str>,
+        event: &str,
+        data: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let ephemeral = self_arc.lock().await.is_ephemeral();
+        let local = Self::emit_local(self_arc, emitter, event, data.clone()).await;
+
+        // Cloned out from under the lock, then dropped: posting into the parent
+        // takes the PARENT's lock, and holding ours across it would be a
+        // two-lock ordering the realm never otherwise needs.
+        let out = { self_arc.lock().await.frames_out.clone() };
+        match out {
+            Some(out) => {
+                Self::deliver_frame(&out.parent, &out.dispatcher, &out.path, event, data).await?;
+            }
+            // A persistent realm has no dispatcher, and its emits are its own
+            // business — that is not this case. A TEMPORARY realm has one thing to
+            // say to the world and one audience; if the channel is missing, its
+            // frames would vanish, and "the job emitted nothing" is exactly the
+            // silent failure a boundary is supposed to prevent.
+            None if ephemeral => {
+                anyhow::bail!(
+                    "this temporary realm has no outbound channel, so `{event}` would be \
+                     dropped: a job's realm is given one at dispatch (ADR-0051 §4)"
+                );
+            }
+            None => {}
+        }
+
+        local
+    }
+
+    /// Post one frame into the dispatching booth's queue on the parent realm.
+    ///
+    /// Addressed, not emitted: `emit` would run the parent's ROUTER, and a
+    /// dispatcher is not a subscriber to an event — it is the recipient of a
+    /// message about a job it submitted. Directed delivery also means the channel
+    /// needs no route row anywhere: the address is `Job::booth`, which the
+    /// dispatcher itself filled in.
+    ///
+    /// The queue row is the ordinary one (`mq::append`), so the booth reads its
+    /// frames with the machinery it already has — a cursor over `job.frame` — and
+    /// a dispatcher that is not live gets a backlog rather than a lost frame.
+    pub async fn deliver_frame(
+        parent: &SharedRealm,
+        dispatcher: &str,
+        path: &crate::frame_path::FramePath,
+        event: &str,
+        data: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let (booth_type, key) = dispatcher.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!(
+                "frame address `{dispatcher}` is not `type/key`: a job's frames go to the booth \
+                 that dispatched it, and that booth is named by its instance id"
+            )
+        })?;
+        let target = aura_booth::InstanceId {
+            booth_type: booth_type.to_string(),
+            key: BoothKey::parse(key),
+        };
+        let part = match &target.key {
+            BoothKey::Singleton => InstanceKey::Singleton,
+            BoothKey::Named(key) => InstanceKey::Named(key.clone()),
+        };
+
+        let frame = serde_json::json!({
+            "path": path.to_value(),
+            "event": event,
+            "data": data,
+        });
+
+        let store = {
+            // Activation first, the same way a routed emit does it: an inactive
+            // subscriber binds its `@on` subscriptions on activation, and the row
+            // then lands in a queue somebody is holding a cursor for.
+            let mut realm = parent.lock().await;
+            if !realm
+                .instances
+                .contains_key(&(target.booth_type.clone(), target.key.clone()))
+            {
+                realm.instance(parent.clone(), &target).await?;
+            }
+            realm.mq.clone()
+        };
+        // `append` answers the queue's new depth; the caller of an emit asked for
+        // "it landed", and a depth nobody reads is noise. The error is not noise:
+        // it means the frame did not leave.
+        mq::append(
+            &store,
+            crate::frame_path::JOB_FRAME_EVENT,
+            &part,
+            &frame,
+            Some(booth_type),
+        )
+        .map(|_depth| ())
+    }
+
+    /// The realm's own plane: routes, activation, queues. Split out of `emit` so
+    /// that "delivered here" and "crossed the boundary" stay two statements.
+    async fn emit_local(
         self_arc: &SharedRealm,
         emitter: Option<&str>,
         event: &str,

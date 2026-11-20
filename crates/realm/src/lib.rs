@@ -21,6 +21,7 @@ pub mod ctx;
 pub mod dispatch;
 pub mod event;
 pub mod events;
+pub mod frame_path;
 pub mod instance;
 pub mod meta;
 pub mod mq;
@@ -138,6 +139,12 @@ pub struct Realm {
     /// here rather than by a booth, because a booth that owned it would make every other booth
     /// depend on that one — a build pipeline would have to ask a chat venue for a bucket.
     pub resources: crate::resources::Registry,
+    /// The one thing that crosses a temporary realm's boundary (ADR-0051 §4):
+    /// frames, one way, out, addressed to the booth that dispatched the job.
+    /// `None` everywhere else — a persistent realm has no dispatcher to report
+    /// to, and a realm handed an outbound channel by anyone but dispatch would
+    /// be able to speak to a booth it does not belong to.
+    pub frames_out: Option<crate::frame_path::FramesOut>,
 }
 
 pub(crate) async fn dispatch_call(

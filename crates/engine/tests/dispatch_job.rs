@@ -604,3 +604,70 @@ async fn a_job_that_brought_no_declarations_is_refused_before_a_realm_exists() {
     ));
     assert_eq!(engine.realm_set.live().await.unwrap(), vec!["main".to_string()]);
 }
+
+// ---------------------------------------------------------------------------
+// Frames: the one thing that crosses (ADR-0051 §4)
+// ---------------------------------------------------------------------------
+
+/// A body that emits from inside the op — the same `ctx.emit` a script gets, so
+/// the test drives the real path and not a stand-in for it.
+fn reporter() -> Body {
+    Body::Rust(Arc::new(|ctx, args: Value| {
+        Box::pin(async move {
+            ctx.emit("progress", json!({ "at": args["step"] })).await?;
+            Ok(json!({ "done": true }))
+        })
+    }))
+}
+
+#[tokio::test]
+async fn a_frame_a_job_emits_reaches_the_booth_that_dispatched_it() {
+    let engine = Engine::start(&Default::default()).await.unwrap();
+    let decls = vec![BoothDecl::new("step", reporter())];
+    // `Job::booth` is the dispatcher's address — `gravity/turn-1` in this fixture.
+    let job = job(
+        "job-frames",
+        vec![op(
+            "step/a",
+            json!({ "step": "one" }),
+            json!({ "emit": true }),
+            failed_policy(),
+        )],
+    );
+
+    let out = dispatch(&engine, &job, &decls).await.unwrap();
+    assert!(out.succeeded(), "the op answered: {:?}", out.ops);
+
+    // The frame landed in the DISPATCHER's queue on the parent realm: directed,
+    // not routed, so the parent needed no route row to receive it.
+    let main = engine.realm_set.open("main").await.unwrap();
+    let store = main.store();
+    let part = aura_realm::mq::InstanceKey::Named("turn-1".to_string());
+    let frames = aura_realm::mq::backlog(&store, "job.frame", &part, 0).unwrap();
+    assert_eq!(frames.len(), 1, "one emit, one frame: {frames:?}");
+
+    let frame = &frames[0].1;
+    assert_eq!(
+        frame["path"],
+        json!([{ "job": "job-frames", "op": 0 }]),
+        "the frame names the job AND the op that spoke"
+    );
+    assert_eq!(frame["event"], "progress");
+    assert_eq!(frame["data"]["at"], "one", "the payload is the op's own");
+}
+
+#[tokio::test]
+async fn a_job_with_no_channel_out_cannot_emit_at_all() {
+    // The channel is installed by dispatch. A temporary realm built any other way
+    // has none, and its emits are refused rather than dropped: "the job emitted
+    // nothing" is the failure a boundary exists to prevent.
+    let set = aura_realm::realm_set::RealmSet::with_mq(aura_realm::mq::MqStore::mem());
+    let eph = set.create_ephemeral().await.unwrap();
+    let err = aura_realm::Realm::emit(&eph.realm(), Some("step"), "progress", json!({}))
+        .await
+        .expect_err("a temporary realm with no channel out must refuse the emit");
+    assert!(
+        err.to_string().contains("no outbound channel"),
+        "the refusal says why: {err:#}"
+    );
+}

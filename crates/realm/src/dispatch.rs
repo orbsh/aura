@@ -27,9 +27,23 @@
 //! | ADR-0051 | how it is enforced |
 //! |---|---|
 //! | (a) cannot write the parent's store | STRUCTURAL — `Realm::with_mq` refuses a non-memory store for an `Ephemeral` id and `MqStore::for_realm` refuses to bind a slice of the engine's keyspace to one. A booth holds its realm's store, and that store IS the realm's own memory engine. |
-//! | (b) cannot publish MQ to the parent | STRUCTURAL — every queue table, cursor and route row is written through `Realm::mq`, the realm's own engine. There is no cross-realm emit to express. Proven by a byte-identical dump of the parent keyspace and an empty parent queue after a job that emitted. |
+//! | (b) cannot publish MQ to the parent | STRUCTURAL — every queue table, cursor and route row is written through `Realm::mq`, the realm's own engine. What crosses is a FRAME, addressed and directed (below), never the job's own event: the parent's queue for the emitted name stays at depth 0 and its state namespaces stay byte-identical. |
 //! | (c) cannot open a child realm | STRUCTURAL + NAMED REFUSAL — no booth holds a `RealmSet`, so nesting is not expressible (ADR-0050 §7); the door that would express it, `Realm::create_child_realm`, answers `BoundaryRefusal::ChildRealm` instead of minting. |
 //! | (d) inherits the parent's view | CONFIGURATION — the realm set carries the engine's code base URL and cursor TTL into every realm it creates, and the job's `Placement` is carried through. Type visibility is deliberately NOT inherited (ADR-0051 §Consequences: the realm boundary is the namespace boundary, so a declaration shadows a same-named parent type). Label-driven node selection is deferred with the node pool. |
+//!
+//! ## The frames that cross, and where they land
+//!
+//! §4 allows one thing through the boundary. Dispatch installs the channel
+//! (`Realm::frames_out`) before registration, so `needs.emit` is granted as a
+//! fact: every event a job's ops emit is delivered by the job's own router AND
+//! posted to the dispatcher (`Realm::emit` does both, always — a filtered
+//! version of that sentence would hide exactly the frames an operator wants).
+//!
+//! Delivery is directed, not routed: the frame is appended to the dispatching
+//! booth's queue (`job.frame`, partition = its key) on the parent realm, so the
+//! parent needs no route row and an offline dispatcher gets a backlog rather
+//! than a lost frame. Each frame carries its path — `[{job, op}]` — with the op
+//! step rewritten before each call, because ops run one at a time.
 //!
 //! ## Where the declarations come from
 //!
@@ -451,12 +465,7 @@ impl std::error::Error for DispatchError {
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch.
-// ---------------------------------------------------------------------------
-
-/// The realm side of a job (ADR-0051): mint, register, run, destroy.
-// ---------------------------------------------------------------------------
-// The declarations travel in the envelope (ADR-0051 §Attachments)
+// Dispatch (ADR-0051): the door, and the declarations that arrive through it
 // ---------------------------------------------------------------------------
 
 /// The attachment name a job's declarations ride under. A name is what makes the payload
@@ -552,6 +561,7 @@ pub fn decls_of(job: &Job) -> Result<Vec<BoothDecl>, DispatchError> {
         .collect())
 }
 
+/// The realm side of a job (ADR-0051): mint, register, run, destroy.
 pub struct Dispatch<'a> {
     set: &'a RealmSet,
     registrar: &'a dyn Registrar,
@@ -560,6 +570,14 @@ pub struct Dispatch<'a> {
 impl<'a> Dispatch<'a> {
     pub fn new(set: &'a RealmSet, registrar: &'a dyn Registrar) -> Self {
         Self { set, registrar }
+    }
+
+    /// The door a job that ARRIVED comes through: its declarations are read out of the
+    /// envelope's attachment (ADR-0051 §Attachments). `run` remains the seam below it — the
+    /// layer that already holds declarations in hand (composition, tests) enters there.
+    pub async fn run_attached(&self, job: &Job) -> anyhow::Result<JobOutcome> {
+        let decls = decls_of(job)?;
+        self.run(job, &decls).await
     }
 
     /// Run one job in a temporary realm of its own.
@@ -581,17 +599,30 @@ impl<'a> Dispatch<'a> {
     /// 5. DESTROY — unconditionally, then the outcome. The destroy is not the
     ///    last op: it is the epilogue of every path, including the ones that
     ///    return an error.
-    /// The door a job that ARRIVED comes through: its declarations are read out of the
-    /// envelope's attachment (ADR-0051 §Attachments). `run` remains the seam below it — the
-    /// layer that already holds declarations in hand (composition, tests) enters there.
-    pub async fn run_attached(&self, job: &Job) -> anyhow::Result<JobOutcome> {
-        let decls = decls_of(job)?;
-        self.run(job, &decls).await
-    }
-
     pub async fn run(&self, job: &Job, decls: &[BoothDecl]) -> anyhow::Result<JobOutcome> {
         let steps = preflight(job, decls)?;
         let eph = self.set.create_ephemeral().await?;
+
+        // The one channel out (ADR-0051 §4), installed between mint and
+        // registration: a declaration registered into a realm that cannot report
+        // would be a type whose `ctx.emit` goes nowhere by construction, and
+        // `needs.emit` is granted precisely because this line ran.
+        //
+        // The parent is `main`: a job's own realm holds no `RealmSet`, so it can
+        // dispatch nothing (boundary (c)), which is why the only realm that can be
+        // a dispatcher is the one the venue opened. The address is `Job::booth`,
+        // filled by the dispatcher itself — a job cannot rename its audience.
+        let parent = self.set.open(crate::realm_set::MAIN_REALM).await?;
+        {
+            let handle = eph.realm();
+            let mut realm = handle.lock().await;
+            realm.frames_out = Some(crate::frame_path::FramesOut {
+                parent: parent.realm(),
+                dispatcher: job.booth.clone(),
+                path: crate::frame_path::FramePath::root(job.id.clone(), 0),
+            });
+        }
+
         let inside = self.run_inside(&eph, decls, &steps).await;
         let destroyed = self.set.destroy(eph.id).await;
         match (inside, destroyed) {
@@ -710,6 +741,12 @@ impl<'a> Dispatch<'a> {
         eph: &NamedRealm,
         step: &Step<'_>,
     ) -> anyhow::Result<serde_json::Value> {
+        // Ops run one at a time, so the outbound path's last step is rewritten
+        // rather than grown: a frame that leaves during op N says N.
+        let handle = eph.realm();
+        if let Some(out) = handle.lock().await.frames_out.as_mut() {
+            out.path = out.path.at_op(step.index as u32);
+        }
         let slot = Realm::call(
             &eph.realm(),
             None,
@@ -818,18 +855,17 @@ fn target_of(index: usize, executor: &str) -> Result<InstanceId, DispatchError> 
 /// no storage" is the whole of the answer (ADR-0026: surface absence, not an
 /// empty surface).
 ///
-/// `emit`, `resource` and `timer` are named refusals where the mechanism does not
-/// exist yet, because a silently ungranted capability is the failure mode the
-/// effector record exists to prevent:
+/// `emit` and `timer` are granted, `resource` is a named refusal:
 ///
 /// - `emit` — frames back to the dispatching booth are the ONE thing ADR-0051 §4
-///   lets across the boundary, and the frame path is not wired (deferred). The
-///   realm's own event plane still works; what is missing is the channel out.
+///   lets across the boundary, and they are wired: dispatch installs the outbound
+///   channel on the realm it minted, so every event the job's ops emit also lands
+///   in the dispatcher's queue under `job.frame`, carrying the path. An op is
+///   granted this because the channel exists, not because it might.
+/// - `timer` — the realm owns a timer plane and a job's timer entry dies with it.
 /// - `resource` — resources are venue state (ADR-0048/0049): a temporary realm's
 ///   registry starts empty, and inheriting the parent's grants would be the
 ///   boundary leak the four rules forbid. An op that needs a handle is refused.
-/// - `timer` is granted: the realm owns a timer plane and a job's timer entry
-///   dies with it.
 fn check_needs(index: usize, op: &Op, decl: &BoothDecl) -> Result<(), DispatchError> {
     let Need {
         store,
@@ -847,16 +883,11 @@ fn check_needs(index: usize, op: &Op, decl: &BoothDecl) -> Result<(), DispatchEr
             ),
         });
     }
-    if emit {
-        return Err(DispatchError::Need {
-            op: index,
-            need: "emit",
-            why: "frames back to the dispatching booth are the one thing that crosses the \
-                  boundary (ADR-0051 §4), and that channel is not wired yet — it is deferred \
-                  with the frame path, not silently ungranted"
-                .to_string(),
-        });
-    }
+    // `emit` needs no check here: the channel out is installed by dispatch before
+    // a declaration is registered, and a temporary realm without one refuses the
+    // emit itself (`Realm::emit`) rather than dropping the frame. A preflight test
+    // for a fact the realm enforces would be the second copy of one rule.
+    let _ = emit;
     if resource {
         return Err(DispatchError::Need {
             op: index,

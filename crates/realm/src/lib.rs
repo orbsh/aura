@@ -18,6 +18,7 @@
 )]
 pub mod call_slot;
 pub mod ctx;
+pub mod dispatch;
 pub mod event;
 pub mod events;
 pub mod instance;

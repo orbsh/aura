@@ -38,3 +38,8 @@ optional = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The attachment door is exercised on the wire form: a declaration encoded as CBOR, the codec the
+# envelope itself rides.
+ciborium = "0.2"

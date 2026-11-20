@@ -195,13 +195,39 @@ impl Engine {
     pub async fn register_into(
         &self,
         realm: &aura_realm::SharedRealm,
+        booth: BoothType,
+    ) -> anyhow::Result<()> {
+        self.register_into_with(realm, booth, None).await
+    }
+
+    /// `register_into` with the CALLER'S OWN declaration in hand — the shape a
+    /// job's `BoothDecl` arrives in (ADR-0051 §1).
+    ///
+    /// `declared` is the `interface_schema` the caller brought (its storage
+    /// collections, its receives). Introspection still runs, because it seeds
+    /// lifecycle facts and the routes a SCRIPT declares; where both speak, the
+    /// caller's declaration wins — it is data written for this job, while a
+    /// script's answer is a courtesy read from it.
+    pub async fn register_into_with(
+        &self,
+        realm: &aura_realm::SharedRealm,
         mut booth: BoothType,
+        declared: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
         // Phase 4.5c: derive delivery routes from the introspected schema —
         // `receives` (event → key field) seeds the router per @on
         // declaration; empty key = singleton (per-event queue consumer).
+        // A caller that already holds the schema (a dispatched declaration carries its
+        // `interface_schema`) does not pay for a second introspection — and, more to the point,
+        // must not: a declaration's schema is the one its upload produced, and re-deriving it
+        // through a carrier would ask the body for facts it may not be able to answer yet.
+        // Everything below (ttl, concurrency, receives, hooks) reads whichever schema won.
         let mut introspected: Option<serde_json::Value> = None;
-        if let Some(schema) = aura_realm::introspect_schema(&booth).await {
+        let resolved = match declared {
+            Some(schema) => Some(schema),
+            None => aura_realm::introspect_schema(&booth).await,
+        };
+        if let Some(schema) = resolved {
             if booth.idle_ttl.is_none() {
                 if let Some(ttl) = schema
                     .get("lifecycle")
@@ -297,38 +323,20 @@ impl Engine {
         // (booth_defs beside mq/state) — definitions outlive the process, one okm
         // instance for everything.
         //
-        // Both realm kinds take this path (ADR-0050 §6). What decides whether a row
-        // outlives the process is the STORE, not a branch here: a persisted realm's
-        // store is fjall, a temporary realm's is its own memory engine, and the row
-        // is written the same way into either. One rule, two engines.
-        if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
-            def.schema = introspected.clone();
-            let r = realm.lock().await;
-            aura_realm::meta::persist(&r.mq, &def)?;
-        }
-        // Content addressing covers remote types too (ADR-0027): the
-        // dispatch arm references `sha256(source)`, and the serving
-        // source reads CodeBlob — so the bytes must enter the blob store
-        // at upload. Remote definitions are not persisted (4.5b
-        // scope: remote types are script booths with no definition row); this write is
-        // the blob's only home for them. Same for both realm kinds — a temporary
-        // realm's blob goes into its own store and dies with it, so nothing crosses
-        // the boundary (ADR-0051 §4) without needing a special case here.
-        if let aura_booth::Body::Remote { ref source, .. } = booth.body {
-            let r = realm.lock().await;
-            aura_realm::meta::put_blob(
-                &r.mq,
-                aura_realm::meta::code_hash(source),
-                source.as_bytes(),
-            )?;
-        }
-        // ONE call for both kinds: the realm resolves its ns and schema from its own
-        // rows (ADR-0050 §6). The introspected copy rides along as a fallback for a
-        // type whose row carries no schema.
+        // Both realm kinds take this path (ADR-0050 §6). What decides whether a
+        // row outlives the process is the STORE, not a branch here: a persisted
+        // realm's store is fjall, a temporary realm's is its own memory engine,
+        // and the row is written the same way into either. One rule, two engines.
+        //
+        // The writes themselves are `Realm::register_definition` (aura-realm): the
+        // definition row, the code blob and the type registration are one body, so
+        // the crate that OWNS the realm can write a DECLARATION without naming an
+        // engine (ADR-0051 §1 — a job brings its declarations as data). This door
+        // adds the introspection above and nothing else; there is no second rule.
         realm
             .lock()
             .await
-            .register_type_with(booth, introspected);
+            .register_definition(booth, introspected)?;
         Ok(())
     }
 
@@ -424,6 +432,52 @@ impl Engine {
         result: anyhow::Result<serde_json::Value>,
     ) -> bool {
         Realm::resolve_call(&self.realm, call_id, result).await
+    }
+
+    /// THE JOB DOOR (ADR-0051 step 2a): run a job in a temporary realm of its
+    /// own, built from the declarations that travelled with it.
+    ///
+    /// The realm is the dispatch's, not the caller's: it is minted here, filled
+    /// with the declarations, and destroyed before this returns — whatever the
+    /// outcome. The caller gets the per-op answer and never a handle, because a
+    /// handle would be a way to touch a realm the job no longer owns (ADR-0051 §2:
+    /// a booth asks for work; the realm decides that work needs a space).
+    ///
+    /// The engine is passed as the `Registrar` — the job's declarations go
+    /// through `register_into_with`, the same door a registered booth takes, so a
+    /// temporary realm's types are written by the ONE path into the realm's own
+    /// store (ADR-0050 §6).
+    /// Dispatch a job that ARRIVED: its declarations come out of the envelope's attachment
+    /// (ADR-0051 §Attachments), so this is the one door — a remote submission and an in-process
+    /// one take the same path, and there is no second way to hand a job a set of definitions.
+    ///
+    /// A caller that already holds declarations in hand (composition, a test) enters one level
+    /// down at `aura_realm::dispatch::Dispatch::run`, which is this call's implementation.
+    pub async fn dispatch(
+        &self,
+        job: &effector_protocol::Job,
+    ) -> anyhow::Result<aura_realm::dispatch::JobOutcome> {
+        aura_realm::dispatch::Dispatch::new(self.realm_set.as_ref(), self)
+            .run_attached(job)
+            .await
+    }
+}
+
+/// Dispatch's registration capability, held by the ENGINE (ADR-0051 §1/§2).
+///
+/// One impl, no new work: `register_into_with` IS the registration path, and the
+/// declaration's own schema rides it. The boxing is the trait's (`dyn Registrar`),
+/// not a second code path.
+impl aura_realm::dispatch::Registrar for Engine {
+    fn register<'a>(
+        &'a self,
+        realm: &'a SharedRealm,
+        decl: &'a aura_realm::dispatch::BoothDecl,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.register_into_with(realm, decl.booth_type(), decl.storage.clone())
+                .await
+        })
     }
 }
 

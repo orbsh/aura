@@ -19,6 +19,9 @@ futures-util = "0.3"
 aura-config = { path = "../config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# A job's declarations arrive as an attachment; CBOR is the wire's own codec
+# (ADR-0050 §6 keeps the same payload in both encodings, and the envelope is CBOR on the pipe).
+ciborium = "0.2"
 tokio-util = { version = "0.7.19", features = ["time"] }
 tracing = { workspace = true }
 

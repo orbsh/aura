@@ -4,6 +4,10 @@
 //!
 //! `cargo run --release --example ephemeral_cost -p aura-realm`
 
+// An example's job is to fail loudly on a broken fixture: if the store or the
+// process numbers cannot be read, the measurement is wrong and should not print.
+#![allow(clippy::expect_used)]
+
 use std::time::Instant;
 
 use aura_realm::mq::MqStore;

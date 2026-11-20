@@ -153,6 +153,47 @@ impl Realm {
         self.types.insert(booth.name.clone(), booth);
     }
 
+    /// The DECLARATION half of registration: the definition row, the code blob
+    /// and the type registration, in that order, against THIS realm's own store.
+    ///
+    /// It is the same body every registration ends at (`Engine::register_into`
+    /// calls it after introspection), exposed here because a host is not the only
+    /// thing that can hold a declaration: a job brings its declarations as data
+    /// (ADR-0051 §1), and the layer that owns the realm — this crate — must be
+    /// able to write them without naming an engine. One implementation, two
+    /// callers; there is no second rule.
+    ///
+    /// `schema` is the caller's storage/interface declaration, handed to
+    /// `register_type_with` as the caller copy: a row already in this realm (a
+    /// re-registration) still takes precedence there, and an absent declaration
+    /// simply leaves the type without a `ctx.store` surface (ADR-0026 — surface
+    /// absence, never a panic).
+    pub fn register_definition(
+        &mut self,
+        booth: BoothType,
+        schema: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        // A Rust body has no definition to persist (`from_type` answers None):
+        // it is a compile-time construct, in either kind of realm.
+        if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
+            def.schema = schema.clone();
+            crate::meta::persist(&self.mq, &def)?;
+        }
+        // Content addressing covers remote types too (ADR-0027): the dispatch arm
+        // references `sha256(source)`, and the serving source reads CodeBlob — so
+        // the bytes must enter the blob store at upload. Same for both realm
+        // kinds: a temporary realm's blob goes into its own store and dies with it
+        // (ADR-0051 §4).
+        if let aura_booth::Body::Remote {
+            ref source, ..
+        } = booth.body
+        {
+            crate::meta::put_blob(&self.mq, crate::meta::code_hash(source), source.as_bytes())?;
+        }
+        self.register_type_with(booth, schema);
+        Ok(())
+    }
+
     pub fn plan_of(&self, type_name: &str) -> Option<&store_exec::StorePlan> {
         self.store_plans.get(type_name)
     }

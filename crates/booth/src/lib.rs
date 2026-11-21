@@ -226,11 +226,11 @@ pub enum HookBody {
     Declared,
 }
 
-/// The reserved names the HOST delivers and the venue may never emit (ADR-0043 §3):
-/// residency's `__sleep`/`__wake`, and `__on_timer` — a due timer arrives as an ordinary
-/// queue job whose handler is that name (ADR-0016 §1), so a booth must be able to declare
-/// it even though no sender on the other side of the wire can.
-pub const RESERVED_HOOKS: &[&str] = &["__sleep", "__wake", "__on_timer"];
+/// The reserved names the HOST delivers and the venue may never emit (ADR-0043 §3).
+/// Defined where the declaration surface lives — induction's protocol crate — and
+/// re-exported here so a booth author has one name to reach for and every carrier reads
+/// the same array.
+pub use induction_protocol::schema::RESERVED_HOOKS;
 
 impl BoothType {
     /// Define a script type executed by a effector carrier (JSON-lines

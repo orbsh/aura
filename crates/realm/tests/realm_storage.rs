@@ -149,7 +149,7 @@ async fn a_second_boot_finds_main_by_name_and_keeps_its_id() {
     let first = RealmSet::with_mq(root.clone());
     let main = first.open(MAIN_REALM).await.unwrap();
     // Some state that must survive the "restart".
-    let table = timer_entry::table(main.store());
+    let table = timer_entry::table(main.store()).unwrap();
     timer_entry::put(
         &table,
         timer_entry::TimerEntryKey {
@@ -171,7 +171,7 @@ async fn a_second_boot_finds_main_by_name_and_keeps_its_id() {
         "the row is the identity: a restart re-opens the same realm"
     );
     assert_eq!(
-        timer_entry::all(&timer_entry::table(reopened.store()))
+        timer_entry::all(&timer_entry::table(reopened.store()).unwrap())
             .unwrap()
             .len(),
         1,

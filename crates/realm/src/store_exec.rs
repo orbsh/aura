@@ -661,7 +661,7 @@ mod tests {
 //                   "includes": [...], "kind": "plain" } ]
 //   "reduces":  [ { "name": "total", "slot": 20481, "group": [...],
 //                   "kind": "count" | {"high_water": "field"} | {"low_water": "field"} } ]
-// Preset logics implement okm-dynamic's ReduceLogic in Rust (the acc is
+// Preset logics implement okm-dynamic's ByteReduce in Rust (the acc is
 // u64 BE — the same layout okm-core's presets use); host-language logic
 // objects (python/steel callables) register through the bindings, not
 // through schema data.
@@ -739,7 +739,7 @@ impl PresetLogic {
     }
 }
 
-impl okm_dynamic::ReduceLogic for PresetLogic {
+impl okm_dynamic::ByteReduce for PresetLogic {
     fn seed(&self) -> Vec<u8> {
         match self.kind {
             PresetKind::Count | PresetKind::HighWater(_) => 0u64.to_be_bytes().to_vec(),

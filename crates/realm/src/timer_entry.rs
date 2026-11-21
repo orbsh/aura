@@ -47,8 +47,8 @@ pub struct TimerEntry {
 pub type TimerTable = Collection<MqStore, TimerEntryKey, TimerEntry>;
 
 /// Bind the table to a store handle.
-pub fn table(store: MqStore) -> TimerTable {
-    Collection::new(store)
+pub fn table(store: MqStore) -> anyhow::Result<TimerTable> {
+    Ok(Collection::open(store)?)
 }
 
 /// Record one durable timer. The instance is handed in RENDERED (`booth type`,

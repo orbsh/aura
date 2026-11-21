@@ -340,7 +340,8 @@ async fn a_mount_inherits_the_account_of_the_turn_it_acts_for() {
     let realm = Realm::with_mq(crate::RealmId::Persisted(1), store)
         .unwrap()
         .shared_async()
-        .await;
+        .await
+        .unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     {
         let mut r = realm.lock().await;
@@ -407,4 +408,17 @@ async fn a_mount_inherits_the_account_of_the_turn_it_acts_for() {
 
     dispatch.abort();
 }
+}
+
+/// The row, or nothing.
+///
+/// okm's `get_row` answers `RowAbsent` for a missing row instead of an `Option` — absence is
+/// an error there, because a verb that merges or deletes treats it as one. Every lookup here
+/// is a question with a legitimate "no", so the conversion lives in one place.
+pub(crate) fn row_opt<T>(r: okm_core::error::Result<T>) -> anyhow::Result<Option<T>> {
+    match r {
+        Ok(row) => Ok(Some(row)),
+        Err(okm_core::Error::RowAbsent) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }

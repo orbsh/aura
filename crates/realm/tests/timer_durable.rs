@@ -38,12 +38,13 @@ async fn a_durable_registration_is_a_row_and_a_cancel_takes_it_back() {
     let realm = Realm::with_mq(aura_realm::RealmId::Persisted(1), store.clone())
         .unwrap()
         .shared_async()
-        .await;
+        .await
+        .unwrap();
     let handle = realm.lock().await.timers.clone();
 
     let id = handle.register_durable(target(), "wake-for-compression".into(), Duration::from_secs(600));
     // The row is written by the driver (one command hop), not by the caller.
-    let table = timer_entry::table(store);
+    let table = timer_entry::table(store).unwrap();
     let mut rows = Vec::new();
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -86,7 +87,7 @@ async fn boot_arms_what_the_table_owes_and_a_due_row_fires_once() {
         .unwrap()
         .as_millis() as u64
         + 120;
-    let table = timer_entry::table(store.clone());
+    let table = timer_entry::table(store.clone()).unwrap();
     timer_entry::put(&table, TimerEntryKey { due_ms: due, id: 9 }, "turn", "device-a", "resume")
         .unwrap();
 
@@ -94,8 +95,9 @@ async fn boot_arms_what_the_table_owes_and_a_due_row_fires_once() {
     let realm = Realm::with_mq(aura_realm::RealmId::Persisted(1), store.clone())
         .unwrap()
         .shared_async()
-        .await;
-    let table = timer_entry::table(store);
+        .await
+        .unwrap();
+    let table = timer_entry::table(store).unwrap();
 
     let mut fired = false;
     for _ in 0..100 {

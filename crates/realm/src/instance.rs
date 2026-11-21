@@ -47,12 +47,12 @@ impl Realm {
         self.stops.interrupt(instance)
     }
 
-    pub async fn shared_async(self) -> SharedRealm {
+    pub async fn shared_async(self) -> anyhow::Result<SharedRealm> {
         let store = self.mq.clone();
         let arc = Arc::new(tokio::sync::Mutex::new(self));
-        let handle = timer::TimerDriver::spawn(arc.clone(), store);
+        let handle = timer::TimerDriver::spawn(arc.clone(), store)?;
         arc.lock().await.timers = handle;
-        arc
+        Ok(arc)
     }
 
     /// A realm over a store that is ALREADY bound to `id` (ADR-0050 §2: the id

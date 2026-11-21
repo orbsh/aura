@@ -23,7 +23,7 @@
 use crate::mq::MqStore;
 use aura_booth::PersistedBooth;
 use okm_core::document::Collection;
-use okm_core::{Bytes, Document, DocumentEncode, KeyEncode, ReduceCodec};
+use okm_core::{Bytes, Document, DocumentEncode, KeyEncode};
 
 // ---------------------------------------------------------------------------
 // The plane-version marker (ADR-0040 Update, 2026-10-12): one raw row in the
@@ -119,7 +119,7 @@ pub const BOOTH_NS_BASE: u32 = 100;
 /// on, ADR-0038 §2) plus the type's storage ns (base + id; one allocation
 /// per type, monotonic with the id, never reclaimed).
 pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::open(meta.clone())?;
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         let (_, pk, row) = hit?;
         if let Some(row) = &row {
@@ -161,8 +161,8 @@ pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// the unique dictionary's reverse direction (the retired mq ns 33
 /// `booth_name_of` service relocated here; one dictionary, both ways).
 pub fn booth_name_of(meta: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
-    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
-    Ok(t.get_row(&BoothNameKey { id })?.map(|row| row.name))
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::open(meta.clone())?;
+    Ok(crate::row_opt(t.get_row(&BoothNameKey { id }))?.map(|row| row.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -244,8 +244,8 @@ pub fn code_hex(sha: &[u8; 32]) -> String {
 /// Store the blob if absent (content addressing makes the pre-check a
 /// dedup, never a correctness requirement — same bytes, same row).
 pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<()> {
-    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
-    if t.get_row(&CodeBlobKey { sha256: sha })?.is_some() {
+    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::open(meta.clone())?;
+    if crate::row_opt(t.get_row(&CodeBlobKey { sha256: sha }))?.is_some() {
         return Ok(());
     }
     t.put(
@@ -260,8 +260,8 @@ pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<(
 
 /// Read the blob bytes (None = never stored under this hash).
 pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> anyhow::Result<Option<Vec<u8>>> {
-    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::new(meta.clone());
-    Ok(t.get_row(&CodeBlobKey { sha256: *sha })?.map(|row| row.data.0))
+    let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::open(meta.clone())?;
+    Ok(crate::row_opt(t.get_row(&CodeBlobKey { sha256: *sha }))?.map(|row| row.data.0))
 }
 
 /// The dynamic-segment key the schema rides under ("schema" as a dynamic
@@ -328,7 +328,7 @@ impl BoothDef {
 /// own memory engine instead of fjall, so the same call allocates `BOOTH_NS_BASE
 /// + id` and forgets it when the realm dies — no second registry, no second rule.
 pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
-    let t = Collection::<MqStore, BoothNameKey, BoothName>::new(meta.clone());
+    let t = Collection::<MqStore, BoothNameKey, BoothName>::open(meta.clone())?;
     for hit in t.scan::<BoothNameByName>(name.as_bytes()) {
         let (_, _, row) = hit?;
         if let Some(row) = &row {
@@ -344,7 +344,7 @@ pub fn ns_of(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// stable across versions — the registry resolve).
 pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
     let booth_id = resolve_booth_id(meta, &booth.name)?;
-    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::open(meta.clone())?;
     let (row, schema) = BoothDef::of(booth);
     // The bytes must exist before the pointer to them is published: a
     // definition whose blob is missing is an unloadable booth (boot
@@ -379,7 +379,7 @@ pub fn ns_and_schema_of(
     // the one path that registers a type.
     let booth_id = resolve_booth_id(meta, name)?;
     let ns = BOOTH_NS_BASE + booth_id;
-    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::open(meta.clone())?;
     // The schema lives in the document's DYNAMIC half (`slot1_map`), not in a
     // typed field: the row's declared set is fixed and the segment is name-keyed.
     let schema = t
@@ -394,7 +394,7 @@ pub fn ns_and_schema_of(
 /// materializes through the row's own typed decoder — the same codec
 /// put wrote, no second one.
 pub fn load_all(meta: &MqStore) -> anyhow::Result<Vec<PersistedBooth>> {
-    let t = Collection::<MqStore, BoothDefKey, BoothDef>::new(meta.clone());
+    let t = Collection::<MqStore, BoothDefKey, BoothDef>::open(meta.clone())?;
     let mut out = Vec::new();
     for (suffix, payload) in t.scan_documents_raw()? {
         // suffix = [booth_id 4B]: the primary key of the row (u32 BE).

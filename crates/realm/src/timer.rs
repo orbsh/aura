@@ -193,21 +193,21 @@ pub struct TimerDriver {
 impl TimerDriver {
     /// Spawn the driver task; returns the caller-facing handle. One task
     /// per realm — task count is bounded by the realm count.
-    pub fn spawn(realm: crate::SharedRealm, store: MqStore) -> TimerHandle {
+    pub fn spawn(realm: crate::SharedRealm, store: MqStore) -> anyhow::Result<TimerHandle> {
         let (tx, commands) = mpsc::unbounded_channel();
         let driver = Self {
             queue: DelayQueue::new(),
             index: HashMap::new(),
             durable: HashMap::new(),
-            timers: timer_entry::table(store),
+            timers: timer_entry::table(store)?,
             commands,
             realm: std::sync::Arc::downgrade(&realm),
         };
         tokio::spawn(driver.run());
-        TimerHandle {
+        Ok(TimerHandle {
             tx,
             seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        }
+        })
     }
 
     async fn run(mut self) {

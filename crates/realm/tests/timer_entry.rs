@@ -22,7 +22,7 @@ use okm_core::KeyEncode;
 #[test]
 fn the_table_is_ordered_by_due_and_a_bound_reads_only_what_is_owed() {
     let store = MqStore::mem();
-    let t = timer_entry::table(store);
+    let t = timer_entry::table(store).unwrap();
 
     timer_entry::put(
         &t,
@@ -81,7 +81,7 @@ fn the_schedule_outlives_the_process_that_wrote_it() {
 
     {
         let store = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
-        let t = timer_entry::table(store);
+        let t = timer_entry::table(store).unwrap();
         timer_entry::put(
             &t,
             TimerEntryKey {
@@ -98,7 +98,7 @@ fn the_schedule_outlives_the_process_that_wrote_it() {
     // A second process (here: a second open of the same directory) rebuilds the
     // schedule by reading it — nothing was kept in memory to lose.
     let store = MqStore::fjall(okm_core::FjallStore::open(&dir, "aura").unwrap());
-    let t = timer_entry::table(store);
+    let t = timer_entry::table(store).unwrap();
     let all = timer_entry::all(&t).unwrap();
     assert_eq!(all.len(), 1, "the row survived: {all:?}");
     let (key, entry) = &all[0];
@@ -145,7 +145,7 @@ async fn a_realms_row_and_a_neighbour_table_stay_out_of_the_by_due_scan() {
     let booth = aura_realm::mq::booth_id_of(&store, "gravity_turn").unwrap();
     assert!(booth > 0, "the dictionary issued an id");
 
-    let t = timer_entry::table(store.clone());
+    let t = timer_entry::table(store.clone()).unwrap();
     timer_entry::put(
         &t,
         TimerEntryKey { due_ms: 7, id: 9 },

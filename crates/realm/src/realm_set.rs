@@ -40,7 +40,7 @@ use crate::mq::MqStore;
 use crate::realm_id::RealmId;
 use okm_core::document::Collection;
 use okm_core::storage::VirtualStorage;
-use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
+use okm_core::{Document, DocumentEncode, KeyEncode};
 use std::collections::HashMap;
 
 /// The name of the realm a boot opens (ADR-0050 §4): the old default realm,
@@ -88,8 +88,8 @@ type RealmTable = Collection<MqStore, RealmRowKey, RealmRow>;
 
 /// The table over a store. The store is the ROOT handle: this table exists
 /// once per engine, not once per realm (ADR-0050 §3 — a fixed root).
-fn table(root: &MqStore) -> RealmTable {
-    Collection::new(root.clone())
+fn table(root: &MqStore) -> anyhow::Result<RealmTable> {
+    Ok(Collection::open(root.clone())?)
 }
 
 /// The id a name already has (`None` = never opened). Exact match = index
@@ -97,7 +97,7 @@ fn table(root: &MqStore) -> RealmTable {
 /// delimiter, so "main" scans "main-old" too, and the row comparison is the
 /// exactness.
 fn id_of_name(root: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
-    let t = table(root);
+    let t = table(root)?;
     for hit in t.scan::<RealmRowByName>(name.as_bytes()) {
         let (_, pk, row) = hit?;
         if let Some(row) = &row {
@@ -111,8 +111,8 @@ fn id_of_name(root: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
 
 /// The name an id has (`None` = no such row).
 fn name_of_id(root: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
-    let t = table(root);
-    Ok(t.get_row(&RealmRowKey { id })?.map(|row| row.name))
+    let t = table(root)?;
+    Ok(crate::row_opt(t.get_row(&RealmRowKey { id }))?.map(|row| row.name))
 }
 
 /// The next id to issue: the table's `HighWater(id)` watermark + 1.
@@ -122,7 +122,7 @@ fn name_of_id(root: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
 /// counter), it only ever folds upward, and its unfold is a no-op — deleting
 /// the realm with the highest id leaves the watermark exactly where it was.
 fn next_id(root: &MqStore) -> anyhow::Result<u32> {
-    let t = table(root);
+    let t = table(root)?;
     let watermark = okm_core::reduce_get::<MqStore, __OkmReduce_RealmRow_0>(
         t.store(),
         <RealmRow as Document>::NS_PREFIX,
@@ -250,7 +250,7 @@ impl RealmSet {
                     created_at: now_ms(),
                     global: 0,
                 };
-                table(&self.root).put(&RealmRowKey { id }, &row)?;
+                table(&self.root)?.put(&RealmRowKey { id }, &row)?;
                 RealmId::Persisted(id)
             }
         };
@@ -269,7 +269,7 @@ impl RealmSet {
                 .with_code_base_url(self.code_base_url.clone())
                 .with_cursor_ttl(self.cursor_ttl)
                 .shared_async()
-                .await;
+                .await?;
             let realm = self.adopt(realm).await;
             live.insert(
                 id,
@@ -323,7 +323,7 @@ impl RealmSet {
             .with_code_base_url(self.code_base_url.clone())
             .with_cursor_ttl(self.cursor_ttl)
             .shared_async()
-            .await;
+            .await?;
         let realm = self.adopt(realm).await;
         self.live.lock().await.insert(
             id,
@@ -378,7 +378,7 @@ impl RealmSet {
     /// knew its name.
     pub async fn live(&self) -> anyhow::Result<Vec<String>> {
         let mut names: Vec<String> = Vec::new();
-        let t = table(&self.root);
+        let t = table(&self.root)?;
         for (_, payload) in t.scan_documents_raw()? {
             // A document with only a dynamic segment is not a realm row (the
             // write path above always lands the row); nothing in aura can
@@ -419,7 +419,7 @@ impl RealmSet {
         // name, and a crash between here and the range delete leaves garbage
         // in a slice nothing can open, rather than a row pointing at a realm
         // whose data is half gone.
-        table(&self.root).purge(&RealmRowKey { id: number })?;
+        table(&self.root)?.purge(&RealmRowKey { id: number })?;
         self.delete_prefix(number)?;
         Ok(())
     }
@@ -542,7 +542,7 @@ mod tests {
         let set = RealmSet::with_mq(root);
         let a = set.open("alpha").await.unwrap();
         let b = set.open("beta").await.unwrap();
-        let ta = crate::timer_entry::table(a.store());
+        let ta = crate::timer_entry::table(a.store()).unwrap();
         crate::timer_entry::put(
             &ta,
             crate::timer_entry::TimerEntryKey { due_ms: 1, id: 7 },
@@ -552,7 +552,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(crate::timer_entry::all(&ta).unwrap().len(), 1);
-        let tb = crate::timer_entry::table(b.store());
+        let tb = crate::timer_entry::table(b.store()).unwrap();
         assert!(
             crate::timer_entry::all(&tb).unwrap().is_empty(),
             "a write in one realm's table is absent from the other's"

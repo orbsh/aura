@@ -173,6 +173,40 @@ impl Realm {
         booth: BoothType,
         schema: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
+        // ADR-0016 §3, the DECLARATIVE half: `lifecycle.cron` becomes durable
+        // one-shot timers here, at registration, and every later instant is the
+        // body's own computation on delivery (it re-arms) — the runtime never
+        // reads a schedule at runtime.
+        //
+        // The target is the SINGLETON instance, and that is a rule, not a
+        // shortcut: a type-level declaration has no key to name, so a type that
+        // routes per key has no instance this registration could wake. Such a
+        // type registers its own wake from the handler that knows the key —
+        // exactly what the imperative door is for (gravity's compression wake).
+        let declared_cron = match schema
+            .as_ref()
+            .and_then(|s| s.get("lifecycle"))
+            .and_then(|l| l.get("cron"))
+        {
+            Some(raw) => {
+                let entries =
+                    aura_booth::lifecycle::cron(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+                for receive in &booth.receives {
+                    if !matches!(receive.resolution, aura_booth::RouteResolution::Singleton) {
+                        anyhow::bail!(
+                            "lifecycle.cron: `{}` routes `{}` per key, so a type-level schedule \
+                             has no instance to wake — a keyed booth asks for its wake from the \
+                             handler that knows the key (ctx.timer.register)",
+                            booth.name,
+                            receive.event
+                        );
+                    }
+                }
+                entries
+            }
+            None => Vec::new(),
+        };
+        let type_name = booth.name.clone();
         // A Rust body has no definition to persist (`from_type` answers None):
         // it is a compile-time construct, in either kind of realm.
         if let Some(mut def) = aura_booth::persist::PersistedBooth::from_type(&booth) {
@@ -191,6 +225,23 @@ impl Realm {
             crate::meta::put_blob(&self.mq, crate::meta::code_hash(source), source.as_bytes())?;
         }
         self.register_type_with(booth, schema);
+        // The type is registered BEFORE any wake is armed: a timer that fired
+        // against an unknown type would be a delivery the realm cannot answer.
+        for decl in declared_cron {
+            // `register_declared`, not `register_durable`: a declaration
+            // REPLACES its chain, so a re-registration cannot double a schedule.
+            // The replace happens in the driver — the one writer — because a
+            // purge here would race the row the previous registration has only
+            // queued.
+            self.timers.register_declared(
+                aura_booth::InstanceId {
+                    booth_type: type_name.clone(),
+                    key: aura_booth::InstanceKey::Singleton,
+                },
+                decl.tag,
+                decl.every,
+            );
+        }
         Ok(())
     }
 

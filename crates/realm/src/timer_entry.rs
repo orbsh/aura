@@ -77,6 +77,33 @@ pub fn purge(table: &TimerTable, key: &TimerEntryKey) -> okm_core::Result<bool> 
     table.purge(key)
 }
 
+/// Forget every row naming the same declared schedule — `(booth_type,
+/// instance_key, tag)`. A registration that runs twice must not leave two
+/// chains behind: the wheel would fire both, and the booth would re-arm twice
+/// from each, so a re-declared type would drift into a doubling schedule.
+///
+/// One read of the whole table, because the schedule is small and this runs at
+/// registration, never on a delivery path.
+pub fn purge_schedule(
+    table: &TimerTable,
+    booth_type: &str,
+    instance_key: &str,
+    tag: &str,
+) -> okm_core::Result<usize> {
+    let mut gone = 0;
+    for (key, row) in all(table)? {
+        let Some(row) = row else { continue };
+        if row.booth_type == booth_type
+            && row.instance_key == instance_key
+            && row.tag == tag
+            && purge(table, &key)?
+        {
+            gone += 1;
+        }
+    }
+    Ok(gone)
+}
+
 /// Everything owed at or before `now_ms`, oldest first. The boot path calls this
 /// with `u64::MAX` (the whole table); the arming path calls it with the next
 /// due instant.

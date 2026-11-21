@@ -499,19 +499,12 @@ impl aura_realm::dispatch::Registrar for Engine {
 
 /// Parse lifecycle.idle_ttl from a schema value: number (seconds) or a
 /// string with a mandatory unit suffix ("300s" / "5m" / "2h").
+/// The `lifecycle` duration grammar, in ONE place (`aura_booth::lifecycle`):
+/// `idle_ttl`, `max_exec` and `cron[].every` all read the same spelling, so a
+/// booth author learns it once and a realm arming a declared schedule cannot
+/// disagree with the engine reading the same block.
 fn parse_ttl(v: &serde_json::Value) -> Option<std::time::Duration> {
-    match v {
-        serde_json::Value::Number(n) => n.as_u64().map(std::time::Duration::from_secs),
-        serde_json::Value::String(s) => {
-            match (s.chars().last()?, s[..s.len() - 1].parse::<u64>().ok()?) {
-                ('s', n) => Some(std::time::Duration::from_secs(n)),
-                ('m', n) => Some(std::time::Duration::from_secs(n * 60)),
-                ('h', n) => Some(std::time::Duration::from_secs(n * 3600)),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    aura_booth::lifecycle::duration(v)
 }
 
 pub mod effectors;

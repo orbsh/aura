@@ -407,6 +407,7 @@ impl BoothType {
 
 /// Narrow alias so the public API stays readable without a futures dep.
 pub mod call;
+pub mod lifecycle;
 pub mod persist;
 pub mod store_emit;
 pub mod resource;

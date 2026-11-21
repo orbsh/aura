@@ -69,6 +69,18 @@ enum Command {
         /// fast path).
         durable: bool,
     },
+    /// A DECLARED schedule (`lifecycle.cron`), armed at registration. It is a
+    /// separate command because it owns a rule the imperative door must not:
+    /// the declaration REPLACES any row for the same schedule, since a type
+    /// registered twice owes one chain, not two. The purge and the write happen
+    /// here, in the one writer, so a second registration cannot slip its row in
+    /// before the first one is visible.
+    RegisterDeclared {
+        id: TimerId,
+        target: InstanceId,
+        tag: String,
+        at: Duration,
+    },
     Cancel(TimerId),
     /// Reclaim entries only: the job-entry path voids pending idle/
     /// watchdog timers (work arrived) but must NOT touch the instance's
@@ -129,6 +141,22 @@ impl TimerHandle {
             entry: Entry::Deliver { target, tag },
             at,
             durable: true,
+        });
+        id
+    }
+
+    /// A declared schedule's first wake: durable, and REPLACING whatever row the
+    /// same `(type, key, tag)` already names. Called once per declaration at
+    /// registration; every later instant is the body's own (it re-arms through
+    /// `ctx.timer.register`, which appends rather than replaces — a chain is the
+    /// booth's business, a declaration is the type's).
+    pub fn register_declared(&self, target: InstanceId, tag: String, at: Duration) -> TimerId {
+        let id = self.alloc_id();
+        let _ = self.tx.send(Command::RegisterDeclared {
+            id,
+            target,
+            tag,
+            at,
         });
         id
     }
@@ -308,6 +336,63 @@ impl TimerDriver {
                     .queue
                     .insert_at((id, entry.clone()), tokio::time::Instant::now() + at);
                 self.index.insert(id, (key, entry));
+            }
+            Command::RegisterDeclared {
+                id,
+                target,
+                tag,
+                at,
+            } => {
+                // Replace, don't append: the schedule a type declares is one
+                // chain, and a re-registration is the same declaration arriving
+                // twice (a hot reload, a redeploy) rather than a second wake.
+                if let Err(error) =
+                    timer_entry::purge_schedule(&self.timers, &target.booth_type, target.key.render(), &tag)
+                {
+                    eprintln!("aura: declared schedule not replaced ({id:?}): {error}");
+                }
+                // The wheel's copy goes with the row: the table is the
+                // schedule, but a pending in-memory entry from the replaced
+                // registration would still fire once — a doubling a test can
+                // see and an operator cannot.
+                let victims: Vec<TimerId> = self
+                    .index
+                    .iter()
+                    .filter(|(_, (_, e))| match e {
+                        Entry::Deliver { target: t, tag: g } => *t == target && *g == tag,
+                        _ => false,
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                for victim in victims {
+                    self.cancel(&victim);
+                }
+                let entry = Entry::Deliver {
+                    target: target.clone(),
+                    tag: tag.clone(),
+                };
+                let key = TimerEntryKey {
+                    due_ms: now_ms().saturating_add(at.as_millis() as u64),
+                    id: id.0,
+                };
+                match timer_entry::put(
+                    &self.timers,
+                    key.clone(),
+                    &target.booth_type,
+                    target.key.render(),
+                    &tag,
+                ) {
+                    Err(error) => {
+                        eprintln!("aura: declared schedule row not written ({id:?}): {error}")
+                    }
+                    Ok(()) => {
+                        self.durable.insert(id, key);
+                    }
+                }
+                let slot = self
+                    .queue
+                    .insert_at((id, entry.clone()), tokio::time::Instant::now() + at);
+                self.index.insert(id, (slot, entry));
             }
             Command::Cancel(id) => self.cancel(&id),
             Command::CancelReclaimTarget(target) => self.cancel_kind(&target, false),

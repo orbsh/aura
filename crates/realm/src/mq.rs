@@ -547,7 +547,7 @@ pub fn instance_key_id_of(store: &MqStore, name: &str) -> anyhow::Result<Option<
 /// it is what lets ops render a queue in human terms.
 pub fn instance_key_of(store: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, InstanceKeyRegistryKey, InstanceKeyRegistry>::open(store.clone())?;
-    Ok(crate::row_opt(t.get_row(&InstanceKeyRegistryKey { id }))?.map(|row| row.name))
+    Ok(t.get_row(&InstanceKeyRegistryKey { id })?.map(|row| row.name))
 }
 
 /// The booth's identity id (delegated to the meta plane's single dictionary,
@@ -653,7 +653,7 @@ pub fn append(
             instance_key_id,
             seq,
         },
-        &okm_dynamic::Value::Map(okm_dynamic::Dict::from_iter(obj)),
+        &okm_value::Variant::Map(okm_value::Dict::from_iter(obj)),
     )?;
     Ok(seq)
 }
@@ -680,11 +680,11 @@ pub fn cursor(
     let event_id = resolve_event_id(store, event)?;
     let booth_id = booth_id_of(store, booth_type)?;
     let t = Collection::<MqStore, MqCursorKey, MqCursor>::open(store.clone())?;
-    Ok(crate::row_opt(t.get_row(&MqCursorKey {
+    Ok(t.get_row(&MqCursorKey {
         event_id,
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
-    }))?
+    })?
     .map(|c| c.cursor)
     .unwrap_or(0))
 }
@@ -709,7 +709,7 @@ pub fn advance(
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
     };
-    let current = crate::row_opt(t.get_row(&key))?.map(|c| c.cursor).unwrap_or(0);
+    let current = t.get_row(&key)?.map(|c| c.cursor).unwrap_or(0);
     if seq <= current {
         return Ok(());
     }
@@ -741,7 +741,7 @@ pub fn backlog(
     let mut out = Vec::new();
     for key in t.scan_keys(&probe) {
         let key = key?;
-        if key.seq > after_seq && crate::row_opt(t.get_row(&key))?.is_some() {
+        if key.seq > after_seq && t.get_row(&key)?.is_some() {
             // Reconstruct from the dynamic segment (name-keyed).
             // The DYNAMIC half is its own door now (`slot1_map`): the row is a
             // typed struct, and a document's name-keyed segment is a `Dict`.
@@ -849,7 +849,7 @@ pub fn age_cursor(
         instance_key_id: instance_key_id(store, part)?,
         booth_id,
     };
-    let cursor = crate::row_opt(t.get_row(&key))?.map(|c| c.cursor).unwrap_or(0);
+    let cursor = t.get_row(&key)?.map(|c| c.cursor).unwrap_or(0);
     t.put(
         &key,
         &MqCursor {
@@ -960,7 +960,7 @@ pub fn routes_of_event(
     let mut out = Vec::new();
     for key in t.scan_keys(&probe) {
         let key = key?;
-        if let Some(row) = crate::row_opt(t.get_row(&key))? {
+        if let Some(row) = t.get_row(&key)? {
             out.push((key.booth_id, row_resolution(&row), row.wildcard != 0));
         }
     }
@@ -1059,7 +1059,7 @@ pub fn cursor_rows(
     let mut out = Vec::new();
     for key in t.scan_keys(&probe) {
         let key = key?;
-        let row = crate::row_opt(t.get_row(&key))?;
+        let row = t.get_row(&key)?;
         out.push((
             key.booth_id,
             row.as_ref().map(|c| c.cursor).unwrap_or(0),
@@ -1094,7 +1094,7 @@ pub fn drop_cursor(
 /// The registered name for an event id (None = never registered).
 pub fn event_name_of(store: &MqStore, event_id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, EventNameKey, EventName>::open(store.clone())?;
-    Ok(crate::row_opt(t.get_row(&EventNameKey { id: event_id }))?.map(|a| a.name))
+    Ok(t.get_row(&EventNameKey { id: event_id })?.map(|a| a.name))
 }
 
 /// The queue THIS booth instance subscribes to for one concrete event,

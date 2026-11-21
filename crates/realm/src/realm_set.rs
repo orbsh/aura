@@ -112,7 +112,7 @@ fn id_of_name(root: &MqStore, name: &str) -> anyhow::Result<Option<u32>> {
 /// The name an id has (`None` = no such row).
 fn name_of_id(root: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
     let t = table(root)?;
-    Ok(crate::row_opt(t.get_row(&RealmRowKey { id }))?.map(|row| row.name))
+    Ok(t.get_row(&RealmRowKey { id })?.map(|row| row.name))
 }
 
 /// The next id to issue: the table's `HighWater(id)` watermark + 1.

@@ -2,10 +2,10 @@
 //! carrying okm Collection operations as data. The executor resolves the
 //! booth type's registry-allocated ns (`meta::ns_of`), rebuilds the type's
 //! declared collection from the schema persisted at upload, and executes
-//! the op through okm-dynamic `DynamicCollection` — the schema-driven
+//! the op through okm-core `DynamicCollection` — the schema-driven
 //! arm of the two-mode storage model (okm ADR-0025). The op protocol
 //! types live in aura-booth (`store_emit.rs`); JSON is the wire currency,
-//! converted to okm-dynamic `Value` at this seam.
+//! converted to okm-value `Variant` at this seam.
 //!
 //! wasm (Rust source) booths do NOT pass through here: they compile the
 //! static mode (derive + okm-core `Collection`) into the module and talk
@@ -13,7 +13,11 @@
 
 use crate::mq::MqStore;
 use aura_booth::{StoreOp, StoreOpKind};
-use okm_dynamic::{AccessMethod, Dict, DynamicCollection, ReduceSpec, Value};
+use okm_core::model::access_method::{AccessMethod, AccessMethodKind, scan_access_method};
+use okm_core::model::byte_reduce::{ByteReduce, ReduceSpec, reduce_get};
+use okm_core::model::dynamic_collection::DynamicCollection;
+use okm_core::model::encode::{encode_fields, encode_key};
+use okm_value::{Dict, Variant as Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -79,7 +83,7 @@ impl IndexSpecData {
             slot: self.slot,
             fields: self.fields.clone(),
             includes: self.includes.clone(),
-            kind: okm_dynamic::AccessMethodKind::Plain,
+            kind: AccessMethodKind::Plain,
             // ADR-0048: the caller's claim that what this face produces changed
             // for a reason the structure cannot show. Schema-declared plain
             // indexes have no such reason — a renumbering moves the slot, which
@@ -178,8 +182,8 @@ impl StorePlan {
     }
 }
 
-/// json → okm-dynamic Value (the executor seam; realm/value.rs is the
-/// okm-core DynamicValue seam — two modes, two currencies).
+/// json → okm-value `Variant` (the executor seam; realm/value.rs is the
+/// `DynamicValue` alias over the same type — two modes, one currency).
 fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
     Ok(match v {
         serde_json::Value::Null => Value::Null,
@@ -308,10 +312,10 @@ pub fn resolve_scan_targets(
         am.fields[0].clone(),
         json_to_value(effector).map_err(|e| format!("resolve: effector: {e}"))?,
     );
-    let encoded = okm_dynamic::encode_fields(schema, &am.fields, &key_values)
+    let encoded = encode_fields(schema, &am.fields, &key_values)
         .map_err(|e| format!("resolve: effector encode: {e}"))?;
     let ns_prefix = plan.ns.to_be_bytes().to_vec();
-    let rows = okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)
+    let rows = scan_access_method(store, schema, &ns_prefix, &am, &encoded)
         .map_err(|e| format!("resolve: scan: {e}"))?;
     // Each hit's primary key map → the instance key string. Single key
     // field, so exactly one entry; rendered in its canonical string form.
@@ -398,7 +402,7 @@ pub fn execute(
         DynamicCollection::with_reduces(store.clone(), plan.ns, schema.clone(), indexes, reduces);
     match &op.op {
         StoreOpKind::PutDocument { key, doc } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             let d = json_map(doc, "doc")?;
             // `merge` is the document write (ADR-0035): declared names rebuild
@@ -407,7 +411,7 @@ pub fn execute(
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetDocument { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             match coll.fetch(&k)? {
                 Some(m) => Ok(map_to_json(&m)),
@@ -415,7 +419,7 @@ pub fn execute(
             }
         }
         StoreOpKind::DeleteDocument { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             coll.purge(&k)?;
             Ok(serde_json::json!({ "ok": true }))
@@ -428,7 +432,7 @@ pub fn execute(
         // is the document). Scalar values only — an object is a document, not
         // a field value.
         StoreOpKind::PutFields { key, fields } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             // `merge` is the whole point of the arm split: it classifies these
             // names first — declared ones go through the row RMW (read, then
@@ -439,7 +443,7 @@ pub fn execute(
             Ok(serde_json::json!({ "ok": true }))
         }
         StoreOpKind::GetFields { key, fields } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             // An empty dynamic half is "no segment" — the same answer the
             // retired segment-only read gave (null, not an empty object).
@@ -466,7 +470,7 @@ pub fn execute(
             }
         }
         StoreOpKind::DeleteFields { key } => {
-            let k = okm_dynamic::encode_key(schema, &json_map(key, "key")?)
+            let k = encode_key(schema, &json_map(key, "key")?)
                 .map_err(|e| e.to_string())?;
             // Dropping the segment means the document IS its declared half: the
             // whole-document payload (`(&Value,)`) rebuilds the row from that map and
@@ -510,7 +514,7 @@ pub fn execute(
             for (fname, v) in index_fields.iter().zip(vals.iter()) {
                 key_values.insert(fname.clone(), json_to_value(v)?);
             }
-            let encoded = okm_dynamic::encode_fields(schema, &index_fields, &key_values)
+            let encoded = encode_fields(schema, &index_fields, &key_values)
                 .map_err(|e| format!("scan prefix encode: {e}"))?;
             let ns_prefix = plan.ns.to_be_bytes().to_vec();
             let am = INDEX_SPECS
@@ -520,7 +524,7 @@ pub fn execute(
                 .ok_or("index spec missing")?
                 .access_method();
             let mut rows =
-                okm_dynamic::scan_access_method(store, schema, &ns_prefix, &am, &encoded)?;
+                scan_access_method(store, schema, &ns_prefix, &am, &encoded)?;
             if let Some(_n) = limit {
                 rows.truncate(limit.unwrap_or(u64::MAX) as usize);
             }
@@ -555,10 +559,10 @@ pub fn execute(
             let mut entry = plan.ns.to_be_bytes().to_vec();
             entry.extend_from_slice(&slot.to_be_bytes());
             entry.extend_from_slice(
-                &okm_dynamic::encode_fields(schema, &spec_group, &key_values)
+                &encode_fields(schema, &spec_group, &key_values)
                     .map_err(|e| e.to_string())?,
             );
-            match okm_dynamic::reduce_get(store, &entry)? {
+            match reduce_get(store, &entry)? {
                 Some(bytes) => {
                     if bytes.len() == 8 {
                         // The width check above makes the conversion
@@ -661,7 +665,7 @@ mod tests {
 //                   "includes": [...], "kind": "plain" } ]
 //   "reduces":  [ { "name": "total", "slot": 20481, "group": [...],
 //                   "kind": "count" | {"high_water": "field"} | {"low_water": "field"} } ]
-// Preset logics implement okm-dynamic's ByteReduce in Rust (the acc is
+// Preset logics implement okm-core's ByteReduce in Rust (the acc is
 // u64 BE — the same layout okm-core's presets use); host-language logic
 // objects (python/steel callables) register through the bindings, not
 // through schema data.
@@ -700,7 +704,7 @@ fn build_access_method(v: &serde_json::Value) -> Result<(String, AccessMethod), 
         None => Vec::new(),
     };
     let kind = match obj.get("kind").and_then(|x| x.as_str()).unwrap_or("plain") {
-        "plain" => okm_dynamic::AccessMethodKind::Plain,
+        "plain" => AccessMethodKind::Plain,
         other => return Err(format!("unsupported index kind `{other}`")),
     };
     Ok((
@@ -739,7 +743,7 @@ impl PresetLogic {
     }
 }
 
-impl okm_dynamic::ByteReduce for PresetLogic {
+impl ByteReduce for PresetLogic {
     fn seed(&self) -> Vec<u8> {
         match self.kind {
             PresetKind::Count | PresetKind::HighWater(_) => 0u64.to_be_bytes().to_vec(),

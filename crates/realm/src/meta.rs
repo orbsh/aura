@@ -162,7 +162,7 @@ pub fn resolve_booth_id(meta: &MqStore, name: &str) -> anyhow::Result<u32> {
 /// `booth_name_of` service relocated here; one dictionary, both ways).
 pub fn booth_name_of(meta: &MqStore, id: u32) -> anyhow::Result<Option<String>> {
     let t = Collection::<MqStore, BoothNameKey, BoothName>::open(meta.clone())?;
-    Ok(crate::row_opt(t.get_row(&BoothNameKey { id }))?.map(|row| row.name))
+    Ok(t.get_row(&BoothNameKey { id })?.map(|row| row.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ pub fn code_hex(sha: &[u8; 32]) -> String {
 /// dedup, never a correctness requirement — same bytes, same row).
 pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<()> {
     let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::open(meta.clone())?;
-    if crate::row_opt(t.get_row(&CodeBlobKey { sha256: sha }))?.is_some() {
+    if t.get_row(&CodeBlobKey { sha256: sha })?.is_some() {
         return Ok(());
     }
     t.put(
@@ -261,7 +261,7 @@ pub fn put_blob(meta: &MqStore, sha: [u8; 32], bytes: &[u8]) -> anyhow::Result<(
 /// Read the blob bytes (None = never stored under this hash).
 pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> anyhow::Result<Option<Vec<u8>>> {
     let t = Collection::<MqStore, CodeBlobKey, CodeBlob>::open(meta.clone())?;
-    Ok(crate::row_opt(t.get_row(&CodeBlobKey { sha256: *sha }))?.map(|row| row.data.0))
+    Ok(t.get_row(&CodeBlobKey { sha256: *sha })?.map(|row| row.data.0))
 }
 
 /// The dynamic-segment key the schema rides under ("schema" as a dynamic
@@ -271,7 +271,7 @@ pub fn get_blob(meta: &MqStore, sha: &[u8; 32]) -> anyhow::Result<Option<Vec<u8>
 const SCHEMA_FIELD: &str = "schema";
 
 impl BoothDef {
-    fn of(def: &PersistedBooth) -> (Self, Option<okm_dynamic::Value>) {
+    fn of(def: &PersistedBooth) -> (Self, Option<okm_value::Variant>) {
         (
             Self {
                 name: def.name.clone(),
@@ -293,7 +293,7 @@ impl BoothDef {
     /// from the blob store by `code_sha256`.
     fn into_persisted(
         self,
-        schema: Option<okm_dynamic::Value>,
+        schema: Option<okm_value::Variant>,
     ) -> (PersistedBooth, [u8; 32]) {
         (
             PersistedBooth {
@@ -360,7 +360,7 @@ pub fn persist(meta: &MqStore, booth: &PersistedBooth) -> anyhow::Result<()> {
     }
     // `put`'s map payload IS the whole-document write `replace` was: the segment
     // becomes exactly this map, which is what "absent schema = absent field" needs.
-    t.put(&BoothDefKey { booth_id }, (&okm_dynamic::Value::Map(whole),))?;
+    t.put(&BoothDefKey { booth_id }, (&okm_value::Variant::Map(whole),))?;
     Ok(())
 }
 

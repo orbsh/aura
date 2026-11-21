@@ -61,6 +61,7 @@ Decisions live in `docs/adr/`; the design in `docs/design/` (`storage.md`, `real
 - [x] Every carrier answers honestly: `exec` kills its child, `induction` writes the frame, `steel` and `python` report `landed: false` because they cannot reach the work
 
 ## Open items needing a ruling — measured 2026-11-09
+- [ ] Binding a table costs a meta read. `Collection::open` attaches — it seeds or checks the store's meta row — and this crate binds tables per call (`realm_set::table`, `timer_entry::table`, the eight `Collection::open` sites in `mq.rs`). Correct, but paid on every operation. Two ways out: hold the handles (built once with the realm) instead of re-binding, or have okm separate "attach once" from "borrow a bound handle". Decide which side owns it before optimizing.
 
 - [ ] Phase 4.8's durable timer tier has no home: `crates/realm/src/timer.rs:104` registers memory-tier entries only, and the StateStore it points at was retired by ADR-0026 §3
 - [x] Phases 7 and 8 promised more than the split allows — restated the same day (see Milestone B)

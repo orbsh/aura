@@ -9,7 +9,7 @@ aura-booth = { path = "../booth" }
 effector-runtime = { path = "../../../effector/crates/runtime" }
 effector-protocol = { path = "../../../effector/crates/protocol" }
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde"] }
-okm-dynamic = { git = "https://github.com/orbsh/okm", branch = "main" }
+okm-value = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-wire = { git = "https://github.com/orbsh/okm", branch = "main" }
 base64 = "0.22"
 sha2 = "0.10"

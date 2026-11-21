@@ -10,7 +10,7 @@
 
 // The dynamic value moved out of okm-core into its own crate (okm-value); the
 // realm's word for it is unchanged, so the alias carries the migration.
-use okm_dynamic::Value as DynamicValue;
+use okm_value::Variant as DynamicValue;
 
 pub fn json_to_dyn(v: &serde_json::Value) -> DynamicValue {
     match v {

@@ -1,6 +1,6 @@
 # ADR-0016: 定时器——timer wheel 延迟投递与 cron 语义
 
-**状态**：部分落地（2026-09-23：DelayQueue 驱动、两类条目、idle 从作业完成起算、`max_exec` watchdog；2026-10-09：命令式 `ctx_timer_register/cancel` 宿主函数——仅内存层；2026-11-09：durable 层已落地——ns 27 `TimerEntry`，ADR-0040；`ctx.timer.register {durable: true}` 写行，驱动开机从表重建轮子；声明式 `lifecycle.cron` 仍待）
+**状态**：部分落地（2026-09-23：DelayQueue 驱动、两类条目、idle 从作业完成起算、`max_exec` watchdog；2026-10-09：命令式 `ctx_timer_register/cancel` 宿主函数——仅内存层；2026-11-09：durable 层已落地——ns 27 `TimerEntry`，ADR-0040；`ctx.timer.register {durable: true}` 写行，驱动开机从表重建轮子；2026-11-21：声明式那一半已落地——`lifecycle.cron` 在注册时为单例类型装 durable one-shot，重复注册替换其链条）
 **日期**：2026-09-22
 **英文版**：[0016-timers-timer-wheel-cron.md](0016-timers-timer-wheel-cron.md)
 
@@ -92,6 +92,11 @@ cron 有两个入口，引擎在两者中的角色都被刻意收窄：
 - **命令式**（`ctx.timer.register`）：由对话状态在运行时算出的
   唤醒时刻（gravity 的正交唤醒）无法用静态规格表达——摊位自己
   算出下一时刻并注册。
+
+**声明的语法**（2026-11-21 落地）：`lifecycle.cron` 是数组 `[{"tag": "beat", "every": "5m"}]`。`every` 与 `lifecycle.idle_ttl` 共用一套时长写法（`90`、`"90s"`、`"5m"`、`"2h"`）；单个对象被拒收，而不当成单元素数组读；`"0s"` 也被拒——永远到期的日程是循环，不是定时器。随之有两条规则：
+
+- **目标只能是单例实例。** 类型级声明没有键可写，按键路由的类型因此没有可唤醒的实例；注册会点名拒绝，并指向 `ctx.timer.register`，由知道键的处理函数去调。另一种做法（悄悄唤醒一个没人路由到的单例）等于一次永远没人应答的唤醒。
+- **重复注册替换其链条**，表行与轮中待发条目一起换。重新部署或热重载会以同一声明到达两次；若追加，就留下一条翻倍的日程，而场里没有任何东西看得见它。替换发生在驱动里（表与轮的唯一写者），不在调用方：调用方做清理会与上一次注册刚排队的行竞争。
 
 两种形态下，调度**语义**都归摊位；引擎只拥有投递**机制**：
 

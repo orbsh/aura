@@ -24,7 +24,7 @@ Decisions live in `docs/adr/`; the design in `docs/design/` (`storage.md`, `real
 - [x] Phase 4.5c — Multi-entry booths and the event-queue semantics
 - [~] Phase 4.8 — Timers — ADR-0016
   - [x] the durable timer tier — `TimerEntry` rows in ns 27 (ADR-0040): `ctx.timer.register {durable: true}` writes the row (`crates/realm/src/timer.rs` `register_durable`) and the driver rebuilds the wheel from it at boot. Landed 2026-11-09; the retired `StateStore` never needed reviving for it
-  - [ ] the declarative half: `lifecycle.cron` in `interface_schema` translates to durable one-shots at registration (ADR-0016 §3) — the only piece of 4.8 still open
+  - [x] The declarative half — 2026-11-21 (ADR-0016 §3, grammar in `aura_booth::lifecycle`): `lifecycle.cron` in `interface_schema` is an array of `{tag, every}`, armed as durable one-shots at registration; the target is the SINGLETON (a keyed type is refused by name and pointed at `ctx.timer.register`, because a type-level schedule has no instance to wake); a re-registration replaces its chain, row and pending wheel entry both. `cron_declared.rs` pins the three facts
 - [x] Phase 4.9 — Type-scoped booth storage — ADR-0026
 - [x] Phase 4.10 — Effector affinity and realm demotion — ADR-0026, ADR-0028
 - [x] Phase 4.11 — Content-addressed code delivery — ADR-0027

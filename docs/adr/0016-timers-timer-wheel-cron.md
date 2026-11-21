@@ -1,6 +1,6 @@
 # ADR-0016: Timers — Timer-Wheel Delayed Emit and Cron Semantics
 
-**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; 2026-11-09: the durable tier LANDED — ns 27 `TimerEntry`, ADR-0040, with `ctx.timer.register {durable: true}` writing the row and the driver rebuilding the wheel from it at boot; declarative `lifecycle.cron` still pending)
+**Status**: Partially landed (2026-09-23: DelayQueue driver, two entry kinds, idle-from-completion, `max_exec` watchdog; 2026-10-09: the imperative `ctx_timer_register/cancel` host fns — memory tier only; 2026-11-09: the durable tier LANDED — ns 27 `TimerEntry`, ADR-0040, with `ctx.timer.register {durable: true}` writing the row and the driver rebuilding the wheel from it at boot; 2026-11-21: the DECLARATIVE half LANDED — `lifecycle.cron` arms durable one-shots at registration for singleton types, and a re-registration replaces its chain)
 **Date**: 2026-09-22
 **Chinese**: [0016-timers-timer-wheel-cron.zh-CN.md](0016-timers-timer-wheel-cron.zh-CN.md)
 
@@ -115,6 +115,25 @@ in both:
   runtime from conversation state (gravity's orthogonally-scheduled
   wakes) are not expressible as a static spec — the booth computes the
   next instant itself and registers it.
+
+**The declaration's grammar** (landed 2026-11-21): `lifecycle.cron` is an
+ARRAY, `[{"tag": "beat", "every": "5m"}]`. `every` uses the same duration
+grammar as `lifecycle.idle_ttl` (`90`, `"90s"`, `"5m"`, `"2h"`), a bare object
+is refused rather than read as a one-element array, and `"0s"` is refused
+because a schedule that is always due is a loop. Two rules come with it:
+
+- **The target is the singleton instance, and only that.** A type-level
+  declaration has no key to name, so a type that routes per key has no instance
+  this declaration could wake; registration refuses it by name and points at
+  `ctx.timer.register`, which the handler that knows the key calls. The
+  alternative — silently waking a singleton nobody routes to — would be a wake
+  that is never answered.
+- **A re-registration replaces its chain**, row and pending wheel entry both.
+  A redeploy or hot reload arrives as the same declaration twice, and appending
+  would leave a doubling schedule that nothing in the venue could see. The
+  replacing happens in the driver (the one writer of both structures), not at
+  the caller: a purge from the caller races the row the previous registration
+  only queued.
 
 In both cases the booth owns the schedule SEMANTICS; the engine owns
 only the delivery mechanics:

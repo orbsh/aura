@@ -226,10 +226,11 @@ pub enum HookBody {
     Declared,
 }
 
-/// The reserved lifecycle names (ADR-0043 §3): the only hook names the
-/// construction-side builder and the script `ctx.on` face accept — the
-/// same family as the timer plane's `__on_timer`.
-pub const RESERVED_HOOKS: &[&str] = &["__sleep", "__wake"];
+/// The reserved names the HOST delivers and the venue may never emit (ADR-0043 §3):
+/// residency's `__sleep`/`__wake`, and `__on_timer` — a due timer arrives as an ordinary
+/// queue job whose handler is that name (ADR-0016 §1), so a booth must be able to declare
+/// it even though no sender on the other side of the wire can.
+pub const RESERVED_HOOKS: &[&str] = &["__sleep", "__wake", "__on_timer"];
 
 impl BoothType {
     /// Define a script type executed by a effector carrier (JSON-lines

@@ -375,11 +375,14 @@ impl Realm {
         // ADR-0016 §3b, landed: the imperative ctx.timer face. `register`
         // arms a Deliver entry (fire = an `__on_timer` job carrying the
         // tag); `cancel` is by id, idempotent (unknown = already fired/
-        // cancelled). Durability is NOT in this surface: the StateStore
-        // the ADR's durable-restore clause named was retired by ADR-0026
-        // §3 — timers live in the wheel for the process lifetime
-        // (recorded residual; a durable path re-enters with a durable
-        // registration table, not by reviving flat instance state).
+        // cancelled). `durable: true` is the second half of the same face
+        // (ADR-0016 as amended 2026-11-09): the schedule is then a row in
+        // ns 27 (`TimerEntry`, ADR-0040) that the driver rebuilds the wheel
+        // from at boot, so a wake outlives the process rather than only the
+        // eviction of the booth that armed it. The DEFAULT stays the memory
+        // tier — the wheel for the process lifetime — which is the right
+        // thing for short windows a booth re-arms on its next real event;
+        // durability is asked for per registration, never assumed here.
         {
             let timers_register = timers.clone();
             let target = ctx.self_id.clone();

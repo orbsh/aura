@@ -23,7 +23,8 @@ Decisions live in `docs/adr/`; the design in `docs/design/` (`storage.md`, `real
 - [x] Phase 4.5b — The booth metadata lifecycle: introspect once at upload, persist to the meta store
 - [x] Phase 4.5c — Multi-entry booths and the event-queue semantics
 - [~] Phase 4.8 — Timers — ADR-0016
-  - [ ] the durable timer tier has no home — see "Open items needing a ruling"
+  - [x] the durable timer tier — `TimerEntry` rows in ns 27 (ADR-0040): `ctx.timer.register {durable: true}` writes the row (`crates/realm/src/timer.rs` `register_durable`) and the driver rebuilds the wheel from it at boot. Landed 2026-11-09; the retired `StateStore` never needed reviving for it
+  - [ ] the declarative half: `lifecycle.cron` in `interface_schema` translates to durable one-shots at registration (ADR-0016 §3) — the only piece of 4.8 still open
 - [x] Phase 4.9 — Type-scoped booth storage — ADR-0026
 - [x] Phase 4.10 — Effector affinity and realm demotion — ADR-0026, ADR-0028
 - [x] Phase 4.11 — Content-addressed code delivery — ADR-0027
@@ -63,7 +64,7 @@ Decisions live in `docs/adr/`; the design in `docs/design/` (`storage.md`, `real
 ## Open items needing a ruling — measured 2026-11-09
 - [ ] Binding a table costs a meta read. `Collection::open` attaches — it seeds or checks the store's meta row — and this crate binds tables per call (`realm_set::table`, `timer_entry::table`, the eight `Collection::open` sites in `mq.rs`). Correct, but paid on every operation. Two ways out: hold the handles (built once with the realm) instead of re-binding, or have okm separate "attach once" from "borrow a bound handle". Decide which side owns it before optimizing.
 
-- [ ] Phase 4.8's durable timer tier has no home: `crates/realm/src/timer.rs:104` registers memory-tier entries only, and the StateStore it points at was retired by ADR-0026 §3
+- [x] Phase 4.8's durable timer tier has no home — it got one on 2026-11-09: `TimerEntry` in ns 27 (ADR-0040), written by `register_durable` (`crates/realm/src/timer.rs:125`) and rebuilt into the wheel at boot. The retired StateStore was never the only home; this item was measured on the day the landing went in
 - [x] Phases 7 and 8 promised more than the split allows — restated the same day (see Milestone B)
 - [ ] A gated WILDCARD is unreachable from scripts: `wildcard_receives` is read as a plain string array, so no script can declare `auth` on a wildcard
 

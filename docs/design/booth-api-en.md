@@ -115,12 +115,14 @@ following — each takes one JSON argument and returns a JSON value:
   partition head, discarding the stale backlog (the relief valve;
   cursors are monotonic — a skipped backlog never re-surfaces on the
   next drain; events after the skip flow normally)
-- `ctx.timer.register({"at_ms": ..., "tag": ...})` → `{"timer_id": n}`
+- `ctx.timer.register({"at_ms": ..., "tag": ..., "durable": false})` → `{"timer_id": n}`
   (ADR-0016 §3b — the imperative timer: delivers an `__on_timer` queue
   job carrying the `tag` after `at_ms` milliseconds from now; the wake
   time is computed at runtime by the booth, not declared statically.
-  Memory tier — lives for the process lifetime; the durable tier is a
-  recorded residual)
+  Two tiers, chosen per registration: the default lives in the wheel for
+  the process lifetime, and `durable: true` writes a row in ns 27
+  (`TimerEntry`, ADR-0040) that the driver rebuilds the wheel from at
+  boot — for windows longer than the booth's own residency)
 - `ctx.timer.cancel({"timer_id": n})` → cancels a pending timer; an
   unknown id (already fired / already cancelled) is an idempotent
   no-op, not an error

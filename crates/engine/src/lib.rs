@@ -301,8 +301,34 @@ impl Engine {
                 }
             }
             if let Some(wildcards) = schema.get("wildcard_receives").and_then(|w| w.as_array()) {
-                for pattern in wildcards.iter().filter_map(|p| p.as_str()) {
+                for (i, entry) in wildcards.iter().enumerate() {
+                    // A wildcard entry is an OBJECT naming its pattern and knobs
+                    // (`{"pattern": "ui:*", "auth": true}`) or, from a hand-written
+                    // declaration, the bare pattern. Both name one route; the object is how a
+                    // script's `(on "ui:*" (hash "auth" #t) h)` reaches here at all, since a
+                    // string had nowhere to put the gate.
+                    let (pattern, auth) = match entry {
+                        serde_json::Value::String(p) => (p.as_str(), false),
+                        serde_json::Value::Object(map) => {
+                            let p = map.get("pattern").and_then(|p| p.as_str()).ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "wildcard_receives[{i}]: an object entry names its `pattern`"
+                                )
+                            })?;
+                            let auth = map
+                                .get("auth")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false);
+                            (p, auth)
+                        }
+                        _ => anyhow::bail!(
+                            "wildcard_receives[{i}]: a pattern string, or an object with `pattern`"
+                        ),
+                    };
                     booth = booth.on_wildcard(pattern);
+                    if auth {
+                        booth = booth.gated();
+                    }
                 }
             }
             // Reserved lifecycle hooks (ADR-0043 §3): the introspected

@@ -28,7 +28,12 @@ def remove(args): ...
 
 @on("order.*")                      # 前缀通配符 → wildcard_receives，单例
 def audit(args): ...
+
+@on("ui:*", auth=True)              # 带门禁的通配符：{"pattern": "ui:*", "auth": true}
+def draw(args): ...
 ```
+
+通配符是「前缀 + `*`」，命名空间不限于一种（`order.*` 与 `ui:*` 同形）。它在 `wildcard_receives` 里的条目是一个自带开关的对象——`{"pattern": …, "auth": true}`——于是「只服务有绑定用户的发送方」这个门禁在通配符上也表达得出来，不只能挂在精确事件上；只写模式字符串仍按「零开关的声明」读取。
 
 **投递语义：事件队列，不是实例内的 queue**。事件不属于任何 Booth——`emit("add_to_cart", data)` 把事件写入 `add_to_cart` 事件的队列；`@on` 声明了 `key` 的队列按 `(event, partition)` 分区（key 字段值取自事件数据），没声明 key 的队列按 event 单队列。一个队列可以有**多个订阅者**（多个摊位类型监听同一事件——一对多是结构性的，不是 fan-out 模拟）。摊位实例按自己的 `@on` 声明订阅队列，per-subscription cursor 保证同一实例串行消费，实例不拥有队列。
 

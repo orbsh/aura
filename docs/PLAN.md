@@ -66,7 +66,7 @@ Decisions live in `docs/adr/`; the design in `docs/design/` (`storage.md`, `real
 
 - [x] Phase 4.8's durable timer tier has no home — it got one on 2026-11-09: `TimerEntry` in ns 27 (ADR-0040), written by `register_durable` (`crates/realm/src/timer.rs:125`) and rebuilt into the wheel at boot. The retired StateStore was never the only home; this item was measured on the day the landing went in
 - [x] Phases 7 and 8 promised more than the split allows — restated the same day (see Milestone B)
-- [ ] A gated WILDCARD is unreachable from scripts: `wildcard_receives` is read as a plain string array, so no script can declare `auth` on a wildcard
+- [x] A gated WILDCARD is unreachable from scripts — 2026-11-21: `wildcard_receives` entries are objects carrying their knobs (`{"pattern": …, "auth": true}`), the carriers emit that shape (`(on "ui:*" (hash "auth" #t) h)`, `@on("ui:*", auth=True)`), and the bare pattern string still reads as the zero-knob declaration. The classification is now `ends_with('*')` rather than `ends_with(".*")`, so a `ui:*` wildcard is a wildcard at all — it used to land in `receives` as a literal name that could never match. `wildcard_gate_declared.rs` (aura) and `steel_wildcard_keeps_its_declared_gate` (effector) pin the route's gate, not the schema's
 
 ## Ideas — undecided
 

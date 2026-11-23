@@ -36,7 +36,12 @@ def remove(args): ...
 
 @on("order.*")                      # prefix wildcard → wildcard_receives, singleton
 def audit(args): ...
+
+@on("ui:*", auth=True)              # gated wildcard: {"pattern": "ui:*", "auth": true}
+def draw(args): ...
 ```
+
+A wildcard is a PREFIX plus `*`, in whatever namespace it lives in (`order.*` and `ui:*` are the same shape). Its entry in `wildcard_receives` is an object carrying its own knobs — `{"pattern": …, "auth": true}` — so a gate is expressible on a wildcard and not only on an exact event; a bare pattern string is still read as the zero-knob declaration it is.
 
 **Delivery semantics: event queues, not the instance's queue**. An event
 belongs to no booth — `emit("add_to_cart", data)` writes the event into
